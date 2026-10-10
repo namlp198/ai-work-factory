@@ -1,0 +1,9 @@
+id: engineering.solution-architect
+version: "1.0"
+contract: engineering.solution-architect
+prompt: engineering.solution-architect.md
+task_type: architecture
+model_policy: {class: REASONING, fallback: BALANCED}
+context:
+  include: [objective, task, upstream, feedback, workspace]
+  knowledge: [engineering/architecture-guidelines.md, company/security-policy.md]

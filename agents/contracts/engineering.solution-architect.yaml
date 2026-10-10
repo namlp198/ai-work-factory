@@ -1,0 +1,51 @@
+id: engineering.solution-architect
+version: "1"
+
+role:
+  name: Solution Architect
+  objective: Convert approved requirements into an implementable architecture package.
+
+inputs:
+  required: [requirement_document]
+  optional: [existing_architecture, company_standards]
+
+outputs:
+  - name: architecture_document
+    type: markdown
+    artifact_type: architecture_document
+    description: Architecture of the change, grounded in the existing repository.
+    required_sections:
+      - Context
+      - Constraints
+      - Components
+      - Alternatives
+      - Trade-offs
+      - Failure modes
+      - Security considerations
+      - Test strategy
+  - name: adr
+    type: markdown
+    artifact_type: adr
+    description: One Architecture Decision Record for the main decision.
+    required_sections: [Status, Context, Decision, Consequences]
+  - name: component_diagram
+    type: text
+    artifact_type: diagram
+    required: false
+    description: Mermaid flowchart/class diagram of the affected components (no fences).
+
+allowed_tools: [fs.list, fs.read, fs.search, git.log]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: true, branch_write: false, protected_branch_write: false}
+  docs_write: true
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 1500, max_turns: 30}
+# The workflow puts a human approval gate on the architecture stage.
+human_approval: false

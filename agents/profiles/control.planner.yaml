@@ -1,0 +1,8 @@
+id: control.planner
+version: "1.0"
+contract: control.planner
+prompt: control.planner.md
+task_type: planning
+model_policy: {class: REASONING, fallback: BALANCED}
+context:
+  include: [objective, task, upstream, feedback]

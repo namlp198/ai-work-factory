@@ -1,0 +1,18 @@
+# Phase 4 (Content Factory). Draft: roles/tools are not implemented yet.
+id: video-production
+version: "0.1"
+status: draft
+name: Video production
+inputs: [topic]
+stages:
+  - {id: research, role: content.researcher}
+  - {id: script, role: content.scriptwriter, depends_on: [research]}
+  - {id: storyboard, role: content.storyboard, depends_on: [script]}
+  - {id: asset-generation, role: media.image-generator, depends_on: [storyboard]}
+  - {id: voice, role: media.voice, depends_on: [script]}
+  - {id: render, role: media.renderer, depends_on: [asset-generation, voice]}
+  - {id: subtitle, role: media.subtitler, depends_on: [render]}
+  - {id: media-qa, role: media.qa, depends_on: [subtitle]}
+  - id: publish
+    depends_on: [media-qa]
+    gate: {type: human_approval, action: approve_publish}

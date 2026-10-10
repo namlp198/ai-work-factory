@@ -1,0 +1,49 @@
+# Model Router configuration (Implementation Plan §12).
+# A profile declares a model class; this file maps the class to a provider/model.
+# Override the provider globally with AWF_MODEL_PROVIDER=scripted for offline runs.
+
+classes:
+  FAST:
+    provider: anthropic
+    model: claude-haiku-4-5
+  BALANCED:
+    provider: anthropic
+    model: claude-sonnet-5-5
+    effort: medium
+  REASONING:
+    provider: anthropic
+    model: claude-opus-5-5
+    effort: high
+  CODE_SPECIALIST:
+    provider: anthropic
+    model: claude-opus-5-5
+    effort: high
+  MULTIMODAL:
+    provider: anthropic
+    model: claude-opus-5-5
+    effort: medium
+  LOCAL_PRIVATE:
+    # No local model is wired in the MVP. Sensitive projects are routed here and
+    # the job fails fast instead of leaking code to a hosted model.
+    provider: unavailable
+    model: none
+
+# Task-type overrides applied before the profile's own class.
+task_type_rules:
+  log_summarization: FAST
+  rename_refactor: FAST
+  unit_test_generation: BALANCED
+
+# Projects with confidentiality "restricted" are forced to this class.
+confidential_class: LOCAL_PRIVATE
+
+# When a project's remaining budget (USD) drops below this, downgrade one step.
+budget_downgrade_threshold_usd: 1.0
+downgrade_chain: [REASONING, CODE_SPECIALIST, BALANCED, FAST]
+
+# USD per 1M tokens, used for cost estimates on agent runs.
+pricing:
+  claude-opus-5-5: {input: 4.00, output: 20.00}
+  claude-sonnet-5-5: {input: 2.00, output: 10.00}
+  claude-haiku-4-5: {input: 1.00, output: 5.00}
+  scripted: {input: 0.0, output: 0.0}

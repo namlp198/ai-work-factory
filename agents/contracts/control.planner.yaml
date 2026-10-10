@@ -1,0 +1,56 @@
+id: control.planner
+version: "1"
+
+role:
+  name: Planner
+  objective: Break the approved architecture into a small dependency graph of implementable tasks.
+
+inputs:
+  required: [requirement_document, architecture_document]
+
+outputs:
+  - name: project_plan
+    type: markdown
+    artifact_type: project_plan
+    required_sections: [Approach, Tasks, Risks]
+  - name: task_graph
+    type: json
+    artifact_type: task_graph
+    description: Task graph. Each task is independently implementable and testable.
+    schema:
+      type: object
+      required: [tasks]
+      properties:
+        tasks:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            type: object
+            required: [key, title, description, acceptance_criteria, depends_on]
+            properties:
+              key: {type: string, pattern: "^T[0-9]+$"}
+              title: {type: string}
+              description: {type: string}
+              acceptance_criteria:
+                type: array
+                minItems: 1
+                items: {type: string}
+              depends_on:
+                type: array
+                items: {type: string}
+
+allowed_tools: [fs.list, fs.read, fs.search]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: true, branch_write: false}
+  docs_write: true
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 900, max_turns: 20}
+human_approval: false

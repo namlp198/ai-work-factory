@@ -1,0 +1,9 @@
+id: engineering.test-engineer
+version: "1.0"
+contract: engineering.test-engineer
+prompt: engineering.test-engineer.md
+task_type: unit_test_generation
+model_policy: {class: BALANCED, fallback: CODE_SPECIALIST}
+context:
+  include: [objective, task, "upstream:requirement", "upstream:architecture", "upstream:development", workspace]
+  knowledge: [engineering/coding-standard.md]

@@ -1,0 +1,91 @@
+id: software-development
+version: "1.0"
+name: Software development
+description: >
+  Requirement -> Architecture (human gate) -> Planning -> Coding -> Verification -> Review
+  -> QA -> PR preparation -> Merge approval (human gate). Review/QA/verification can send the
+  work back to development (fix loop).
+
+inputs:
+  - objective
+  - repository
+
+stages:
+  - id: requirement
+    title: Requirement
+    role: product.analyst
+    outputs: [requirement_document]
+
+  - id: architecture
+    title: Architecture
+    role: engineering.solution-architect
+    depends_on: [requirement]
+    relation: implements
+    outputs: [architecture_document, adr]
+    gate:
+      type: human_approval
+      action: approve_architecture
+      risk_level: 2
+      description: Approve the architecture before any code is written.
+
+  - id: planning
+    title: Planning
+    role: control.planner
+    depends_on: [architecture]
+    outputs: [task_graph]
+
+  - id: development
+    title: Development
+    role: engineering.developer
+    foreach: planned_task
+    depends_on: [planning]
+    relation: implements
+    outputs: [source_diff, test_evidence]
+
+  - id: verification
+    title: Verification
+    depends_on: [development]
+    relation: verifies
+    parallel:
+      - id: tests
+        role: engineering.test-engineer
+        title: Test engineering
+      - id: static-analysis
+        tool: lint.run
+        title: Static analysis
+    on_changes_required:
+      goto: development
+      max_iterations: 2
+
+  - id: review
+    title: Code review
+    role: engineering.code-reviewer
+    depends_on: [verification]
+    relation: reviews
+    on_changes_required:
+      goto: development
+      max_iterations: 2
+
+  - id: qa
+    title: QA
+    role: engineering.qa
+    depends_on: [review]
+    relation: verifies
+    on_changes_required:
+      goto: development
+      max_iterations: 1
+
+  - id: delivery
+    title: Prepare pull request
+    tool: git.export_patch
+    depends_on: [qa]
+    relation: includes
+
+  - id: merge_approval
+    title: Merge approval
+    depends_on: [delivery]
+    gate:
+      type: human_approval
+      action: approve_merge
+      risk_level: 2
+      description: Approve merging the integration branch into the protected base branch.

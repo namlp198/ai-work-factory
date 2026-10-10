@@ -1,0 +1,41 @@
+id: engineering.developer
+version: "1"
+
+role:
+  name: Developer
+  objective: Implement one planned task in an isolated workspace, with tests, until build and tests pass.
+
+inputs:
+  required: [task, acceptance_criteria, architecture_document]
+  optional: [feedback, coding_standard]
+
+outputs:
+  - name: implementation_summary
+    type: markdown
+    artifact_type: implementation_summary
+    required_sections: [Changes, Tests, Risks]
+  - name: source_diff
+    type: source_diff
+    artifact_type: source_change
+    produced_by: worker
+  - name: test_evidence
+    type: test_evidence
+    artifact_type: test_evidence
+    produced_by: worker
+
+allowed_tools: [fs.list, fs.read, fs.search, fs.write, fs.replace, git.status, git.diff, build.run, test.run, lint.run]
+
+permissions:
+  filesystem: {read: true, workspace_write: true}
+  git: {read: true, branch_write: true, protected_branch_write: false}
+  build: true
+  test: true
+  deploy: false
+  production_access: false
+  shell: false
+
+completion_rules: [build_pass, unit_test_pass, has_changes]
+
+retry_policy: {max_attempts: 3}
+timeout_policy: {seconds: 2400, max_turns: 60}
+human_approval: false

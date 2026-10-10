@@ -1,0 +1,33 @@
+id: engineering.code-reviewer
+version: "1"
+
+role:
+  name: Code Reviewer
+  objective: Review the integrated diff for correctness, design conformance, security and maintainability.
+
+inputs:
+  required: [source_change, architecture_document]
+  optional: [test_report, static_analysis_report]
+
+outputs:
+  - name: review_report
+    type: markdown
+    artifact_type: review_report
+    required_sections: [Summary, Findings, Verdict]
+
+decision:
+  values: [APPROVE, CHANGES_REQUIRED]
+
+allowed_tools: [fs.list, fs.read, fs.search, git.diff, git.log]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: true, branch_write: false, protected_branch_write: false}
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 1500, max_turns: 30}
+human_approval: false

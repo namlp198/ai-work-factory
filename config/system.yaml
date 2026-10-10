@@ -1,0 +1,26 @@
+system:
+  environment: ${AWF_ENVIRONMENT:-development}
+
+storage:
+  database_url: ${DATABASE_URL:-sqlite:///./var/awf.db}
+  redis_url: ${REDIS_URL:-}
+  object_store: ${AWF_OBJECT_STORE:-local}       # local | s3 (MinIO)
+  local_artifact_root: ${AWF_ARTIFACT_ROOT:-./var/artifacts}
+
+policies:
+  production_deploy:
+    approval_level: 2
+  protected_branch_merge:
+    approval_level: 2
+  arbitrary_shell:
+    default: deny
+
+routing:
+  default_worker: linux
+  default_model_class: BALANCED
+
+orchestrator:
+  tick_interval_seconds: 2
+  worker_heartbeat_timeout_seconds: 90
+  job_max_attempts: 3
+  context_max_chars_per_artifact: 60000

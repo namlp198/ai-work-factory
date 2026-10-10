@@ -1,0 +1,39 @@
+id: engineering.test-engineer
+version: "1"
+
+role:
+  name: Test Engineer
+  objective: Verify the integrated change with tests; add missing tests; report results with evidence.
+
+inputs:
+  required: [architecture_document, source_change]
+  optional: [acceptance_criteria]
+
+outputs:
+  - name: test_report
+    type: markdown
+    artifact_type: test_report
+    required_sections: [Scope, Test cases, Results, Coverage gaps]
+  - name: test_evidence
+    type: test_evidence
+    artifact_type: test_evidence
+    produced_by: worker
+
+decision:
+  values: [APPROVE, CHANGES_REQUIRED]
+
+allowed_tools: [fs.list, fs.read, fs.search, fs.write, fs.replace, git.status, git.diff, test.run]
+
+permissions:
+  filesystem: {read: true, workspace_write: true}
+  git: {read: true, branch_write: true, protected_branch_write: false}
+  build: true
+  test: true
+  deploy: false
+  production_access: false
+
+completion_rules: [tests_executed]
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 1800, max_turns: 40}
+human_approval: false

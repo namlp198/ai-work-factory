@@ -1,0 +1,9 @@
+id: product.analyst
+version: "1.0"
+contract: product.analyst
+prompt: product.analyst.md
+task_type: requirement_analysis
+model_policy: {class: BALANCED, fallback: REASONING}
+context:
+  include: [objective, task, workspace]
+  knowledge: [templates/requirement-template.md]

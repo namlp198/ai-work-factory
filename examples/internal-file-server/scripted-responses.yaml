@@ -1,0 +1,556 @@
+# Scripted model responses for the InternalFileServer trial run (offline, AWF_MODEL_PROVIDER=scripted).
+# The platform side is real: git clone/branches/merge, `dotnet build`, `dotnet test`, critic, gates, fix loop.
+# Only the agents' "thinking" is replaced by this script. With ANTHROPIC_API_KEY set and
+# `--live-model`, Claude produces this content instead.
+#
+# Objective: Add GET /api/health and remove the insecure "change-me" admin password fallback
+#            (deletion disabled when no admin password is configured, constant-time comparison),
+#            with an xUnit test project.
+
+roles:
+  product.analyst:
+    - turns:
+        - tool_calls:
+            - {name: fs.read, input: {path: Program.cs}}
+            - {name: fs.read, input: {path: README.md}}
+        - submit:
+            summary: Requirement for health endpoint and admin password hardening.
+            outputs:
+              requirement_document: |
+                # Requirement: health endpoint and admin password hardening
+                ## Problem
+                Operators cannot check whether the file server is healthy without uploading a file, and when
+                `FileServer:AdminPassword` is missing the server silently falls back to the well-known password
+                `change-me`, letting anyone on the LAN delete files.
+                ## Scope
+                `Program.cs` minimal API, new helper classes, a new xUnit test project, README.
+                ## Functional requirements
+                - FR-1 `GET /api/health` returns status (`ok`/`degraded`), version, whether upload storage is writable,
+                  and whether an admin password is configured.
+                - FR-2 Without a configured admin password, admin login and file deletion are refused.
+                - FR-3 Admin password comparison is constant-time.
+                ## Non-functional requirements
+                - NFR-1 Health check is cheap (one small temp file write/delete) and has no lasting side effects.
+                - NFR-2 The health response must not disclose server file-system paths or secrets.
+                ## Acceptance criteria
+                - AC-1 `/api/health` responds 200 with the fields of FR-1.
+                - AC-2 `IsAdmin` is false for any input when no password is configured.
+                - AC-3 Unit tests cover AC-1 (report content) and AC-2/FR-3 (auth rules).
+                - AC-4 `dotnet build` and `dotnet test` pass.
+                ## Out of scope
+                Rotating the password committed in `appsettings.json` (tracked separately), authentication redesign.
+
+  engineering.solution-architect:
+    - turns:
+        - tool_calls:
+            - {name: fs.read, input: {path: Program.cs}}
+            - {name: fs.read, input: {path: InternalFileServer.csproj}}
+        - submit:
+            summary: Two small static helpers + test project; no new dependencies.
+            outputs:
+              architecture_document: |
+                # Architecture: health endpoint and admin password hardening
+                ## Context
+                Single-project .NET 8 minimal API (`Program.cs`, top-level statements). No tests exist today.
+                ## Constraints
+                - Keep the single deployable; no new runtime dependencies; .NET 8.
+                - The web project globs `**/*.cs`, so the test project folder must be excluded from it.
+                ## Components
+                - `AdminAuth` (static): `IsConfigured`, `IsAdmin` using SHA-256 + `CryptographicOperations.FixedTimeEquals`.
+                - `HealthCheck` (static): `Create(uploadRoot, adminPassword, version)` -> `HealthReport` record; `IsWritable(dir)`.
+                - `Program.cs`: drop the `?? "change-me"` fallback, map `GET /api/health`, delegate `IsAdmin` to `AdminAuth`,
+                  add `public partial class Program` for future integration tests.
+                - `tests/InternalFileServer.Tests`: xUnit project referencing the web project.
+                ## Alternatives
+                1. ASP.NET Core HealthChecks middleware (`AddHealthChecks`) - richer, but adds configuration surface
+                   and returns a less specific payload.
+                2. Static helpers + minimal endpoint (chosen).
+                ## Trade-offs
+                Helpers keep logic unit-testable without `WebApplicationFactory` (no extra NuGet package);
+                the middleware option would be preferable once several dependencies need probing.
+                ## Failure modes
+                - Upload directory not writable -> `degraded`, `storageWritable=false` (HTTP 200, so load balancers can
+                  read the body).
+                - No admin password -> deletion returns 401; health reports `adminConfigured=false`.
+                ## Security considerations
+                Removes a default credential. Constant-time comparison avoids timing side channels.
+                The health payload must not expose paths or secrets (unauthenticated LAN endpoint).
+                ## Test strategy
+                Unit tests for `AdminAuth` and `HealthCheck`; endpoint wiring verified by build + manual smoke test.
+              adr: |
+                # ADR-001: No default admin password
+                ## Status
+                Proposed
+                ## Context
+                A missing `FileServer:AdminPassword` falls back to `change-me`.
+                ## Decision
+                Treat a missing/blank password as "admin disabled"; never fall back to a default.
+                ## Consequences
+                Deployments without a configured password can no longer delete files until one is set
+                (e.g. via environment variable `FileServer__AdminPassword`).
+              component_diagram: |
+                flowchart LR
+                  Client --> API[Program.cs minimal API]
+                  API --> AdminAuth
+                  API --> HealthCheck
+                  HealthCheck --> Storage[(uploads/)]
+
+  control.planner:
+    - turns:
+        - submit:
+            summary: Single task; the change is small and touches the same file.
+            outputs:
+              project_plan: |
+                # Plan
+                ## Approach
+                One task: helpers, endpoint, fallback removal, test project.
+                ## Tasks
+                - T1 Health endpoint + admin password hardening with xUnit tests
+                ## Risks
+                - First `dotnet restore` of the test project needs NuGet access.
+              task_graph:
+                tasks:
+                  - key: T1
+                    title: Health endpoint and admin password hardening
+                    description: Implement AdminAuth and HealthCheck helpers, GET /api/health, remove the change-me fallback, add tests/InternalFileServer.Tests.
+                    acceptance_criteria:
+                      - GET /api/health returns status, version, storageWritable, adminConfigured
+                      - IsAdmin is false for every input when no admin password is configured
+                      - password comparison uses CryptographicOperations.FixedTimeEquals
+                      - dotnet build and dotnet test pass
+                    depends_on: []
+
+  engineering.developer:
+    - when: {iteration: 1}
+      turns:
+        - tool_calls:
+            - {name: fs.read, input: {path: Program.cs}}
+            - {name: fs.read, input: {path: InternalFileServer.csproj}}
+        - tool_calls:
+            - name: fs.write
+              input:
+                path: AdminAuth.cs
+                content: |
+                  using System.Security.Cryptography;
+                  using System.Text;
+
+                  namespace InternalFileServer;
+
+                  /// <summary>Admin password rules. Admin features are disabled when no password is configured.</summary>
+                  public static class AdminAuth
+                  {
+                      public static bool IsConfigured(string? adminPassword) => !string.IsNullOrWhiteSpace(adminPassword);
+
+                      /// <summary>Constant-time comparison of the supplied password with the configured one.</summary>
+                      public static bool IsAdmin(string? password, string? adminPassword)
+                      {
+                          if (!IsConfigured(adminPassword) || string.IsNullOrEmpty(password))
+                          {
+                              return false;
+                          }
+
+                          var given = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+                          var expected = SHA256.HashData(Encoding.UTF8.GetBytes(adminPassword!));
+                          return CryptographicOperations.FixedTimeEquals(given, expected);
+                      }
+                  }
+            - name: fs.write
+              input:
+                path: HealthCheck.cs
+                content: |
+                  namespace InternalFileServer;
+
+                  public sealed record HealthReport(
+                      string Status,
+                      string Version,
+                      bool StorageWritable,
+                      bool AdminConfigured,
+                      string StoragePath,
+                      DateTimeOffset CheckedAt);
+
+                  /// <summary>Cheap readiness probe for the file server.</summary>
+                  public static class HealthCheck
+                  {
+                      public static HealthReport Create(string uploadRoot, string? adminPassword, string version)
+                      {
+                          var writable = IsWritable(uploadRoot);
+                          return new HealthReport(
+                              writable ? "ok" : "degraded",
+                              version,
+                              writable,
+                              AdminAuth.IsConfigured(adminPassword),
+                              uploadRoot,
+                              DateTimeOffset.UtcNow);
+                      }
+
+                      public static bool IsWritable(string directory)
+                      {
+                          try
+                          {
+                              Directory.CreateDirectory(directory);
+                              var probe = Path.Combine(directory, $".health-{Guid.NewGuid():N}.tmp");
+                              File.WriteAllText(probe, "ok");
+                              File.Delete(probe);
+                              return true;
+                          }
+                          catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                          {
+                              return false;
+                          }
+                      }
+                  }
+            - name: fs.replace
+              input:
+                path: Program.cs
+                old_text: |
+                  using Microsoft.AspNetCore.StaticFiles;
+                new_text: |
+                  using Microsoft.AspNetCore.StaticFiles;
+                  using InternalFileServer;
+            - name: fs.replace
+              input:
+                path: Program.cs
+                old_text: |
+                  var adminPassword = builder.Configuration["FileServer:AdminPassword"] ?? "change-me";
+                new_text: |
+                  // No fallback: without a configured password, admin features (delete) are disabled.
+                  var adminPassword = builder.Configuration["FileServer:AdminPassword"];
+            - name: fs.replace
+              input:
+                path: Program.cs
+                old_text: |
+                  app.MapGet("/api/categories", () =>
+                new_text: |
+                  var appVersion = typeof(AdminAuth).Assembly.GetName().Version?.ToString() ?? "unknown";
+
+                  app.MapGet("/api/health", () => Results.Ok(HealthCheck.Create(uploadRoot, adminPassword, appVersion)));
+
+                  app.MapGet("/api/categories", () =>
+            - name: fs.replace
+              input:
+                path: Program.cs
+                old_text: |
+                  static bool IsAdmin(string? password, string adminPassword)
+                  {
+                      return !string.IsNullOrWhiteSpace(adminPassword)
+                          && string.Equals(password, adminPassword, StringComparison.Ordinal);
+                  }
+                new_text: |
+                  static bool IsAdmin(string? password, string? adminPassword) => AdminAuth.IsAdmin(password, adminPassword);
+            - name: fs.replace
+              input:
+                path: Program.cs
+                old_text: |
+                  record FileItem(string Category, string CategoryName, string Name, long Size, DateTime Modified);
+                new_text: |
+                  record FileItem(string Category, string CategoryName, string Name, long Size, DateTime Modified);
+
+                  // Exposes the entry point type to integration tests (WebApplicationFactory<Program>).
+                  public partial class Program { }
+            - name: fs.replace
+              input:
+                path: InternalFileServer.csproj
+                old_text: |
+                  </Project>
+                new_text: |2
+                    <ItemGroup>
+                      <!-- The test project lives below this folder; keep it out of the web project's globs. -->
+                      <Compile Remove="tests/**" />
+                      <Content Remove="tests/**" />
+                      <None Remove="tests/**" />
+                    </ItemGroup>
+                  </Project>
+            - name: fs.write
+              input:
+                path: tests/InternalFileServer.Tests/InternalFileServer.Tests.csproj
+                content: |
+                  <Project Sdk="Microsoft.NET.Sdk">
+                    <PropertyGroup>
+                      <TargetFramework>net8.0</TargetFramework>
+                      <Nullable>enable</Nullable>
+                      <ImplicitUsings>enable</ImplicitUsings>
+                      <IsPackable>false</IsPackable>
+                    </PropertyGroup>
+                    <ItemGroup>
+                      <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+                      <PackageReference Include="xunit" Version="2.9.2" />
+                      <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+                    </ItemGroup>
+                    <ItemGroup>
+                      <ProjectReference Include="..\..\InternalFileServer.csproj" />
+                    </ItemGroup>
+                  </Project>
+            - name: fs.write
+              input:
+                path: tests/InternalFileServer.Tests/AdminAuthTests.cs
+                content: |
+                  using InternalFileServer;
+                  using Xunit;
+
+                  namespace InternalFileServer.Tests;
+
+                  public class AdminAuthTests
+                  {
+                      [Theory]
+                      [InlineData(null)]
+                      [InlineData("")]
+                      [InlineData("   ")]
+                      public void Admin_is_disabled_without_configured_password(string? configured)
+                      {
+                          Assert.False(AdminAuth.IsConfigured(configured));
+                          Assert.False(AdminAuth.IsAdmin("change-me", configured));
+                          Assert.False(AdminAuth.IsAdmin("", configured));
+                      }
+
+                      [Fact]
+                      public void Correct_password_is_accepted()
+                      {
+                          Assert.True(AdminAuth.IsAdmin("s3cret-value", "s3cret-value"));
+                      }
+
+                      [Theory]
+                      [InlineData(null)]
+                      [InlineData("")]
+                      [InlineData("S3cret-value")]
+                      [InlineData("s3cret-value ")]
+                      public void Wrong_password_is_rejected(string? supplied)
+                      {
+                          Assert.False(AdminAuth.IsAdmin(supplied, "s3cret-value"));
+                      }
+                  }
+            - name: fs.write
+              input:
+                path: tests/InternalFileServer.Tests/HealthCheckTests.cs
+                content: |
+                  using InternalFileServer;
+                  using Xunit;
+
+                  namespace InternalFileServer.Tests;
+
+                  public class HealthCheckTests : IDisposable
+                  {
+                      private readonly string _root = Path.Combine(Path.GetTempPath(), $"ifs-health-{Guid.NewGuid():N}");
+
+                      [Fact]
+                      public void Writable_storage_reports_ok()
+                      {
+                          var report = HealthCheck.Create(_root, "pw-123456", "1.0.0");
+
+                          Assert.Equal("ok", report.Status);
+                          Assert.True(report.StorageWritable);
+                          Assert.True(report.AdminConfigured);
+                          Assert.Equal("1.0.0", report.Version);
+                          Assert.Empty(Directory.EnumerateFiles(_root)); // probe file cleaned up
+                      }
+
+                      [Fact]
+                      public void Missing_admin_password_is_reported()
+                      {
+                          Assert.False(HealthCheck.Create(_root, null, "1.0.0").AdminConfigured);
+                      }
+
+                      [Fact]
+                      public void Unwritable_storage_reports_degraded()
+                      {
+                          // A path below an existing *file* can never be created as a directory.
+                          Directory.CreateDirectory(_root);
+                          var file = Path.Combine(_root, "not-a-dir");
+                          File.WriteAllText(file, "x");
+
+                          var report = HealthCheck.Create(Path.Combine(file, "uploads"), "pw-123456", "1.0.0");
+
+                          Assert.Equal("degraded", report.Status);
+                          Assert.False(report.StorageWritable);
+                      }
+
+                      public void Dispose()
+                      {
+                          if (Directory.Exists(_root))
+                          {
+                              Directory.Delete(_root, recursive: true);
+                          }
+                      }
+                  }
+            - name: fs.replace
+              input:
+                path: README.md
+                old_text: |
+                  - `FileServer:AdminPassword`: admin password used for deleting files, change it before deployment
+                new_text: |
+                  - `FileServer:AdminPassword`: admin password used for deleting files. There is no default: when it is
+                    empty, deleting files is disabled. Prefer supplying it via the environment variable
+                    `FileServer__AdminPassword` instead of committing it.
+
+                  ## Health check
+
+                  `GET /api/health` returns `status` (`ok` / `degraded`), `version`, `storageWritable` and
+                  `adminConfigured`.
+
+                  ## Tests
+
+                  ```powershell
+                  dotnet test tests/InternalFileServer.Tests
+                  ```
+        - tool_calls:
+            - {name: build.run, input: {}}
+            - {name: test.run, input: {}}
+        - submit:
+            summary: Added AdminAuth/HealthCheck, /api/health, removed the change-me fallback, added xUnit tests.
+            outputs:
+              implementation_summary: |
+                # Implementation summary
+                ## Changes
+                - `AdminAuth.cs`: constant-time password check; admin disabled without a configured password.
+                - `HealthCheck.cs` + `GET /api/health`.
+                - `Program.cs`: removed `?? "change-me"`, delegated `IsAdmin`, `public partial class Program`.
+                - `InternalFileServer.csproj`: exclude `tests/**` from the web project.
+                - README: configuration and health check docs.
+                ## Tests
+                - `tests/InternalFileServer.Tests`: AdminAuthTests (8 cases), HealthCheckTests (3 cases).
+                ## Risks
+                - Deployments relying on the implicit `change-me` password lose delete access until configured.
+    - when: {iteration: 2}
+      turns:
+        - tool_calls:
+            - {name: fs.read, input: {path: HealthCheck.cs}}
+        - tool_calls:
+            - name: fs.replace
+              input:
+                path: HealthCheck.cs
+                old_text: |2
+                      bool AdminConfigured,
+                      string StoragePath,
+                      DateTimeOffset CheckedAt);
+                new_text: |2
+                      bool AdminConfigured,
+                      DateTimeOffset CheckedAt);
+            - name: fs.replace
+              input:
+                path: HealthCheck.cs
+                old_text: |2
+                              AdminAuth.IsConfigured(adminPassword),
+                              uploadRoot,
+                              DateTimeOffset.UtcNow);
+                new_text: |2
+                              AdminAuth.IsConfigured(adminPassword),
+                              DateTimeOffset.UtcNow);
+            - name: fs.replace
+              input:
+                path: tests/InternalFileServer.Tests/HealthCheckTests.cs
+                old_text: |2
+                      [Fact]
+                      public void Missing_admin_password_is_reported()
+                new_text: |2
+                      [Fact]
+                      public void Report_does_not_expose_server_paths()
+                      {
+                          var json = System.Text.Json.JsonSerializer.Serialize(HealthCheck.Create(_root, "pw-123456", "1.0.0"));
+
+                          Assert.DoesNotContain(Path.GetFileName(_root), json);
+                          Assert.DoesNotContain("StoragePath", json);
+                      }
+
+                      [Fact]
+                      public void Missing_admin_password_is_reported()
+        - tool_calls:
+            - {name: build.run, input: {}}
+            - {name: test.run, input: {}}
+        - submit:
+            summary: Removed the storage path from the unauthenticated health payload (review finding) and added a regression test.
+            outputs:
+              implementation_summary: |
+                # Implementation summary
+                ## Changes
+                - `HealthReport` no longer contains `StoragePath`.
+                ## Tests
+                - `Report_does_not_expose_server_paths` regression test.
+                ## Risks
+                - None identified.
+
+  engineering.test-engineer:
+    - turns:
+        - tool_calls:
+            - {name: git.diff, input: {against: base}}
+        - tool_calls:
+            - {name: test.run, input: {}}
+        - submit:
+            summary: Tests run on the integrated branch; coverage adequate for the scope.
+            decision: APPROVE
+            outputs:
+              test_report: |
+                # Test report
+                ## Scope
+                AdminAuth, HealthCheck, endpoint wiring (build).
+                ## Test cases
+                - AdminAuthTests: disabled without password (3), correct password, wrong passwords (4).
+                - HealthCheckTests: ok, degraded, admin flag (+ path-disclosure regression on re-run).
+                ## Results
+                See recorded `dotnet test` evidence.
+                ## Coverage gaps
+                - No HTTP-level test of `/api/health` (would need Microsoft.AspNetCore.Mvc.Testing).
+
+  engineering.code-reviewer:
+    - when: {iteration: 1}
+      turns:
+        - tool_calls:
+            - {name: git.diff, input: {against: base}}
+        - submit:
+            summary: One information-disclosure issue in the new unauthenticated endpoint.
+            decision: CHANGES_REQUIRED
+            findings:
+              - severity: MAJOR
+                file: HealthCheck.cs
+                message: HealthReport.StoragePath returns the absolute upload directory to any unauthenticated LAN client (information disclosure, violates NFR-2). Remove it from the payload and add a regression test.
+              - severity: INFO
+                file: appsettings.json
+                message: A real admin password is committed in appsettings.json. Rotate it and supply it via FileServer__AdminPassword (out of scope for this change).
+            outputs:
+              review_report: |
+                # Code review
+                ## Summary
+                Correct removal of the default password and a solid constant-time comparison. Tests are meaningful.
+                ## Findings
+                - MAJOR HealthCheck.cs: `StoragePath` leaks the server path through the unauthenticated `/api/health`.
+                - INFO appsettings.json: a real admin password is committed; rotate and move it to the environment.
+                ## Verdict
+                CHANGES_REQUIRED
+    - when: {iteration: 2}
+      turns:
+        - tool_calls:
+            - {name: git.diff, input: {against: base}}
+        - submit:
+            summary: Finding resolved.
+            decision: APPROVE
+            findings:
+              - severity: INFO
+                file: appsettings.json
+                message: Committed admin password still needs rotation (tracked outside this change).
+            outputs:
+              review_report: |
+                # Code review (re-review)
+                ## Summary
+                The health payload no longer contains paths; regression test added.
+                ## Findings
+                - INFO appsettings.json: committed admin password still needs rotation (out of scope).
+                ## Verdict
+                APPROVE
+
+  engineering.qa:
+    - turns:
+        - tool_calls:
+            - {name: test.run, input: {}}
+        - submit:
+            summary: All acceptance criteria met with evidence.
+            decision: APPROVE
+            outputs:
+              qa_report: |
+                # QA report
+                ## Acceptance criteria verification
+                - AC-1 `/api/health` fields: met (HealthReport record, HealthCheckTests).
+                - AC-2 admin disabled without password: met (AdminAuthTests theory, 3 cases).
+                - AC-3 unit tests: met.
+                - AC-4 build and tests pass: met (platform evidence).
+                ## Evidence
+                `dotnet build` and `dotnet test` evidence recorded by the worker for this run.
+                ## Verdict
+                APPROVE

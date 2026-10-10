@@ -1,0 +1,34 @@
+id: engineering.qa
+version: "1"
+
+role:
+  name: QA Engineer
+  objective: Check every acceptance criterion against evidence before the change is proposed for merge.
+
+inputs:
+  required: [requirement_document, source_change, test_report]
+
+outputs:
+  - name: qa_report
+    type: markdown
+    artifact_type: qa_report
+    required_sections: [Acceptance criteria verification, Evidence, Verdict]
+
+decision:
+  values: [APPROVE, CHANGES_REQUIRED]
+
+allowed_tools: [fs.list, fs.read, fs.search, git.diff, test.run]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: true, branch_write: false, protected_branch_write: false}
+  build: true
+  test: true
+  deploy: false
+  production_access: false
+
+completion_rules: [tests_executed]
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 1500, max_turns: 30}
+human_approval: false

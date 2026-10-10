@@ -1,0 +1,38 @@
+id: product.analyst
+version: "1"
+
+role:
+  name: Product Manager / Business Analyst
+  objective: Turn a raw objective into a precise, testable requirement document.
+
+inputs:
+  required: [objective]
+  optional: [repository_context]
+
+outputs:
+  - name: requirement_document
+    type: markdown
+    artifact_type: requirement
+    description: Requirement document for the objective.
+    required_sections:
+      - Problem
+      - Scope
+      - Functional requirements
+      - Non-functional requirements
+      - Acceptance criteria
+      - Out of scope
+
+allowed_tools: [fs.list, fs.read, fs.search, git.log]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: true, branch_write: false, protected_branch_write: false}
+  docs_write: true
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 900, max_turns: 20}
+human_approval: false

@@ -1,0 +1,179 @@
+# Scripted model responses for the offline demo / E2E test (AWF_MODEL_PROVIDER=scripted).
+# Roles not listed here use the automatic behaviour derived from their contract.
+# Objective: "Add a camera pipeline health-check API with tests and documentation."
+
+roles:
+  control.planner:
+    - turns:
+        - tool_calls:
+            - {name: fs.list, input: {path: "."}}
+        - submit:
+            summary: One task is enough for this change.
+            outputs:
+              project_plan: |
+                # Project plan
+                ## Approach
+                Add a pure function `check_health(pipeline)` next to the pipeline model.
+                ## Tasks
+                - T1 health-check function + unit tests
+                ## Risks
+                - FPS thresholds may need tuning on real hardware.
+              task_graph:
+                tasks:
+                  - key: T1
+                    title: Implement camera pipeline health check
+                    description: Add perception_service/health.py with check_health(pipeline) returning status, fps and reasons.
+                    acceptance_criteria:
+                      - check_health reports "down" when the pipeline is not running
+                      - check_health reports "degraded" when measured FPS is below 50% of expected FPS
+                      - check_health reports "ok" otherwise
+                      - unit tests cover all three states
+                    depends_on: []
+
+  engineering.developer:
+    - when: {iteration: 1}
+      turns:
+        - tool_calls:
+            - {name: fs.read, input: {path: perception_service/pipeline.py}}
+        - tool_calls:
+            - name: fs.write
+              input:
+                path: perception_service/health.py
+                content: |
+                  """Health check for camera pipelines."""
+
+                  from __future__ import annotations
+
+                  from perception_service.pipeline import CameraPipeline
+
+                  DEGRADED_RATIO = 0.5
+
+
+                  def check_health(pipeline: CameraPipeline) -> dict:
+                      """Return {"status": ok|degraded|down, "fps": float, "reasons": [...]}."""
+                      if not pipeline.running:
+                          return {"status": "down", "fps": 0.0, "reasons": ["pipeline not running"]}
+                      fps = pipeline.measured_fps()
+                      if fps < pipeline.expected_fps * DEGRADED_RATIO:
+                          return {"status": "degraded", "fps": fps,
+                                  "reasons": [f"fps {fps:.1f} below {DEGRADED_RATIO:.0%} of expected"]}
+                      return {"status": "ok", "fps": fps, "reasons": []}
+            - name: fs.write
+              input:
+                path: tests/test_health.py
+                content: |
+                  from perception_service.health import check_health
+                  from perception_service.pipeline import CameraPipeline
+
+
+                  def _pipe(fps: float) -> CameraPipeline:
+                      pipe = CameraPipeline("rgb", expected_fps=30.0)
+                      pipe.start()
+                      for i in range(31):
+                          pipe.on_frame(i / fps)
+                      return pipe
+
+
+                  def test_down_when_not_running():
+                      assert check_health(CameraPipeline("rgb"))["status"] == "down"
+
+
+                  def test_degraded_when_fps_low():
+                      assert check_health(_pipe(10.0))["status"] == "degraded"
+
+
+                  def test_ok_when_fps_nominal():
+                      assert check_health(_pipe(30.0))["status"] == "ok"
+        - tool_calls:
+            - {name: build.run, input: {}}
+            - {name: test.run, input: {}}
+        - submit:
+            summary: Added check_health with unit tests for down/degraded/ok.
+            outputs:
+              implementation_summary: |
+                # Implementation summary
+                ## Changes
+                - New module `perception_service/health.py` with `check_health(pipeline)`.
+                ## Tests
+                - `tests/test_health.py` covers down, degraded and ok.
+                ## Risks
+                - Threshold is a constant; may need configuration later.
+    - when: {iteration: 2}
+      turns:
+        - tool_calls:
+            - name: fs.replace
+              input:
+                path: perception_service/health.py
+                old_text: |
+                  def check_health(pipeline: CameraPipeline) -> dict:
+                      """Return {"status": ok|degraded|down, "fps": float, "reasons": [...]}."""
+                      if not pipeline.running:
+                new_text: |
+                  def check_health(pipeline: CameraPipeline | None) -> dict:
+                      """Return {"status": ok|degraded|down, "fps": float, "reasons": [...]}."""
+                      if pipeline is None:
+                          return {"status": "down", "fps": 0.0, "reasons": ["pipeline not configured"]}
+                      if not pipeline.running:
+            - name: fs.replace
+              input:
+                path: tests/test_health.py
+                old_text: |
+                  def test_down_when_not_running():
+                new_text: |
+                  def test_down_when_pipeline_missing():
+                      assert check_health(None)["status"] == "down"
+
+
+                  def test_down_when_not_running():
+        - tool_calls:
+            - {name: build.run, input: {}}
+            - {name: test.run, input: {}}
+        - submit:
+            summary: Handle a missing pipeline (review finding) with a regression test.
+            outputs:
+              implementation_summary: |
+                # Implementation summary
+                ## Changes
+                - `check_health(None)` now reports `down` instead of raising AttributeError.
+                ## Tests
+                - Added `test_down_when_pipeline_missing`.
+                ## Risks
+                - None identified.
+
+  engineering.code-reviewer:
+    - when: {iteration: 1}
+      turns:
+        - tool_calls:
+            - {name: git.diff, input: {against: base}}
+        - submit:
+            summary: One defect must be fixed before merge.
+            decision: CHANGES_REQUIRED
+            findings:
+              - severity: MAJOR
+                file: perception_service/health.py
+                message: check_health raises AttributeError when the pipeline is not configured (None); report "down" instead and add a regression test.
+            outputs:
+              review_report: |
+                # Code review
+                ## Summary
+                Clean, small change that follows the architecture.
+                ## Findings
+                - MAJOR perception_service/health.py: `check_health(None)` raises AttributeError.
+                ## Verdict
+                CHANGES_REQUIRED
+    - when: {iteration: 2}
+      turns:
+        - tool_calls:
+            - {name: git.diff, input: {against: base}}
+        - submit:
+            summary: Finding resolved.
+            decision: APPROVE
+            outputs:
+              review_report: |
+                # Code review (re-review)
+                ## Summary
+                The missing-pipeline case is handled and covered by a regression test.
+                ## Findings
+                - none
+                ## Verdict
+                APPROVE

@@ -1,0 +1,47 @@
+# Permission / Policy Engine (Implementation Plan §14).
+# level 0 AUTO, 1 AUTO+NOTIFY, 2 APPROVAL REQUIRED, 3 MANUAL EXECUTION.
+# `permission` is the dotted path that must be true in the agent's permissions.
+
+actions:
+  fs.read:            {level: 0, permission: filesystem.read}
+  fs.write:           {level: 0, permission: filesystem.workspace_write}
+  git.read:           {level: 0, permission: git.read}
+  git.branch_write:   {level: 0, permission: git.branch_write}
+  git.open_pr:        {level: 0, permission: git.branch_write}
+  build.run:          {level: 0, permission: build}
+  test.run:           {level: 0, permission: test}
+  lint.run:           {level: 0, permission: build}
+  docs.write:         {level: 0, permission: docs_write}
+  deploy.staging:     {level: 1, permission: deploy}
+  git.merge_protected: {level: 2, permission: git.protected_branch_write}
+  deploy.production:  {level: 2, permission: production_access}
+  shell.exec:         {level: 3, permission: shell}
+  db.delete:          {level: 3, permission: production_access}
+  secret.rotate:      {level: 3, permission: production_access}
+
+# Executables the command wrapper may launch (build/test/lint commands are
+# taken from project configuration, never from model output).
+command_allowlist:
+  - python
+  - python3
+  - pytest
+  - pip
+  - cmake
+  - ctest
+  - make
+  - ninja
+  - dotnet
+  - npm
+  - npx
+  - node
+  - ruff
+  - flake8
+  - mypy
+  - go
+  - cargo
+
+limits:
+  command_timeout_seconds: 600
+  output_max_bytes: 200000
+  file_read_max_bytes: 400000
+  file_write_max_bytes: 400000

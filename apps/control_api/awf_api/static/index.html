@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Work Factory</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">AI Work Factory</div>
+  <nav>
+    <a href="#/" data-nav="overview">Overview</a>
+    <a href="#/projects" data-nav="projects">Projects</a>
+    <a href="#/approvals" data-nav="approvals">Approvals <span id="approval-badge" class="badge hidden"></span></a>
+    <a href="#/workers" data-nav="workers">Workers</a>
+    <a href="#/agents" data-nav="agents">Agents</a>
+    <a href="#/audit" data-nav="audit">Audit</a>
+  </nav>
+  <button id="token-btn" class="ghost" title="API token">Token</button>
+</header>
+<main id="view"><p class="muted">Loading…</p></main>
+<div id="drawer" class="drawer hidden"><div class="drawer-inner"><button class="ghost close" id="drawer-close">Close</button><div id="drawer-body"></div></div></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

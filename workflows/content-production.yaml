@@ -1,0 +1,16 @@
+# Phase 4 (Content Factory). Draft: roles are not implemented yet, so the workflow cannot be started.
+id: content-production
+version: "0.1"
+status: draft
+name: Content production
+inputs: [topic]
+stages:
+  - {id: research, role: content.researcher}
+  - {id: content-plan, role: content.strategist, depends_on: [research]}
+  - {id: draft, role: content.copywriter, depends_on: [content-plan]}
+  - {id: technical-review, role: engineering.code-reviewer, depends_on: [draft]}
+  - {id: edit, role: content.editor, depends_on: [technical-review]}
+  - {id: seo, role: content.seo, depends_on: [edit]}
+  - id: publish
+    depends_on: [seo]
+    gate: {type: human_approval, action: approve_publish}

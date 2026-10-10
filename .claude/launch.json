@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "awf-demo",
+      "runtimeExecutable": ".venv/Scripts/awf.exe",
+      "runtimeArgs": ["demo", "--port", "8800"],
+      "port": 8800
+    }
+  ]
+}

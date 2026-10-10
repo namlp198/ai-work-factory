@@ -1,0 +1,66 @@
+# Phase 0 topology (Design §4): one host, Docker Compose.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: awf
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-awf}
+      POSTGRES_DB: awf
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U awf"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-awfminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-awfminio-secret}
+    volumes: [miniodata:/data]
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+
+  control-api:
+    build: {context: ., dockerfile: infrastructure/docker/Dockerfile}
+    env_file: [{path: .env, required: false}]
+    environment: &awf-env
+      DATABASE_URL: postgresql+psycopg://awf:${POSTGRES_PASSWORD:-awf}@postgres:5432/awf
+      REDIS_URL: redis://redis:6379/0
+      AWF_ARTIFACT_ROOT: /app/var/artifacts
+    command: sh -c "awf db upgrade && awf api --host 0.0.0.0 --port 8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+    volumes: [artifacts:/app/var/artifacts]
+    ports: ["127.0.0.1:8000:8000"]
+
+  orchestrator:
+    build: {context: ., dockerfile: infrastructure/docker/Dockerfile}
+    env_file: [{path: .env, required: false}]
+    environment: *awf-env
+    command: awf orchestrator
+    depends_on: [control-api]
+    volumes: [artifacts:/app/var/artifacts]
+
+  linux-worker:
+    build: {context: ., dockerfile: infrastructure/docker/Dockerfile}
+    env_file: [{path: .env, required: false}]
+    environment:
+      AWF_CONTROL_URL: http://control-api:8000
+      AWF_WORKER_NAME: linux-worker-01
+      AWF_WORKER_PLATFORM: linux-amd64
+      AWF_WORKSPACE_ROOT: /app/var/workspaces
+    command: awf worker
+    depends_on: [control-api]
+    # Mount repositories the worker may clone (read-only source of truth stays on the host).
+    volumes: ["${AWF_REPOS_DIR:-./var/repos}:/repos"]
+
+volumes:
+  pgdata:
+  miniodata:
+  artifacts:

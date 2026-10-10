@@ -1,0 +1,9 @@
+id: engineering.developer
+version: "1.0"
+contract: engineering.developer
+prompt: engineering.developer.md
+task_type: implementation
+model_policy: {class: CODE_SPECIALIST, fallback: REASONING}
+context:
+  include: [objective, task, acceptance_criteria, "upstream:architecture", "upstream:planning", feedback, workspace]
+  knowledge: [engineering/coding-standard.md]

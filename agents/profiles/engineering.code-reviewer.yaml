@@ -1,0 +1,9 @@
+id: engineering.code-reviewer
+version: "1.0"
+contract: engineering.code-reviewer
+prompt: engineering.code-reviewer.md
+task_type: code_review
+model_policy: {class: REASONING, fallback: CODE_SPECIALIST}
+context:
+  include: [objective, task, "upstream:architecture", "upstream:development", "upstream:verification", workspace]
+  knowledge: [engineering/coding-standard.md, company/security-policy.md]

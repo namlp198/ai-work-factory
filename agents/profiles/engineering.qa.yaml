@@ -1,0 +1,8 @@
+id: engineering.qa
+version: "1.0"
+contract: engineering.qa
+prompt: engineering.qa.md
+task_type: qa
+model_policy: {class: BALANCED, fallback: REASONING}
+context:
+  include: [objective, task, "upstream:requirement", "upstream:planning", "upstream:development", "upstream:verification", "upstream:review", workspace]
