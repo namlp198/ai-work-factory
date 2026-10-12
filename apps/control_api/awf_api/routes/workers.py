@@ -26,7 +26,7 @@ class RegistrationIn(BaseModel):
 
 
 @router.post("/workers/register", status_code=201)
-def register(body: RegistrationIn, state: AppState = Depends(get_state), session: Session = Depends(get_session),
+def register(body: RegistrationIn, state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function"),
              x_registration_token: str | None = Header(default=None)):
     expected = state.platform.settings.worker_registration_token
     if expected:

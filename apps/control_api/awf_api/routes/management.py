@@ -58,7 +58,7 @@ class ProjectIn(BaseModel):
 
 
 @router.post("/projects", status_code=201)
-def create_project(body: ProjectIn, state: AppState = Depends(get_state), session: Session = Depends(get_session),
+def create_project(body: ProjectIn, state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function"),
                    actor: str = Depends(require_admin)):
     try:
         project = state.orchestrator.create_project(
@@ -73,12 +73,12 @@ def create_project(body: ProjectIn, state: AppState = Depends(get_state), sessio
 
 
 @router.get("/projects")
-def list_projects(session: Session = Depends(get_session)):
+def list_projects(session: Session = Depends(get_session, scope="function")):
     return [ser.project(p) for p in session.scalars(select(Project).order_by(Project.created_at.desc()))]
 
 
 @router.get("/projects/{project_id}")
-def get_project(project_id: str, session: Session = Depends(get_session)):
+def get_project(project_id: str, session: Session = Depends(get_session, scope="function")):
     project = _get(session, Project, project_id)
     spend = session.scalar(select(func.coalesce(func.sum(AgentRun.cost_estimate), 0))
                            .join(Task, Task.id == AgentRun.task_id)
@@ -113,7 +113,7 @@ class RunIn(BaseModel):
 
 @router.post("/projects/{project_id}/workflow-runs", status_code=201)
 def start_run(project_id: str, body: RunIn, state: AppState = Depends(get_state),
-              session: Session = Depends(get_session), actor: str = Depends(require_admin)):
+              session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
     project = _get(session, Project, project_id)
     try:
         run = state.orchestrator.start_run(session, project, body.workflow_id, body.inputs, actor=actor)
@@ -123,14 +123,14 @@ def start_run(project_id: str, body: RunIn, state: AppState = Depends(get_state)
 
 
 @router.get("/projects/{project_id}/workflow-runs")
-def list_runs(project_id: str, session: Session = Depends(get_session)):
+def list_runs(project_id: str, session: Session = Depends(get_session, scope="function")):
     rows = session.scalars(select(WorkflowRun).where(WorkflowRun.project_id == project_id)
                            .order_by(WorkflowRun.created_at.desc()))
     return [ser.run(r) for r in rows]
 
 
 @router.get("/workflow-runs/{run_id}")
-def get_run(run_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session)):
+def get_run(run_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function")):
     run = _get(session, WorkflowRun, run_id)
     cost = session.scalar(select(func.coalesce(func.sum(AgentRun.cost_estimate), 0))
                           .join(Task, Task.id == AgentRun.task_id).where(Task.workflow_run_id == run_id))
@@ -140,7 +140,7 @@ def get_run(run_id: str, state: AppState = Depends(get_state), session: Session 
 
 
 @router.post("/workflow-runs/{run_id}/cancel")
-def cancel_run(run_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session),
+def cancel_run(run_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function"),
                actor: str = Depends(require_admin)):
     run = _get(session, WorkflowRun, run_id)
     try:
@@ -152,14 +152,14 @@ def cancel_run(run_id: str, state: AppState = Depends(get_state), session: Sessi
 
 # ---------------------------------------------------------------------------- tasks
 @router.get("/workflow-runs/{run_id}/tasks")
-def list_tasks(run_id: str, session: Session = Depends(get_session)):
+def list_tasks(run_id: str, session: Session = Depends(get_session, scope="function")):
     _get(session, WorkflowRun, run_id)
     rows = session.scalars(select(Task).where(Task.workflow_run_id == run_id).order_by(Task.created_at))
     return [ser.task(t) for t in rows]
 
 
 @router.get("/tasks/{task_id}")
-def get_task(task_id: str, session: Session = Depends(get_session)):
+def get_task(task_id: str, session: Session = Depends(get_session, scope="function")):
     task = _get(session, Task, task_id)
     runs = session.scalars(select(AgentRun).where(AgentRun.task_id == task_id).order_by(AgentRun.created_at))
     jobs = session.scalars(select(Job).where(Job.task_id == task_id).order_by(Job.created_at))
@@ -170,7 +170,7 @@ def get_task(task_id: str, session: Session = Depends(get_session)):
 
 
 @router.post("/tasks/{task_id}/retry")
-def retry_task(task_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session),
+def retry_task(task_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function"),
                actor: str = Depends(require_admin)):
     task = _get(session, Task, task_id)
     try:
@@ -181,12 +181,12 @@ def retry_task(task_id: str, state: AppState = Depends(get_state), session: Sess
 
 
 @router.get("/jobs/{job_id}")
-def get_job(job_id: str, session: Session = Depends(get_session)):
+def get_job(job_id: str, session: Session = Depends(get_session, scope="function")):
     return ser.job(_get(session, Job, job_id), include_payload=True)
 
 
 @router.get("/jobs/{job_id}/logs")
-def get_job_logs(job_id: str, after: int = 0, session: Session = Depends(get_session)):
+def get_job_logs(job_id: str, after: int = 0, session: Session = Depends(get_session, scope="function")):
     rows = session.scalars(select(JobLog).where(JobLog.job_id == job_id, JobLog.id > after)
                            .order_by(JobLog.id).limit(2000))
     return [{"id": r.id, "stream": r.stream, "line": r.line, "created_at": r.created_at.isoformat()} for r in rows]
@@ -195,7 +195,7 @@ def get_job_logs(job_id: str, after: int = 0, session: Session = Depends(get_ses
 # ---------------------------------------------------------------------------- artifacts
 @router.get("/projects/{project_id}/artifacts")
 def list_artifacts(project_id: str, run_id: str | None = None, type: str | None = None,
-                   session: Session = Depends(get_session)):
+                   session: Session = Depends(get_session, scope="function")):
     query = select(Artifact).where(Artifact.project_id == project_id)
     if run_id:
         query = query.where(Artifact.workflow_run_id == run_id)
@@ -205,13 +205,13 @@ def list_artifacts(project_id: str, run_id: str | None = None, type: str | None 
 
 
 @router.get("/artifacts/{artifact_id}")
-def get_artifact(artifact_id: str, session: Session = Depends(get_session)):
+def get_artifact(artifact_id: str, session: Session = Depends(get_session, scope="function")):
     return ser.artifact(_get(session, Artifact, artifact_id))
 
 
 @router.get("/artifacts/{artifact_id}/content")
 def get_artifact_content(artifact_id: str, state: AppState = Depends(get_state),
-                         session: Session = Depends(get_session)):
+                         session: Session = Depends(get_session, scope="function")):
     artifact = _get(session, Artifact, artifact_id)
     data = state.platform.artifacts.read_bytes(artifact)
     return Response(content=data, media_type=artifact.media_type + ("; charset=utf-8" if artifact.media_type.startswith(("text/", "application/json")) else ""),
@@ -219,7 +219,7 @@ def get_artifact_content(artifact_id: str, state: AppState = Depends(get_state),
 
 
 @router.get("/artifacts/{artifact_id}/relations")
-def get_relations(artifact_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session)):
+def get_relations(artifact_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function")):
     _get(session, Artifact, artifact_id)
     rel = state.platform.artifacts.relations(session, artifact_id)
     return {"outgoing": [ser.relation(r) for r in rel["outgoing"]],
@@ -227,7 +227,7 @@ def get_relations(artifact_id: str, state: AppState = Depends(get_state), sessio
 
 
 @router.get("/artifacts/{artifact_id}/impact")
-def get_impact(artifact_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session)):
+def get_impact(artifact_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function")):
     """Impact analysis: every artifact derived (transitively) from this one, plus the tasks that produced them."""
     _get(session, Artifact, artifact_id)
     impacted = []
@@ -241,7 +241,7 @@ def get_impact(artifact_id: str, state: AppState = Depends(get_state), session: 
 # ---------------------------------------------------------------------------- approvals
 @router.get("/approvals")
 def list_approvals(state_filter: str | None = Query(default=None, alias="state"),
-                   session: Session = Depends(get_session)):
+                   session: Session = Depends(get_session, scope="function")):
     query = select(Approval).order_by(Approval.created_at.desc())
     if state_filter:
         query = query.where(Approval.state == state_filter.upper())
@@ -264,26 +264,26 @@ def _resolve(approval_id: str, approved: bool, body: ApprovalDecisionIn, state: 
 
 @router.post("/approvals/{approval_id}/approve")
 def approve(approval_id: str, body: ApprovalDecisionIn | None = None, state: AppState = Depends(get_state),
-            session: Session = Depends(get_session), actor: str = Depends(require_admin)):
+            session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
     return _resolve(approval_id, True, body or ApprovalDecisionIn(), state, session, actor)
 
 
 @router.post("/approvals/{approval_id}/reject")
 def reject(approval_id: str, body: ApprovalDecisionIn | None = None, state: AppState = Depends(get_state),
-           session: Session = Depends(get_session), actor: str = Depends(require_admin)):
+           session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
     return _resolve(approval_id, False, body or ApprovalDecisionIn(), state, session, actor)
 
 
 # ---------------------------------------------------------------------------- observability
 @router.get("/workers")
-def list_workers(session: Session = Depends(get_session)):
+def list_workers(session: Session = Depends(get_session, scope="function")):
     return [ser.worker(w) for w in session.scalars(select(Worker).order_by(Worker.name))]
 
 
 @router.get("/audit")
 def list_audit(project_id: str | None = None, run_id: str | None = None, task_id: str | None = None,
                event_type: str | None = None, limit: int = Query(default=200, le=2000),
-               session: Session = Depends(get_session)):
+               session: Session = Depends(get_session, scope="function")):
     query = select(AuditEvent)
     if project_id:
         query = query.where(AuditEvent.project_id == project_id)
@@ -298,7 +298,7 @@ def list_audit(project_id: str | None = None, run_id: str | None = None, task_id
 
 
 @router.get("/overview")
-def overview(session: Session = Depends(get_session)):
+def overview(session: Session = Depends(get_session, scope="function")):
     def count(model, *where) -> int:
         return session.scalar(select(func.count()).select_from(model).where(*where)) or 0
 
@@ -316,7 +316,7 @@ def overview(session: Session = Depends(get_session)):
 
 
 @router.get("/stats/agents")
-def agent_stats(session: Session = Depends(get_session)):
+def agent_stats(session: Session = Depends(get_session, scope="function")):
     """Per-role KPIs (Plan §19, §26): run count, success/retry/critic-rejection rate, latency, cost."""
     rows = session.scalars(select(AgentRun)).all()
     by_role: dict[str, list[AgentRun]] = {}

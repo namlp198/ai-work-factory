@@ -33,7 +33,7 @@ def _set_key(lines: list[str], key: str, value: str) -> list[str]:
 
 
 def env_init(home: Path, role: str, control_url: str | None = None, registration_token: str | None = None,
-             api_host: str | None = None, force: bool = False) -> int:
+             api_host: str | None = None, force: bool = False, api_port: int | None = None) -> int:
     target = home / ".env"
     if target.exists() and not force:
         print(f".env already exists at {target}; keeping it (use --force to regenerate).")
@@ -47,7 +47,8 @@ def env_init(home: Path, role: str, control_url: str | None = None, registration
         values["AWF_API_TOKEN"] = secrets.token_urlsafe(32)
         values["AWF_WORKER_REGISTRATION_TOKEN"] = registration_token or secrets.token_urlsafe(32)
         values["AWF_API_HOST"] = api_host or ("0.0.0.0" if role == "control-plane" else "127.0.0.1")
-        values["AWF_CONTROL_URL"] = control_url or "http://127.0.0.1:8000"
+        values["AWF_API_PORT"] = str(api_port or 8000)
+        values["AWF_CONTROL_URL"] = control_url or f"http://127.0.0.1:{values['AWF_API_PORT']}"
     else:
         values["AWF_WORKER_REGISTRATION_TOKEN"] = registration_token or ""
         values["AWF_CONTROL_URL"] = control_url or ""
@@ -57,14 +58,13 @@ def env_init(home: Path, role: str, control_url: str | None = None, registration
     print(f"wrote {target} (role={role})")
     if role in ("all", "control-plane"):
         print("\nShare these with worker machines (keep them secret):")
-        print(f"  AWF_CONTROL_URL={_advertised_url(values['AWF_API_HOST'])}")
+        print(f"  AWF_CONTROL_URL={_advertised_url(values['AWF_API_HOST'], values['AWF_API_PORT'])}")
         print(f"  AWF_WORKER_REGISTRATION_TOKEN={values['AWF_WORKER_REGISTRATION_TOKEN']}")
         print(f"Dashboard/API admin token: AWF_API_TOKEN in {target}")
     return 0
 
 
-def _advertised_url(host: str) -> str:
-    port = os.environ.get("AWF_API_PORT", "8000")
+def _advertised_url(host: str, port: str) -> str:
     if host in ("0.0.0.0", "::"):
         host = socket.gethostname()
     return f"http://{host}:{port}"
@@ -221,7 +221,8 @@ def _check_model_credentials() -> Check:
         return Check("model", "OK", "scripted (offline) provider")
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         return Check("model", "OK", "Claude credentials present")
-    return Check("model", "WARN", "no ANTHROPIC_API_KEY on this worker: agent jobs will fail (set it, or AWF_MODEL_PROVIDER=scripted)")
+    return Check("model", "WARN", "no ANTHROPIC_API_KEY on this worker: Claude-routed agent jobs will fail here "
+                 "(scripted routes from the control plane still work)")
 
 
 def doctor(home: Path) -> int:

@@ -197,7 +197,8 @@ def cmd_start(args: argparse.Namespace) -> int:
 def cmd_env(args: argparse.Namespace) -> int:
     from awf.ops import env_init
 
-    return env_init(_settings().home, args.role, args.control_url, args.registration_token, args.api_host, args.force)
+    return env_init(_settings().home, args.role, args.control_url, args.registration_token, args.api_host, args.force,
+                    args.api_port)
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -323,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--control-url", help="worker: URL of the control plane, e.g. http://factory-host:8000")
     p.add_argument("--registration-token", help="worker: AWF_WORKER_REGISTRATION_TOKEN of the control plane")
     p.add_argument("--api-host", help="control plane bind address (default 0.0.0.0 for control-plane, 127.0.0.1 for all)")
+    p.add_argument("--api-port", type=int, help="control plane port (default 8000)")
     p.add_argument("--force", action="store_true", help="overwrite an existing .env")
     p.set_defaults(func=cmd_env)
 

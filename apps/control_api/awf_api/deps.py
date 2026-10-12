@@ -57,7 +57,7 @@ def require_admin(state: AppState = Depends(get_state), authorization: str | Non
     return (x_actor or "admin")[:120]
 
 
-def require_worker(worker_id: str, session: Session = Depends(get_session),
+def require_worker(worker_id: str, session: Session = Depends(get_session, scope="function"),
                    authorization: str | None = Header(default=None)) -> Worker:
     worker = session.get(Worker, worker_id)
     if worker is None or not token_matches(_bearer(authorization), worker.token_hash):
@@ -65,7 +65,7 @@ def require_worker(worker_id: str, session: Session = Depends(get_session),
     return worker
 
 
-def require_job_worker(session: Session = Depends(get_session),
+def require_job_worker(session: Session = Depends(get_session, scope="function"),
                        authorization: str | None = Header(default=None)) -> Worker:
     """Job endpoints: the worker is identified by its token."""
     token = _bearer(authorization)

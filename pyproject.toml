@@ -9,7 +9,7 @@ description = "AI Work Factory - artifact-driven multi-agent workflow platform (
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.110",
+    "fastapi>=0.143",  # Depends(scope="function"): commit before the response is sent
     "uvicorn[standard]>=0.27",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
