@@ -1,3 +1,4 @@
+# Same Python minor version as .python-version and the same pinned dependencies as every native machine.
 FROM python:3.12-slim
 
 RUN apt-get update \
@@ -5,11 +6,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml README.md alembic.ini ./
+COPY pyproject.toml README.md alembic.ini requirements.lock .python-version ./
 COPY packages packages
 COPY apps apps
 COPY workers workers
-RUN pip install --no-cache-dir ".[postgres,s3]" pytest
+RUN pip install --no-cache-dir -r requirements.lock && pip install --no-cache-dir --no-deps -e .
 
 COPY config config
 COPY agents agents

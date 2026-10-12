@@ -1,0 +1,34 @@
+# Proves that a fresh checkout behaves the same on every supported OS:
+# bootstrap from the lock file, doctor, then the full test suite.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Bootstrap (Linux)
+        if: runner.os != 'Windows'
+        run: scripts/bootstrap.sh
+      - name: Bootstrap (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/bootstrap.ps1
+
+      - name: Doctor
+        run: ${{ runner.os == 'Windows' && '.venv\Scripts\awf.exe' || '.venv/bin/awf' }} doctor
+
+      - name: Tests
+        run: ${{ runner.os == 'Windows' && '.venv\Scripts\python.exe' || '.venv/bin/python' }} -m pytest -q -p no:logging

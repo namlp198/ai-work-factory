@@ -33,11 +33,13 @@ services:
       DATABASE_URL: postgresql+psycopg://awf:${POSTGRES_PASSWORD:-awf}@postgres:5432/awf
       REDIS_URL: redis://redis:6379/0
       AWF_ARTIFACT_ROOT: /app/var/artifacts
+      AWF_API_EXPOSED_HOST: ${AWF_API_BIND:-127.0.0.1}
     command: sh -c "awf db upgrade && awf api --host 0.0.0.0 --port 8000"
     depends_on:
       postgres: {condition: service_healthy}
     volumes: [artifacts:/app/var/artifacts]
-    ports: ["127.0.0.1:8000:8000"]
+    # Set AWF_API_BIND=0.0.0.0 (with tokens in .env) so workers on other machines can connect.
+    ports: ["${AWF_API_BIND:-127.0.0.1}:8000:8000"]
 
   orchestrator:
     build: {context: ., dockerfile: infrastructure/docker/Dockerfile}

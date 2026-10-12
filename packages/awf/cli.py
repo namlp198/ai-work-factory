@@ -1,10 +1,14 @@
-"""`awf` command line: run the control API, orchestrator, worker, migrations and the demo."""
+"""`awf` command line: run the control API, orchestrator, worker, migrations and the demo.
+
+Every machine runs the same commands; per-machine differences live only in `.env` (see `awf env init`).
+"""
 
 from __future__ import annotations
 
 import argparse
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -40,11 +44,22 @@ def cmd_db(args: argparse.Namespace) -> int:
     return 0
 
 
+def _check_bind(host: str) -> None:
+    from awf.ops import LOOPBACK
+
+    # In a container the API must bind 0.0.0.0; the published address (AWF_API_EXPOSED_HOST) is what matters.
+    host = os.environ.get("AWF_API_EXPOSED_HOST", host)
+    if host not in LOOPBACK and not (os.environ.get("AWF_API_TOKEN") and os.environ.get("AWF_WORKER_REGISTRATION_TOKEN")):
+        raise SystemExit(f"refusing to listen on {host}: set AWF_API_TOKEN and AWF_WORKER_REGISTRATION_TOKEN "
+                         f"(run `awf env init`) before exposing the API beyond localhost")
+
+
 def cmd_api(args: argparse.Namespace) -> int:
     import uvicorn
 
     from awf_api.main import create_app
 
+    _check_bind(args.host)
     if args.embedded_orchestrator:
         os.environ["AWF_EMBEDDED_ORCHESTRATOR"] = "true"
         from awf.settings import reset_settings_cache
@@ -77,12 +92,20 @@ def build_worker(args: argparse.Namespace):
     settings = _settings()
     caps = [c.strip() for c in args.capabilities.split(",") if c.strip()] if args.capabilities else None
     labels = dict(item.split("=", 1) for item in (args.label or []))
+    root = Path(args.workspace_root)
+    root = root if root.is_absolute() else settings.home / root
+    labels = {**_env_labels(), **labels}
     worker = Worker(ControlPlaneClient(args.url), name=args.name,
-                    workspace_root=Path(args.workspace_root).resolve(),
+                    workspace_root=root.resolve(),
                     policy_path=settings.config_dir / "policies.yaml", capabilities=caps, labels=labels,
                     platform_name=args.platform, poll_interval=args.poll_interval)
     worker.register(os.environ.get("AWF_WORKER_REGISTRATION_TOKEN", ""))
     return worker
+
+
+def _env_labels() -> dict[str, str]:
+    raw = os.environ.get("AWF_WORKER_LABELS", "")
+    return dict(item.strip().split("=", 1) for item in raw.split(",") if "=" in item)
 
 
 def cmd_worker(args: argparse.Namespace) -> int:
@@ -95,6 +118,92 @@ def cmd_worker(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         worker.stop()
     return 0
+
+
+# ----------------------------------------------------------------------------------------- start
+def _wait_healthy(url: str, seconds: float = 30) -> bool:
+    import httpx
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            if httpx.get(url.rstrip("/") + "/health", timeout=2).status_code == 200:
+                return True
+        except httpx.HTTPError:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def _worker_namespace() -> argparse.Namespace:
+    return argparse.Namespace(
+        url=os.environ.get("AWF_CONTROL_URL", "http://127.0.0.1:8000"),
+        name=os.environ.get("AWF_WORKER_NAME") or socket.gethostname(),
+        workspace_root=os.environ.get("AWF_WORKSPACE_ROOT", "var/workspaces"),
+        platform=os.environ.get("AWF_WORKER_PLATFORM"),
+        capabilities=os.environ.get("AWF_WORKER_CAPABILITIES"),
+        label=None,
+        poll_interval=float(os.environ.get("AWF_WORKER_POLL_INTERVAL", "3")),
+    )
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    """Start whatever this machine's AWF_ROLE says: control-plane, worker, or all (both)."""
+    from awf.logging import configure_logging
+
+    role = args.role or os.environ.get("AWF_ROLE", "all")
+    host = os.environ.get("AWF_API_HOST", "127.0.0.1")
+    port = int(os.environ.get("AWF_API_PORT", "8000"))
+    print(f"awf start: role={role}")
+    if role not in ("all", "control-plane", "worker"):
+        raise SystemExit(f"unknown AWF_ROLE '{role}' (expected all, control-plane or worker)")
+    if role in ("control-plane", "all"):
+        _check_bind(host)
+        cmd_db(argparse.Namespace(action="upgrade"))  # idempotent: new migrations apply after `git pull`
+    if role == "control-plane":
+        return cmd_api(argparse.Namespace(host=host, port=port, embedded_orchestrator=True))
+    worker_args = _worker_namespace()
+    if role == "worker":
+        configure_logging()
+        if not _wait_healthy(worker_args.url, 60):
+            print(f"control plane {worker_args.url} is not reachable yet")
+        while True:  # register as soon as the control plane is up
+            try:
+                return cmd_worker(worker_args)
+            except Exception as exc:  # noqa: BLE001 - keep the daemon alive across control-plane restarts
+                print(f"worker could not register ({exc}); retrying in 10s")
+                time.sleep(10)
+
+    import uvicorn
+
+    from awf.settings import reset_settings_cache
+    from awf_api.main import create_app
+
+    os.environ["AWF_EMBEDDED_ORCHESTRATOR"] = "true"
+    reset_settings_cache()
+    server = uvicorn.Server(uvicorn.Config(create_app(), host=host, port=port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    local = f"http://127.0.0.1:{port}"
+    if not _wait_healthy(local):
+        raise SystemExit("control API did not start")
+    worker_args.url = local
+    print(f"Dashboard: {local}/")
+    try:
+        return cmd_worker(worker_args)
+    finally:
+        server.should_exit = True
+
+
+def cmd_env(args: argparse.Namespace) -> int:
+    from awf.ops import env_init
+
+    return env_init(_settings().home, args.role, args.control_url, args.registration_token, args.api_host, args.force)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    from awf.ops import doctor
+
+    return doctor(_settings().home)
 
 
 # ----------------------------------------------------------------------------------------- demo
@@ -193,6 +302,10 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from awf.ops import ROLES
+    from awf.settings import _default_home, load_dotenv
+
+    load_dotenv(_default_home() / ".env")  # before argparse reads environment defaults
     parser = argparse.ArgumentParser(prog="awf", description="AI Work Factory")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -200,9 +313,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("action", choices=["upgrade", "downgrade", "create"])
     p.set_defaults(func=cmd_db)
 
+    p = sub.add_parser("start", help="start this machine according to AWF_ROLE in .env")
+    p.add_argument("--role", choices=ROLES, help="override AWF_ROLE")
+    p.set_defaults(func=cmd_start)
+
+    p = sub.add_parser("env", help="machine configuration")
+    p.add_argument("action", choices=["init"])
+    p.add_argument("--role", choices=ROLES, default="all")
+    p.add_argument("--control-url", help="worker: URL of the control plane, e.g. http://factory-host:8000")
+    p.add_argument("--registration-token", help="worker: AWF_WORKER_REGISTRATION_TOKEN of the control plane")
+    p.add_argument("--api-host", help="control plane bind address (default 0.0.0.0 for control-plane, 127.0.0.1 for all)")
+    p.add_argument("--force", action="store_true", help="overwrite an existing .env")
+    p.set_defaults(func=cmd_env)
+
+    p = sub.add_parser("doctor", help="check this machine: python, dependencies, git, config, db, connectivity")
+    p.set_defaults(func=cmd_doctor)
+
     p = sub.add_parser("api", help="run the control API (and dashboard)")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--host", default=os.environ.get("AWF_API_HOST", "127.0.0.1"))
+    p.add_argument("--port", type=int, default=int(os.environ.get("AWF_API_PORT", "8000")))
     p.add_argument("--embedded-orchestrator", action="store_true", help="run the orchestrator loop in-process")
     p.set_defaults(func=cmd_api)
 
@@ -211,14 +340,15 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("worker", help="run an execution worker")
     p.add_argument("--url", default=os.environ.get("AWF_CONTROL_URL", "http://127.0.0.1:8000"))
-    p.add_argument("--name", default=os.environ.get("AWF_WORKER_NAME", f"worker-{os.getpid()}"))
-    p.add_argument("--workspace-root", default=os.environ.get("AWF_WORKSPACE_ROOT", "./var/workspaces"))
+    p.add_argument("--name", default=os.environ.get("AWF_WORKER_NAME") or socket.gethostname())
+    p.add_argument("--workspace-root", default=os.environ.get("AWF_WORKSPACE_ROOT", "var/workspaces"),
+                   help="relative paths are resolved against the repository root")
     p.add_argument("--platform", default=os.environ.get("AWF_WORKER_PLATFORM"),
                    help="override detected platform, e.g. linux-amd64, windows-amd64, linux-arm64")
     p.add_argument("--capabilities", default=os.environ.get("AWF_WORKER_CAPABILITIES"),
                    help="comma separated; detected from installed tools when omitted")
     p.add_argument("--label", action="append", help="key=value label (repeatable)")
-    p.add_argument("--poll-interval", type=float, default=3.0)
+    p.add_argument("--poll-interval", type=float, default=float(os.environ.get("AWF_WORKER_POLL_INTERVAL", "3")))
     p.set_defaults(func=cmd_worker)
 
     p = sub.add_parser("demo", help="end-to-end demo on a local perception-service repository")

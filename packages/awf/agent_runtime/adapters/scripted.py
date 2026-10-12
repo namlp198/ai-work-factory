@@ -123,6 +123,10 @@ class ScriptedAdapter(ModelAdapter):
     def __init__(self, script: dict[str, Any] | None = None, script_path: str | Path | None = None):
         if script is None:
             path = script_path or os.environ.get("AWF_SCRIPTED_RESPONSES")
+            if path and not Path(path).is_absolute():
+                from awf.settings import get_settings
+
+                path = get_settings().home / path  # relative to the repository root, not the cwd
             script = {}
             if path and Path(path).is_file():
                 with open(path, encoding="utf-8") as fh:
