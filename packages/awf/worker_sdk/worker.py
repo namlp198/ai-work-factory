@@ -18,7 +18,7 @@ from awf.worker_sdk.executor import JobExecutor
 logger = get_logger("worker")
 
 PROBED_CAPABILITIES = {
-    "git": "git", "python": "python", "docker": "docker", "cmake": "cmake", "ctest": "ctest",
+    "git": "git", "python": "python", "python3": "python", "docker": "docker", "cmake": "cmake", "ctest": "ctest",
     "dotnet": "dotnet", "npm": "npm", "node": "node", "nvcc": "cuda", "ros2": "ros2",
 }
 

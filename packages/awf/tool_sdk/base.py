@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -80,8 +81,10 @@ def resolve_in_workspace(workspace: Path, relative: str) -> Path:
     if relative is None or "\x00" in str(relative):
         raise PathViolation("invalid path")
     root = workspace.resolve()
-    rel = Path(str(relative).replace("\\", "/"))
-    if rel.is_absolute() or rel.drive:
+    text = str(relative).replace("\\", "/")
+    rel = Path(text)
+    # Same rule on every OS: no POSIX-absolute, drive-letter (C:/...) or UNC paths.
+    if rel.is_absolute() or rel.drive or text.startswith("/") or re.match(r"^[A-Za-z]:", text):
         raise PathViolation("absolute paths are not allowed; use paths relative to the workspace")
     target = (root / rel).resolve()
     if target != root and root not in target.parents:

@@ -100,7 +100,8 @@ class PolicyEngine:
     def command_allowed(self, argv: list[str]) -> bool:
         if not argv:
             return False
-        exe = Path(argv[0]).name.lower()
+        # Normalise separators so a Windows path is recognised the same way on every OS.
+        exe = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
         for suffix in (".exe", ".cmd", ".bat"):
             if exe.endswith(suffix):
                 exe = exe[: -len(suffix)]
