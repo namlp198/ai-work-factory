@@ -22,21 +22,53 @@ def _settings():
     return get_settings()
 
 
+def _adopt_unversioned_schema(cfg, url: str) -> None:
+    """A database created with create_all() (older `awf demo`, `awf db create`) has the tables but no
+    alembic_version. If it matches the current models exactly, record it as head instead of failing."""
+    from alembic import command
+    from alembic.autogenerate import compare_metadata
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import create_engine, inspect
+
+    from awf.domain.models import Base
+
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            tables = set(inspect(conn).get_table_names())
+            if not tables & set(Base.metadata.tables):
+                return  # fresh database: normal migration path
+            # An empty alembic_version (left by a failed upgrade) also means "no history".
+            if MigrationContext.configure(conn).get_current_revision() is not None:
+                return
+            diffs = compare_metadata(MigrationContext.configure(conn), Base.metadata)
+    finally:
+        engine.dispose()
+    if diffs:
+        raise SystemExit(
+            f"database {url} has AWF tables but no migration history, and its schema differs from the current "
+            f"models ({len(diffs)} differences). Back it up and remove it (e.g. var/awf.db), then rerun.")
+    command.stamp(cfg, "head")
+    print("existing schema matches the current models; recorded it as migration head")
+
+
 def cmd_db(args: argparse.Namespace) -> int:
+    from alembic import command
+    from alembic.config import Config
+
     settings = _settings()
+    cfg = Config(str(settings.home / "alembic.ini"))
+    cfg.set_main_option("script_location", str(settings.home / "infrastructure" / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", settings.database_url)
     if args.action == "create":
         from awf.domain.db import Database
 
         Database(settings.database_url).create_all()
+        command.stamp(cfg, "head")  # keep later `db upgrade` runs consistent
         print(f"schema created on {settings.database_url}")
         return 0
-    from alembic import command
-    from alembic.config import Config
-
-    cfg = Config(str(settings.home / "alembic.ini"))
-    cfg.set_main_option("script_location", str(settings.home / "infrastructure" / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", settings.database_url)
     if args.action == "upgrade":
+        _adopt_unversioned_schema(cfg, settings.database_url)
         command.upgrade(cfg, "head")
     elif args.action == "downgrade":
         command.downgrade(cfg, "base")
@@ -234,10 +266,9 @@ def cmd_demo(args: argparse.Namespace) -> int:
     reset_settings_cache()
     settings = _settings()
 
-    from awf.domain.db import Database
     from awf_api.main import create_app
 
-    Database(settings.database_url).create_all()
+    cmd_db(argparse.Namespace(action="upgrade"))  # same migration path as every other command
     repo = _init_demo_repo(home, settings.home / "var" / "demo" / "perception-service")
     base = f"http://{args.host}:{args.port}"
     server = uvicorn.Server(uvicorn.Config(create_app(), host=args.host, port=args.port, log_level="warning"))
