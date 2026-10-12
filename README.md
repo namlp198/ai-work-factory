@@ -19,21 +19,26 @@ USER ─► Control API + Dashboard ─► Orchestrator ─► Workflow Engine (
 
 ## Bắt đầu nhanh
 
+Mọi máy (Windows, Linux, Jetson) dùng cùng source và cùng lệnh; chỉ `.env` khác nhau theo máy.
+
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -e ".[dev]"
-.\.venv\Scripts\awf demo                  # dashboard http://127.0.0.1:8000, duyệt 2 gate trên UI
-.\.venv\Scripts\awf demo --auto-approve   # chạy không giao diện tới COMPLETED
-.\.venv\Scripts\python -m pytest -q -p no:logging   # 47 test: unit, integration, e2e
+git clone <repo-url> ai-work-factory; cd ai-work-factory
+.\scriptsootstrap.ps1        # Linux/macOS: scripts/bootstrap.sh  (Python 3.12 + requirements.lock + .env + DB + doctor)
+.\.venv\Scriptswf start      # dashboard http://127.0.0.1:8000
 ```
 
-Demo chạy offline (model kịch bản). Dùng Claude thật: đặt `ANTHROPIC_API_KEY` trên worker và thêm `--live-model`.
+- Demo offline (không cần API key): `awf demo` (duyệt gate trên UI) hoặc `awf demo --auto-approve`.
+- Nhiều máy: `bootstrap -Role control-plane` trên máy trung tâm,
+  `bootstrap -Role worker -ControlUrl ... -RegistrationToken ...` trên mỗi worker, rồi `awf start` ở mọi máy.
+- Sau `git pull`: chạy lại bootstrap rồi `awf start`.
+- Kiểm tra máy: `awf doctor`. Test: `python -m pytest -q -p no:logging` (52 test).
+- Claude thật: đặt `ANTHROPIC_API_KEY` trong `.env` của máy worker.
 
 ## Tài liệu
 
 | Tài liệu | Nội dung |
 |---|---|
-| [docs/HUONG_DAN_SU_DUNG.md](docs/HUONG_DAN_SU_DUNG.md) | **Hướng dẫn chi tiết**: cài đặt, đưa repo thật vào, worker, cấu hình, viết workflow/agent, API, bảo mật, sự cố |
+| [docs/HUONG_DAN_SU_DUNG.md](docs/HUONG_DAN_SU_DUNG.md) | **Hướng dẫn chi tiết**: cài đặt, đưa repo thật vào, worker, nhiều máy (§21), cấu hình, viết workflow/agent, API, bảo mật, sự cố |
 | [docs/architecture/implementation-overview.md](docs/architecture/implementation-overview.md) | Ánh xạ thiết kế → code, vòng đời run, state machine, giới hạn |
 | [docs/adr/](docs/adr/) | ADR-001 … ADR-007 |
 | [docs/trials/internal-file-server.md](docs/trials/internal-file-server.md) | Báo cáo chạy thử trên repo .NET thật |

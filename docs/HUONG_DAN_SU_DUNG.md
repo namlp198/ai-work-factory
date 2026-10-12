@@ -25,6 +25,7 @@ Mục lục
 18. [Kiểm thử nền tảng](#18-kiểm-thử-nền-tảng)
 19. [Xử lý sự cố](#19-xử-lý-sự-cố)
 20. [Giới hạn hiện tại và lộ trình](#20-giới-hạn-hiện-tại-và-lộ-trình)
+21. [Chạy trên nhiều máy: cùng source, cùng lệnh](#21-chạy-trên-nhiều-máy-cùng-source-cùng-lệnh)
 
 ---
 
@@ -67,28 +68,35 @@ Trạng thái task: `NEW → READY → WAITING → RUNNING → REVIEW → DONE` 
 
 ## 3. Cài đặt
 
-Yêu cầu: Python 3.11+, Git. Thêm toolchain của repo bạn định chạy (dotnet, cmake, node...) trên máy worker.
+Yêu cầu: **Python 3.12** (ghi trong `.python-version`) và Git. Trên máy worker cần thêm toolchain của repo
+bạn định chạy (dotnet, cmake, node...).
 
-**Windows (PowerShell):**
+Mọi máy cài **giống hệt nhau** bằng một lệnh bootstrap (chạy lại sau mỗi `git pull` cũng an toàn):
 
 ```powershell
-cd D:\src\ai-work-factory
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -e ".[dev]"
-Copy-Item .env.example .env      # rồi sửa token trong .env
-.\.venv\Scripts\awf db upgrade   # tạo schema (SQLite mặc định: var\awf.db)
+.\scripts\bootstrap.ps1            # Windows
 ```
-
-**Linux/macOS:**
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-cp .env.example .env
-.venv/bin/awf db upgrade
+scripts/bootstrap.sh               # Linux / macOS / Jetson
 ```
 
-File `.env` ở thư mục gốc được nạp tự động (biến môi trường thật luôn được ưu tiên).
-Lệnh `awf` có các subcommand: `db`, `api`, `orchestrator`, `worker`, `demo`.
+Bootstrap làm các việc sau, theo thứ tự:
+
+1. tạo `.venv` bằng đúng Python 3.12 (tạo lại nếu sai phiên bản);
+2. cài đúng phiên bản trong `requirements.lock`;
+3. tạo `.env` cho máy này (chỉ lần đầu, không bao giờ ghi đè);
+4. migrate database;
+5. chạy `awf doctor`.
+
+Sau đó chạy máy bằng:
+
+```powershell
+.\.venv\Scripts\awf start
+```
+
+Lệnh `awf` có các subcommand: `start`, `env init`, `doctor`, `db`, `api`, `orchestrator`, `worker`, `demo`.
+Chạy nhiều máy: xem [mục 21](#21-chạy-trên-nhiều-máy-cùng-source-cùng-lệnh).
 
 ## 4. Chạy demo trong 1 phút
 
@@ -456,7 +464,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (47 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (52 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -497,3 +505,105 @@ Tiếp theo:
 3. **Phase 3:** pgvector cho project memory/semantic search, impact analysis khi requirement đổi tự tạo task.
 4. **Phase 4:** content/video workflow (đang ở trạng thái draft).
 5. **Phase 5:** budget đa project, adaptive routing theo KPI agent.
+
+## 21. Chạy trên nhiều máy: cùng source, cùng lệnh
+
+### Nguyên tắc
+
+| Thứ | Giống nhau trên mọi máy (trong git) | Khác nhau theo máy (không commit) |
+|---|---|---|
+| Mã nguồn, workflow, agent, config, migration | ✔ | |
+| Phiên bản Python (`.python-version`) và package (`requirements.lock`) | ✔ | |
+| Line ending (`.gitattributes`) | ✔ | |
+| Lệnh cài đặt và chạy: `bootstrap` → `awf start` | ✔ | |
+| Vai trò máy, URL control plane, token, API key Claude | | `.env` (tạo bằng `awf env init`) |
+| Dữ liệu runtime: DB SQLite, artifact, workspace | | `var/` |
+
+Mọi đường dẫn tương đối (`DATABASE_URL=sqlite:///./var/awf.db`, `AWF_WORKSPACE_ROOT`,
+`AWF_SCRIPTED_RESPONSES`...) được tính theo **thư mục repo**, không theo thư mục hiện hành. Tên worker mặc
+định là hostname; platform và capability tự phát hiện.
+
+### Ba vai trò (`AWF_ROLE`)
+
+| Vai trò | Chạy gì | Dùng khi |
+|---|---|---|
+| `all` | API + dashboard + orchestrator + 1 worker cục bộ | 1 máy (dev, nhóm nhỏ) |
+| `control-plane` | API + dashboard + orchestrator (+ DB) | máy trung tâm của nhóm |
+| `worker` | worker kết nối tới `AWF_CONTROL_URL` | máy build/test: Windows (.NET), Linux, Jetson, GPU |
+
+### Dựng một cụm (ví dụ: 1 control plane + nhiều worker)
+
+**Máy control plane** (Linux hoặc Windows):
+
+```bash
+git clone <repo-url> ai-work-factory && cd ai-work-factory
+scripts/bootstrap.sh --role control-plane        # Windows: .\scripts\bootstrap.ps1 -Role control-plane
+.venv/bin/awf start
+```
+
+Bootstrap in ra `AWF_CONTROL_URL` và `AWF_WORKER_REGISTRATION_TOKEN` để đưa cho các worker. Token admin
+cho dashboard nằm trong `.env` (`AWF_API_TOKEN`). API bind `0.0.0.0`; nó **từ chối khởi động** nếu thiếu token.
+Nhớ mở cổng 8000 trên firewall của máy này cho mạng nội bộ.
+
+**Mỗi máy worker:**
+
+```powershell
+git clone <repo-url> ai-work-factory; cd ai-work-factory
+.\scripts\bootstrap.ps1 -Role worker -ControlUrl http://factory-host:8000 -RegistrationToken <token>
+# thêm ANTHROPIC_API_KEY=... vào .env của máy worker này
+.\.venv\Scripts\awf start
+```
+
+`awf doctor` trên worker kiểm tra kết nối tới control plane. Worker tự đăng ký lại khi control plane khởi động
+lại.
+
+**Cập nhật mọi máy** — luôn cùng một quy trình:
+
+```bash
+git pull
+scripts/bootstrap.sh          # cài đúng lock mới; giữ nguyên .env
+.venv/bin/awf start           # control plane tự chạy migration mới
+```
+
+### Những thứ phải "chung" giữa các máy
+
+- **Repository mà project trỏ tới** phải truy cập được từ mọi worker có thể nhận job của project đó. Dùng
+  remote git (GitHub/GitLab/Gitea) hoặc share mạng — đường dẫn cục bộ như `D:/...` chỉ đúng trên một máy.
+  Credential git (SSH key / credential helper) cài trên từng worker.
+- **Lệnh build/test của project** chạy bằng PATH của worker. Nên dùng lệnh có trên mọi worker cùng loại
+  (`dotnet`, `python`, `cmake`...) và giới hạn worker bằng `labels.platform` + `required_capabilities`.
+- **Database:** một control plane = một DB. Dùng PostgreSQL (`DATABASE_URL=postgresql+psycopg://...`) khi
+  cần backup/HA; SQLite đủ cho một control plane.
+- **Đồng hồ:** heartbeat timeout tính theo giờ của control plane; worker không cần đồng bộ giờ chính xác.
+
+### Cách đã kiểm chứng
+
+- Clone sạch → bootstrap → `doctor` OK → **52/52 test pass** trên cả Windows và Linux (WSL Ubuntu).
+- Chạy phân tán: control plane trên Linux, worker trên Windows. Workflow đầy đủ chạy tới `COMPLETED`, cả 13
+  job đều do worker Windows nhận.
+- CI (`.github/workflows/ci.yml`) chạy bootstrap + doctor + toàn bộ test trên `ubuntu-latest` và
+  `windows-latest` cho mỗi push.
+
+Các khác biệt phụ thuộc OS mà lần kiểm chứng này tìm ra và đã sửa:
+
+- đường dẫn `C:/...` bị coi là tương đối trên Linux;
+- allowlist không nhận đường dẫn `.exe` kiểu Windows khi chạy trên Linux;
+- `python3` chưa được nhận là capability `python`;
+- race commit-sau-response của API.
+
+### Docker (tùy chọn)
+
+`docker compose up -d --build` dùng cùng `requirements.lock` và cùng Python 3.12. Để worker ở máy khác kết
+nối vào, đặt `AWF_API_BIND=0.0.0.0` khi chạy compose (kèm token trong `.env`). Worker Windows (.NET) vẫn chạy
+native bằng bootstrap.
+
+### Đổi dependency
+
+Sửa `pyproject.toml`, rồi trên Python 3.12:
+
+```bash
+pip install -e ".[dev,postgres]" && pip freeze --exclude-editable > requirements.lock
+```
+
+Giữ dòng `colorama ... ; sys_platform == "win32"`, rồi commit. Mọi máy nhận phiên bản mới ở lần
+`git pull` + bootstrap kế tiếp; `awf doctor` báo `FAIL` nếu máy nào còn lệch lock.
