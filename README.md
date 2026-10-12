@@ -23,8 +23,8 @@ Mọi máy (Windows, Linux, Jetson) dùng cùng source và cùng lệnh; chỉ `
 
 ```powershell
 git clone <repo-url> ai-work-factory; cd ai-work-factory
-.\scriptsootstrap.ps1        # Linux/macOS: scripts/bootstrap.sh  (Python 3.12 + requirements.lock + .env + DB + doctor)
-.\.venv\Scriptswf start      # dashboard http://127.0.0.1:8000
+.\scripts\bootstrap.ps1        # Linux/macOS: scripts/bootstrap.sh  (Python 3.12 + requirements.lock + .env + DB + doctor)
+.\.venv\Scripts\awf start      # dashboard http://127.0.0.1:8000
 ```
 
 - Demo offline (không cần API key): `awf demo` (duyệt gate trên UI) hoặc `awf demo --auto-approve`.
