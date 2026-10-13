@@ -23,6 +23,7 @@ class RegistrationIn(BaseModel):
     os_version: str = ""
     capabilities: list[str] = Field(default_factory=list)
     labels: dict[str, Any] = Field(default_factory=dict)
+    machine_id: str | None = Field(default=None, max_length=64)
 
 
 @router.post("/workers/register", status_code=201)
@@ -34,7 +35,11 @@ def register(body: RegistrationIn, state: AppState = Depends(get_state), session
             raise HTTPException(401, "invalid registration token")
     elif state.platform.settings.environment != "development":
         raise HTTPException(503, "AWF_WORKER_REGISTRATION_TOKEN is not configured")
-    worker, token = job_service.register_worker(session, body.model_dump())
+    try:
+        worker, token = job_service.register_worker(
+            session, body.model_dump(), state.platform.settings.worker_heartbeat_timeout_seconds)
+    except job_service.WorkerRejected as exc:
+        raise HTTPException(409, str(exc)) from None
     return {**ser.worker(worker), "worker_token": token}
 
 

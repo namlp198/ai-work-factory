@@ -16,7 +16,7 @@ from awf.logging import configure_logging, get_logger
 from awf.orchestrator.orchestrator import Orchestrator
 from awf.platform import Platform
 from awf_api.deps import AppState
-from awf_api.routes import management, workers
+from awf_api.routes import management, session, workers
 
 STATIC_DIR = Path(__file__).parent / "static"
 logger = get_logger("api")
@@ -54,6 +54,7 @@ def create_app(platform: Platform | None = None, orchestrator: Orchestrator | No
     app.state.awf = AppState(platform=platform, orchestrator=orchestrator)
     app.include_router(management.router)
     app.include_router(workers.router)
+    app.include_router(session.router)
 
     @app.get("/health")
     @app.get("/api/v1/health")

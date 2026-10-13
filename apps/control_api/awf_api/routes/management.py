@@ -23,6 +23,7 @@ from awf.domain.models import (
     Worker,
     WorkflowRun,
 )
+from awf.orchestrator import jobs as job_service
 from awf.orchestrator.orchestrator import OrchestratorError
 from awf_api import serializers as ser
 from awf_api.deps import AppState, get_session, get_state, require_admin
@@ -278,6 +279,25 @@ def reject(approval_id: str, body: ApprovalDecisionIn | None = None, state: AppS
 @router.get("/workers")
 def list_workers(session: Session = Depends(get_session, scope="function")):
     return [ser.worker(w) for w in session.scalars(select(Worker).order_by(Worker.name))]
+
+
+@router.post("/workers/{worker_id}/revoke")
+def revoke_worker(worker_id: str, session: Session = Depends(get_session, scope="function"),
+                  actor: str = Depends(require_admin)):
+    """Lost/compromised machine: its token stops working at once and it cannot re-register."""
+    worker = _get(session, Worker, worker_id)
+    job_service.revoke_worker(session, worker, actor)
+    return ser.worker(worker)
+
+
+@router.delete("/workers/{worker_id}", status_code=204)
+def delete_worker(worker_id: str, session: Session = Depends(get_session, scope="function")):
+    """Remove a worker record (e.g. after revoking it, to allow the machine to join again)."""
+    try:
+        job_service.delete_worker(session, _get(session, Worker, worker_id))
+    except job_service.WorkerRejected as exc:
+        raise HTTPException(409, str(exc)) from None
+    return Response(status_code=204)
 
 
 @router.get("/audit")

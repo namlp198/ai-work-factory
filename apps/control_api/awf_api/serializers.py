@@ -98,7 +98,8 @@ def approval(a: Approval) -> dict[str, Any]:
 def worker(w: Worker) -> dict[str, Any]:
     return {"id": w.id, "name": w.name, "platform": w.platform, "os_version": w.os_version, "status": w.status,
             "capabilities": w.capabilities, "labels": w.labels, "load": w.load_json,
-            "last_heartbeat": _ts(w.last_heartbeat), "created_at": _ts(w.created_at)}
+            "machine_id": (w.machine_id or "")[:8], "last_heartbeat": _ts(w.last_heartbeat),
+            "created_at": _ts(w.created_at)}
 
 
 def audit_event(e: AuditEvent) -> dict[str, Any]:

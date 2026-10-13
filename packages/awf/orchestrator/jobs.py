@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select, update
@@ -35,12 +35,64 @@ def requirements_met(worker: Worker, requirements: dict[str, Any]) -> bool:
     return set(requirements.get("capabilities") or []) <= set(worker.capabilities or [])
 
 
-def register_worker(session: Session, data: dict[str, Any]) -> tuple[Worker, str]:
+class WorkerRejected(Exception):
+    pass
+
+
+DEFAULT_LEASE_SECONDS = 3600
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    return dt.replace(tzinfo=timezone.utc) if dt is not None and dt.tzinfo is None else dt
+
+
+def requeue_or_fail(session: Session, job: Job, reason: str, event: EventType = EventType.JOB_REQUEUED) -> None:
+    """Give an orphaned job (lost worker, expired lease) to another worker, or fail it when out of attempts."""
+    task = session.get(Task, job.task_id)
+    if job.attempt < job.max_attempts:
+        job.state = JobState.QUEUED
+        job.attempt += 1
+        job.worker_id = None
+        job.lease_expires_at = None
+        if task and task.state == TaskState.RUNNING:
+            check_task_transition(task.state, TaskState.WAITING)
+            task.state = TaskState.WAITING
+        if job.agent_run_id:
+            run = session.get(AgentRun, job.agent_run_id)
+            if run:
+                run.status = AgentRunStatus.QUEUED
+                run.retry_count += 1
+        audit.record(session, event, workflow_run_id=job.workflow_run_id, task_id=job.task_id,
+                     payload={"job_id": job.id, "reason": reason, "attempt": job.attempt})
+    else:
+        job.state = JobState.FAILED
+        job.error = reason
+        job.retryable = False
+        job.processed = False
+        job.finished_at = utcnow()
+
+
+def register_worker(session: Session, data: dict[str, Any], stale_after_seconds: int = 90) -> tuple[Worker, str]:
     token = new_token()
+    machine_id = (data.get("machine_id") or "")[:64] or None
     worker = session.scalar(select(Worker).where(Worker.name == data["name"]))
-    if worker is None:
+    if worker is not None:
+        if worker.status == WorkerStatus.REVOKED:
+            raise WorkerRejected(f"worker '{worker.name}' was revoked; an admin must delete it before it can rejoin")
+        last = _aware(worker.last_heartbeat)
+        alive = last is not None and (utcnow() - last).total_seconds() < stale_after_seconds
+        if (alive and worker.status == WorkerStatus.ONLINE and worker.machine_id and machine_id
+                and worker.machine_id != machine_id):
+            raise WorkerRejected(f"worker name '{worker.name}' is in use by another online machine; "
+                                 f"set a unique AWF_WORKER_NAME")
+        # Same machine restarting: whatever it was running is lost, hand it to someone else.
+        for job in session.scalars(select(Job).where(Job.worker_id == worker.id,
+                                                      Job.state.in_(list(ACTIVE_JOB_STATES)))):
+            requeue_or_fail(session, job, f"worker {worker.name} restarted")
+    else:
         worker = Worker(name=data["name"])
         session.add(worker)
+    worker.machine_id = machine_id or worker.machine_id
     worker.platform = data["platform"]
     worker.os_version = data.get("os_version", "")
     worker.capabilities = sorted(set(data.get("capabilities") or []))
@@ -69,9 +121,12 @@ def claim_job(session: Session, worker: Worker) -> Job | None:
         if not requirements_met(worker, job.requirements or {}):
             continue
         # Atomic claim: only one worker can move QUEUED -> CLAIMED.
+        lease = int(((job.payload or {}).get("limits") or {}).get("lease_seconds") or DEFAULT_LEASE_SECONDS)
+        now = utcnow()
         claimed = session.execute(
             update(Job).where(Job.id == job.id, Job.state == JobState.QUEUED)
-            .values(state=JobState.CLAIMED, worker_id=worker.id, started_at=utcnow())
+            .values(state=JobState.CLAIMED, worker_id=worker.id, started_at=now,
+                    lease_expires_at=now + timedelta(seconds=lease))
         ).rowcount
         if not claimed:
             continue
@@ -147,3 +202,35 @@ def fail_job(session: Session, worker: Worker, job_id: str, error: str, retryabl
     job.finished_at = utcnow()
     job.processed = False
     return job
+
+
+def revoke_worker(session: Session, worker: Worker, actor: str) -> None:
+    """Lost or compromised machine: invalidate its token, block re-registration, requeue its jobs."""
+    worker.status = WorkerStatus.REVOKED
+    worker.token_hash = None
+    for job in session.scalars(select(Job).where(Job.worker_id == worker.id, Job.state.in_(list(ACTIVE_JOB_STATES)))):
+        requeue_or_fail(session, job, f"worker {worker.name} revoked")
+    audit.record(session, EventType.WORKER_REVOKED, actor_type="human", actor_id=actor,
+                 payload={"worker_id": worker.id, "name": worker.name})
+
+
+def delete_worker(session: Session, worker: Worker) -> None:
+    active = session.scalar(select(Job.id).where(Job.worker_id == worker.id, Job.state.in_(list(ACTIVE_JOB_STATES))))
+    if active:
+        raise WorkerRejected("worker still has active jobs; revoke it first")
+    for job in session.scalars(select(Job).where(Job.worker_id == worker.id)):
+        job.worker_id = None  # keep job history, drop the reference
+    session.delete(worker)
+
+
+def expire_leases(session: Session) -> int:
+    """Requeue claimed jobs whose lease ran out (worker died silently or its result never arrived)."""
+    now = utcnow()
+    expired = 0
+    for job in session.scalars(select(Job).where(Job.state.in_(list(ACTIVE_JOB_STATES)),
+                                                  Job.lease_expires_at.is_not(None))):
+        lease = _aware(job.lease_expires_at)
+        if lease is not None and lease < now:
+            requeue_or_fail(session, job, "job lease expired", EventType.JOB_LEASE_EXPIRED)
+            expired += 1
+    return expired

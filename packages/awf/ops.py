@@ -33,7 +33,10 @@ def _set_key(lines: list[str], key: str, value: str) -> list[str]:
 
 
 def env_init(home: Path, role: str, control_url: str | None = None, registration_token: str | None = None,
-             api_host: str | None = None, force: bool = False, api_port: int | None = None) -> int:
+             api_host: str | None = None, force: bool = False, api_port: int | None = None,
+             public_url: str | None = None) -> int:
+    """Write this machine's .env. `public_url` is how workers and browsers reach the control plane from
+    other sites (https://factory.example.com via reverse proxy/tunnel, or http://factory.tailnet.ts.net:8000)."""
     target = home / ".env"
     if target.exists() and not force:
         print(f".env already exists at {target}; keeping it (use --force to regenerate).")
@@ -41,14 +44,22 @@ def env_init(home: Path, role: str, control_url: str | None = None, registration
     if role == "worker" and not (control_url and registration_token):
         print("role 'worker' needs --control-url and --registration-token (printed by the control-plane setup).")
         return 2
+    public_url = (public_url or "").rstrip("/") or None
     lines = (home / ".env.example").read_text(encoding="utf-8").splitlines()
     values: dict[str, str] = {"AWF_ROLE": role}
     if role in ("all", "control-plane"):
         values["AWF_API_TOKEN"] = secrets.token_urlsafe(32)
         values["AWF_WORKER_REGISTRATION_TOKEN"] = registration_token or secrets.token_urlsafe(32)
-        values["AWF_API_HOST"] = api_host or ("0.0.0.0" if role == "control-plane" else "127.0.0.1")
+        if api_host:
+            values["AWF_API_HOST"] = api_host
+        elif public_url and public_url.startswith("https://"):
+            values["AWF_API_HOST"] = "127.0.0.1"  # TLS terminates in a reverse proxy/tunnel on this machine
+        else:
+            values["AWF_API_HOST"] = "0.0.0.0" if role == "control-plane" else "127.0.0.1"
         values["AWF_API_PORT"] = str(api_port or 8000)
         values["AWF_CONTROL_URL"] = control_url or f"http://127.0.0.1:{values['AWF_API_PORT']}"
+        if public_url:
+            values["AWF_PUBLIC_URL"] = public_url
     else:
         values["AWF_WORKER_REGISTRATION_TOKEN"] = registration_token or ""
         values["AWF_CONTROL_URL"] = control_url or ""
@@ -57,10 +68,12 @@ def env_init(home: Path, role: str, control_url: str | None = None, registration
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"wrote {target} (role={role})")
     if role in ("all", "control-plane"):
-        print("\nShare these with worker machines (keep them secret):")
-        print(f"  AWF_CONTROL_URL={_advertised_url(values['AWF_API_HOST'], values['AWF_API_PORT'])}")
-        print(f"  AWF_WORKER_REGISTRATION_TOKEN={values['AWF_WORKER_REGISTRATION_TOKEN']}")
-        print(f"Dashboard/API admin token: AWF_API_TOKEN in {target}")
+        url = public_url or _advertised_url(values["AWF_API_HOST"], values["AWF_API_PORT"])
+        token = values["AWF_WORKER_REGISTRATION_TOKEN"]
+        print("\nSet up each worker machine with (keep the token secret):")
+        print(f"  Windows:  .\\scripts\\bootstrap.ps1 -Role worker -ControlUrl {url} -RegistrationToken {token}")
+        print(f"  Linux:    scripts/bootstrap.sh --role worker --control-url {url} --registration-token {token}")
+        print(f"Dashboard: {url}/  (admin token: AWF_API_TOKEN in {target}; or run `awf open` here)")
     return 0
 
 
@@ -180,6 +193,19 @@ def _safe_url(url: str) -> str:
     return re.sub(r"//([^:/@]+):[^@]+@", r"//\1:***@", url)
 
 
+def _check_public_url() -> Check:
+    from awf.worker_sdk.client import InsecureTransport, check_transport_security
+
+    url = os.environ.get("AWF_PUBLIC_URL", "")
+    if not url:
+        return Check("public url", "OK", "not set (workers on this LAN/VPN only)")
+    try:
+        check_transport_security(url)
+    except InsecureTransport as exc:
+        return Check("public url", "FAIL", str(exc))
+    return Check("public url", "OK", url)
+
+
 def _check_api_exposure() -> Check:
     host = os.environ.get("AWF_API_HOST", "127.0.0.1")
     if host not in LOOPBACK and not os.environ.get("AWF_API_TOKEN"):
@@ -192,9 +218,15 @@ def _check_api_exposure() -> Check:
 def _check_control_plane_reachable() -> Check:
     import httpx
 
+    from awf.worker_sdk.client import InsecureTransport, check_transport_security
+
     url = os.environ.get("AWF_CONTROL_URL", "")
     if not url:
         return Check("control plane", "FAIL", "AWF_CONTROL_URL is not set")
+    try:
+        check_transport_security(url)
+    except InsecureTransport as exc:
+        return Check("control plane", "FAIL", str(exc))
     try:
         resp = httpx.get(url.rstrip("/") + "/health", timeout=5)
         resp.raise_for_status()
@@ -231,7 +263,7 @@ def doctor(home: Path) -> int:
     checks.append(Check(".env", "OK" if (home / ".env").is_file() else "WARN",
                         f"role={role}" if (home / ".env").is_file() else "missing: run `awf env init`"))
     if role in ("all", "control-plane"):
-        checks += [_check_database(), _check_api_exposure()]
+        checks += [_check_database(), _check_api_exposure(), _check_public_url()]
     if role in ("all", "worker"):
         checks += [_check_worker_identity(), _check_model_credentials()]
     if role == "worker":

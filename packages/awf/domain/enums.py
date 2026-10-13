@@ -77,6 +77,7 @@ class WorkerStatus(StrEnum):
     ONLINE = "online"
     OFFLINE = "offline"
     DRAINING = "draining"
+    REVOKED = "revoked"
 
 
 class CriticDecision(StrEnum):
@@ -125,4 +126,6 @@ class EventType(StrEnum):
     WORKFLOW_FAILED = "WORKFLOW_FAILED"
     WORKER_REGISTERED = "WORKER_REGISTERED"
     WORKER_OFFLINE = "WORKER_OFFLINE"
+    WORKER_REVOKED = "WORKER_REVOKED"
+    JOB_LEASE_EXPIRED = "JOB_LEASE_EXPIRED"
     JOB_REQUEUED = "JOB_REQUEUED"

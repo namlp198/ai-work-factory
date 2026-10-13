@@ -9,21 +9,50 @@ const short = (id) => (id || "").slice(0, 8);
 const when = (ts) => (ts ? new Date(ts).toLocaleString() : "");
 const money = (v) => `$${Number(v || 0).toFixed(4)}`;
 
-function token() { try { return localStorage.getItem("awf_token") || ""; } catch { return ""; } }
+// Auth: an HttpOnly session cookie set by POST /api/v1/session (30 days). The admin token is typed once
+// per browser, or never when the dashboard is opened with `awf open` (one-time login link).
+class AuthRequired extends Error {}
 
 async function api(path, opts = {}) {
-  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
-  if (token()) headers.Authorization = `Bearer ${token()}`;
-  const res = await fetch(API + path, { ...opts, headers });
+  const headers = { "Content-Type": "application/json", "X-AWF-Client": "dashboard", ...(opts.headers || {}) };
+  const res = await fetch(API + path, { ...opts, headers, credentials: "same-origin" });
+  if (res.status === 401) throw new AuthRequired();
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   const type = res.headers.get("content-type") || "";
   return type.includes("json") && !path.endsWith("/content") ? res.json() : res.text();
 }
 
-$("#token-btn").onclick = () => {
-  const value = prompt("Admin API token (AWF_API_TOKEN). Stored in this browser only.", token());
-  if (value !== null) { try { localStorage.setItem("awf_token", value); } catch {} render(); }
-};
+async function consumeLoginLink() {
+  const m = location.hash.match(/^#login=([\w.\-]+)/);
+  if (!m) return;
+  history.replaceState(null, "", location.pathname + "#/");  // never leave the ticket in the address bar
+  try { await api("/session", { method: "POST", body: JSON.stringify({ ticket: m[1] }) }); }
+  catch { /* expired or already used: fall back to the login form */ }
+}
+
+function viewLogin(message = "") {
+  return `<div class="card" style="max-width:440px;margin:40px auto">
+    <h1>Sign in</h1>
+    <p class="muted">Paste <code>AWF_API_TOKEN</code> from the control plane's <code>.env</code>. This browser stays
+      signed in for 30 days. Tip: run <code>awf open</code> on the control-plane machine to sign in without typing.</p>
+    <form id="login-form" class="row"><input type="password" name="token" autocomplete="current-password" required
+      placeholder="admin token"><button>Sign in</button></form>
+    <p id="login-error" class="error">${esc(message)}</p></div>`;
+}
+
+function bindLogin() {
+  $("#login-form").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api("/session", { method: "POST", body: JSON.stringify({ token: new FormData(e.target).get("token") }) });
+      render();
+    } catch (err) {
+      $("#login-error").textContent = err instanceof AuthRequired ? "Invalid token." : err.message;
+    }
+  };
+}
+
+$("#logout-btn").onclick = async () => { await api("/session", { method: "DELETE" }); render(); };
 $("#drawer-close").onclick = () => $("#drawer").classList.add("hidden");
 $("#drawer").onclick = (e) => { if (e.target.id === "drawer") $("#drawer").classList.add("hidden"); };
 
@@ -212,9 +241,25 @@ async function viewApprovals() {
 
 async function viewWorkers() {
   const workers = await api("/workers");
-  const rows = workers.map((w) => `<tr><td>${esc(w.name)}</td><td>${pill(w.status)}</td><td><code>${esc(w.platform)}</code></td>
-    <td>${(w.capabilities || []).map(esc).join(", ")}</td><td>${esc(JSON.stringify(w.load))}</td><td>${when(w.last_heartbeat)}</td></tr>`).join("");
-  return `<h1>Workers</h1><div class="table-wrap"><table><tr><th>Name</th><th>Status</th><th>Platform</th><th>Capabilities</th><th>Load</th><th>Last heartbeat</th></tr>${rows || '<tr><td colspan="6" class="muted">No workers registered</td></tr>'}</table></div>`;
+  const action = (w) => w.status === "revoked"
+    ? `<button class="ghost" data-delete-worker="${w.id}" title="Remove the record so this machine can join again">Delete</button>`
+    : `<button class="danger" data-revoke-worker="${w.id}" data-name="${esc(w.name)}" title="Lost or compromised machine">Revoke</button>`;
+  const rows = workers.map((w) => `<tr><td>${esc(w.name)}<div class="muted"><code>${esc(w.machine_id || "")}</code></div></td><td>${pill(w.status)}</td><td><code>${esc(w.platform)}</code></td>
+    <td>${(w.capabilities || []).map(esc).join(", ")}</td><td>${esc(Object.entries(w.labels || {}).map(([k, v]) => `${k}=${v}`).join(", "))}</td>
+    <td>${esc(JSON.stringify(w.load))}</td><td>${when(w.last_heartbeat)}</td><td>${action(w)}</td></tr>`).join("");
+  return `<h1>Workers</h1><div class="table-wrap"><table><tr><th>Name</th><th>Status</th><th>Platform</th><th>Capabilities</th><th>Labels</th><th>Load</th><th>Last heartbeat</th><th></th></tr>${rows || '<tr><td colspan="8" class="muted">No workers registered</td></tr>'}</table></div>
+    <p class="muted">Revoke immediately invalidates a worker's token, requeues its jobs and blocks it from re-registering.
+      If the machine was compromised, also rotate <code>AWF_WORKER_REGISTRATION_TOKEN</code> on the control plane.</p>`;
+}
+
+function bindWorkers() {
+  document.querySelectorAll("[data-revoke-worker]").forEach((b) => (b.onclick = async () => {
+    if (!confirm(`Revoke worker ${b.dataset.name}? Its running jobs are handed to other workers.`)) return;
+    await api(`/workers/${b.dataset.revokeWorker}/revoke`, { method: "POST" }); render();
+  }));
+  document.querySelectorAll("[data-delete-worker]").forEach((b) => (b.onclick = async () => {
+    await api(`/workers/${b.dataset.deleteWorker}`, { method: "DELETE" }); render();
+  }));
 }
 
 async function viewAgents() {
@@ -241,12 +286,13 @@ const routes = [
   [/^#\/projects\/([\w-]+)$/, "projects", viewProject, bindProject],
   [/^#\/runs\/([\w-]+)$/, "projects", viewRun, bindRun],
   [/^#\/approvals$/, "approvals", viewApprovals, bindApprovalButtons],
-  [/^#\/workers$/, "workers", viewWorkers],
+  [/^#\/workers$/, "workers", viewWorkers, bindWorkers],
   [/^#\/agents$/, "agents", viewAgents],
   [/^#\/audit$/, "audit", viewAudit],
 ];
 
 let rendering = false;
+let signedOut = false;
 async function render() {
   if (rendering) return;
   rendering = true;
@@ -258,17 +304,27 @@ async function render() {
       document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === nav));
       const html = await view(...m.slice(1));
       const focused = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
-      if (!focused) { $("#view").innerHTML = html; document.querySelectorAll("tr[data-href]").forEach((tr) => (tr.onclick = () => (location.hash = tr.dataset.href))); if (bind) await bind(...m.slice(1)); }
+      if (!focused || signedOut) { $("#view").innerHTML = html; document.querySelectorAll("tr[data-href]").forEach((tr) => (tr.onclick = () => (location.hash = tr.dataset.href))); if (bind) await bind(...m.slice(1)); }
       break;
     }
+    signedOut = false;
     const pending = await api("/approvals?state=pending");
     const badge = $("#approval-badge");
     badge.textContent = pending.length; badge.classList.toggle("hidden", !pending.length);
+    const session = await api("/session");
+    $("#logout-btn").classList.toggle("hidden", !session.auth_required);
   } catch (err) {
-    $("#view").innerHTML = `<p class="error">${esc(err.message)}</p><p class="muted">If the API requires a token, set it with the Token button.</p>`;
+    if (err instanceof AuthRequired) {
+      $("#logout-btn").classList.add("hidden");
+      if (!signedOut) { $("#view").innerHTML = viewLogin(); bindLogin(); signedOut = true; }
+    } else {
+      $("#view").innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    }
   } finally { rendering = false; }
 }
 
-window.addEventListener("hashchange", render);
-setInterval(() => { if ($("#drawer").classList.contains("hidden")) render(); }, 4000);
-render();
+window.addEventListener("hashchange", () => {
+  if (location.hash.startsWith("#login=")) { signedOut = false; consumeLoginLink().then(render); } else { render(); }
+});
+setInterval(() => { if ($("#drawer").classList.contains("hidden") && !signedOut) render(); }, 4000);
+consumeLoginLink().then(render);

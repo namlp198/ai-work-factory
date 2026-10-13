@@ -73,9 +73,10 @@ class Worker:
     def __init__(self, client: ControlPlaneClient, name: str, workspace_root: Path, policy_path: Path,
                  capabilities: list[str] | None = None, labels: dict[str, Any] | None = None,
                  platform_name: str | None = None, poll_interval: float = 3.0, heartbeat_interval: float = 15.0,
-                 executor: JobExecutor | None = None):
+                 executor: JobExecutor | None = None, machine_id: str | None = None):
         self.client = client
         self.name = name
+        self.machine_id = machine_id
         self.platform = platform_name or detect_platform()
         self.capabilities = capabilities if capabilities is not None else detect_capabilities()
         self.labels = labels or {}
@@ -92,6 +93,7 @@ class Worker:
             "os_version": platform.platform(),
             "capabilities": self.capabilities,
             "labels": self.labels,
+            "machine_id": self.machine_id,
         }, registration_token)
         log_event(logger, "WORKER_REGISTERED", f"registered as {data['id']}", worker_id=data["id"],
                   platform=self.platform, capabilities=self.capabilities)
@@ -122,22 +124,29 @@ class Worker:
 
         try:
             result = self.executor.execute(job_id, job["payload"], log=buffer, on_state=on_state)
+        except Exception as exc:  # executor bugs must still produce a reportable failure
+            logger.exception("job %s crashed", job_id)
+            result = {"status": "failed", "error": f"worker crash: {type(exc).__name__}: {exc}", "retryable": True}
+        try:
             buffer.flush()
+            self._submit(job_id, result)
+        finally:
+            self.running_jobs -= 1
+
+    def _submit(self, job_id: str, result: dict[str, Any]) -> None:
+        """Deliver the result, retrying through network outages (see ControlPlaneClient.result_retry_seconds).
+        If it still cannot be delivered, the job's lease expires on the control plane and it is requeued."""
+        try:
             if result.get("status") == "succeeded":
                 self.client.complete(job_id, result)
             else:
                 self.client.fail(job_id, result.get("error") or "job failed", bool(result.get("retryable", True)), result)
+            log_event(logger, "JOB_RESULT_DELIVERED", "result delivered", job_id=job_id, status=result.get("status"))
         except ControlPlaneError as exc:
-            logger.warning("result submission rejected for job %s: %s", job_id, exc)
-        except Exception as exc:
-            buffer.flush()
-            logger.exception("job %s crashed", job_id)
-            try:
-                self.client.fail(job_id, f"worker crash: {type(exc).__name__}: {exc}", True)
-            except ControlPlaneError:
-                pass
-        finally:
-            self.running_jobs -= 1
+            if exc.status == 409:
+                logger.warning("result for job %s not accepted (already recorded, reassigned or cancelled)", job_id)
+            else:
+                logger.error("result for job %s could not be delivered: %s", job_id, exc)
 
     def _heartbeat_loop(self) -> None:
         while not self._stop.wait(self.heartbeat_interval):

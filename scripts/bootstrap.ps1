@@ -7,7 +7,8 @@
 param(
     [ValidateSet("all", "control-plane", "worker")][string]$Role = "all",
     [string]$ControlUrl,
-    [string]$RegistrationToken
+    [string]$RegistrationToken,
+    [string]$PublicUrl
 )
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -57,6 +58,7 @@ $awf = Join-Path $root ".venv\Scripts\awf.exe"
 $envArgs = @("env", "init", "--role", $Role)
 if ($ControlUrl) { $envArgs += @("--control-url", $ControlUrl) }
 if ($RegistrationToken) { $envArgs += @("--registration-token", $RegistrationToken) }
+if ($PublicUrl) { $envArgs += @("--public-url", $PublicUrl) }
 Invoke-Checked $awf $envArgs
 
 # 4. Database schema (control plane only) and a health report.

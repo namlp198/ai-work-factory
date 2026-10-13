@@ -3,16 +3,17 @@
 # Idempotent: safe to run again; it never overwrites an existing .env.
 #
 #   scripts/bootstrap.sh                                    # role all (control plane + local worker)
-#   scripts/bootstrap.sh --role control-plane
+#   scripts/bootstrap.sh --role control-plane [--public-url https://factory.example.com]
 #   scripts/bootstrap.sh --role worker --control-url http://factory-host:8000 --registration-token <token>
 set -euo pipefail
 
-role="all"; control_url=""; registration_token=""
+role="all"; control_url=""; registration_token=""; public_url=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --role) role="$2"; shift 2 ;;
     --control-url) control_url="$2"; shift 2 ;;
     --registration-token) registration_token="$2"; shift 2 ;;
+    --public-url) public_url="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -52,6 +53,7 @@ fi
 env_args=(env init --role "$role")
 [[ -n "$control_url" ]] && env_args+=(--control-url "$control_url")
 [[ -n "$registration_token" ]] && env_args+=(--registration-token "$registration_token")
+[[ -n "$public_url" ]] && env_args+=(--public-url "$public_url")
 .venv/bin/awf "${env_args[@]}"
 
 # 4. Database schema (control plane only) and a health report.

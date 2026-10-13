@@ -52,11 +52,35 @@ def _adopt_unversioned_schema(cfg, url: str) -> None:
     print("existing schema matches the current models; recorded it as migration head")
 
 
+def _backup(settings, keep: int) -> int:
+    """Consistent online copy of the SQLite database (safe while the control plane runs)."""
+    import sqlite3
+
+    url = settings.database_url
+    if not url.startswith("sqlite:///"):
+        print("PostgreSQL: use pg_dump, e.g.  pg_dump --format=custom --file=awf-$(date +%F).dump \"$DATABASE_URL\"")
+        return 2
+    source = Path(url[len("sqlite:///"):])
+    target_dir = settings.home / "var" / "backups"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"awf-{time.strftime('%Y%m%d-%H%M%S')}.db"
+    with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
+        src.backup(dst)
+    backups = sorted(target_dir.glob("awf-*.db"))
+    for old in backups[:-keep] if keep > 0 else []:
+        old.unlink()
+    print(f"backup written to {target} (keeping {min(len(backups), keep)})")
+    print(f"artifacts live in {settings.artifact_root}; back that directory up as well")
+    return 0
+
+
 def cmd_db(args: argparse.Namespace) -> int:
     from alembic import command
     from alembic.config import Config
 
     settings = _settings()
+    if args.action == "backup":
+        return _backup(settings, getattr(args, "keep", 14))
     cfg = Config(str(settings.home / "alembic.ini"))
     cfg.set_main_option("script_location", str(settings.home / "infrastructure" / "migrations"))
     cfg.set_main_option("sqlalchemy.url", settings.database_url)
@@ -86,6 +110,10 @@ def _check_bind(host: str) -> None:
                          f"(run `awf env init`) before exposing the API beyond localhost")
 
 
+def _proxy_options() -> dict:
+    return {"proxy_headers": True, "forwarded_allow_ips": os.environ.get("AWF_TRUSTED_PROXIES", "127.0.0.1")}
+
+
 def cmd_api(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -97,7 +125,7 @@ def cmd_api(args: argparse.Namespace) -> int:
         from awf.settings import reset_settings_cache
 
         reset_settings_cache()
-    uvicorn.run(create_app(), host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(create_app(), host=args.host, port=args.port, log_level="warning", **_proxy_options())
     return 0
 
 
@@ -127,12 +155,25 @@ def build_worker(args: argparse.Namespace):
     root = Path(args.workspace_root)
     root = root if root.is_absolute() else settings.home / root
     labels = {**_env_labels(), **labels}
-    worker = Worker(ControlPlaneClient(args.url), name=args.name,
+    worker = Worker(ControlPlaneClient(args.url), name=args.name, machine_id=_machine_id(settings.home),
                     workspace_root=root.resolve(),
                     policy_path=settings.config_dir / "policies.yaml", capabilities=caps, labels=labels,
                     platform_name=args.platform, poll_interval=args.poll_interval)
     worker.register(os.environ.get("AWF_WORKER_REGISTRATION_TOKEN", ""))
     return worker
+
+
+def _machine_id(home: Path) -> str:
+    """Stable per-checkout id (var/worker-id): lets the control plane tell two machines with one name apart."""
+    import uuid
+
+    path = home / "var" / "worker-id"
+    if path.is_file():
+        return path.read_text(encoding="utf-8").strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = uuid.uuid4().hex
+    path.write_text(value, encoding="utf-8")
+    return value
 
 
 def _env_labels() -> dict[str, str]:
@@ -193,15 +234,25 @@ def cmd_start(args: argparse.Namespace) -> int:
         _check_bind(host)
         cmd_db(argparse.Namespace(action="upgrade"))  # idempotent: new migrations apply after `git pull`
     if role == "control-plane":
+        print(f"Dashboard: {dashboard_url()}/  (sign in without typing the token: awf open)")
         return cmd_api(argparse.Namespace(host=host, port=port, embedded_orchestrator=True))
     worker_args = _worker_namespace()
     if role == "worker":
         configure_logging()
         if not _wait_healthy(worker_args.url, 60):
             print(f"control plane {worker_args.url} is not reachable yet")
+        from awf.worker_sdk.client import ControlPlaneError, InsecureTransport
+
         while True:  # register as soon as the control plane is up
             try:
                 return cmd_worker(worker_args)
+            except InsecureTransport as exc:
+                raise SystemExit(str(exc)) from None
+            except ControlPlaneError as exc:
+                if exc.status in (401, 403, 409):  # wrong token, revoked, name clash: retrying will not help
+                    raise SystemExit(f"worker registration refused: {exc}") from None
+                print(f"worker could not register ({exc}); retrying in 10s")
+                time.sleep(10)
             except Exception as exc:  # noqa: BLE001 - keep the daemon alive across control-plane restarts
                 print(f"worker could not register ({exc}); retrying in 10s")
                 time.sleep(10)
@@ -213,13 +264,14 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     os.environ["AWF_EMBEDDED_ORCHESTRATOR"] = "true"
     reset_settings_cache()
-    server = uvicorn.Server(uvicorn.Config(create_app(), host=host, port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(create_app(), host=host, port=port, log_level="warning",
+                                           **_proxy_options()))
     threading.Thread(target=server.run, daemon=True).start()
     local = f"http://127.0.0.1:{port}"
     if not _wait_healthy(local):
         raise SystemExit("control API did not start")
     worker_args.url = local
-    print(f"Dashboard: {local}/")
+    print(f"Dashboard: {local}/  (sign in without typing the token: awf open)")
     try:
         return cmd_worker(worker_args)
     finally:
@@ -230,7 +282,29 @@ def cmd_env(args: argparse.Namespace) -> int:
     from awf.ops import env_init
 
     return env_init(_settings().home, args.role, args.control_url, args.registration_token, args.api_host, args.force,
-                    args.api_port)
+                    args.api_port, args.public_url)
+
+
+def dashboard_url() -> str:
+    public = os.environ.get("AWF_PUBLIC_URL", "").rstrip("/")
+    return public or f"http://127.0.0.1:{os.environ.get('AWF_API_PORT', '8000')}"
+
+
+def cmd_open(args: argparse.Namespace) -> int:
+    """Open the dashboard already signed in (one-time link, valid 2 minutes; the token never leaves this machine)."""
+    import webbrowser
+
+    from awf.security import new_login_ticket
+
+    token = os.environ.get("AWF_API_TOKEN", "")
+    url = dashboard_url() + "/"
+    if token:
+        url += "#login=" + new_login_ticket(token, args.actor)
+    if args.print_only or not webbrowser.open(url):
+        print(url)
+    else:
+        print(f"opened {dashboard_url()}/ in the browser")
+    return 0
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -342,7 +416,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("db", help="database schema management")
-    p.add_argument("action", choices=["upgrade", "downgrade", "create"])
+    p.add_argument("action", choices=["upgrade", "downgrade", "create", "backup"])
+    p.add_argument("--keep", type=int, default=14, help="backup: number of backups to keep")
     p.set_defaults(func=cmd_db)
 
     p = sub.add_parser("start", help="start this machine according to AWF_ROLE in .env")
@@ -356,8 +431,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--registration-token", help="worker: AWF_WORKER_REGISTRATION_TOKEN of the control plane")
     p.add_argument("--api-host", help="control plane bind address (default 0.0.0.0 for control-plane, 127.0.0.1 for all)")
     p.add_argument("--api-port", type=int, help="control plane port (default 8000)")
+    p.add_argument("--public-url", help="control plane: address other sites use, e.g. https://factory.example.com "
+                                        "or http://factory.tailnet.ts.net:8000")
     p.add_argument("--force", action="store_true", help="overwrite an existing .env")
     p.set_defaults(func=cmd_env)
+
+    p = sub.add_parser("open", help="open the dashboard signed in (uses AWF_API_TOKEN from this machine's .env)")
+    p.add_argument("--actor", default="admin", help="name recorded as the approver in the audit trail")
+    p.add_argument("--print-only", action="store_true", help="print the one-time link instead of opening a browser")
+    p.set_defaults(func=cmd_open)
 
     p = sub.add_parser("doctor", help="check this machine: python, dependencies, git, config, db, connectivity")
     p.set_defaults(func=cmd_doctor)

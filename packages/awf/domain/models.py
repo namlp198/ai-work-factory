@@ -188,6 +188,8 @@ class Worker(Base):
     labels: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
     load_json: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
     token_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # Stable id generated once per machine (var/worker-id); stops two machines sharing a worker name.
+    machine_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -214,6 +216,8 @@ class Job(Base):
     processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # A claimed job must be finished before this time, otherwise it is requeued (lost worker/network).
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

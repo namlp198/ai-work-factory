@@ -53,6 +53,7 @@ from awf.domain.models import (
 from awf.domain.state_machine import can_transition_task, check_task_transition
 from awf.logging import get_logger
 from awf.orchestrator import audit
+from awf.orchestrator.jobs import expire_leases, requeue_or_fail
 from awf.orchestrator.context import ContextBuilder, task_meta
 from awf.orchestrator.critic import CHANGES_REQUIRED, Critic, CriticResult
 from awf.orchestrator.task_router import TaskRouter, slug
@@ -60,6 +61,9 @@ from awf.platform import Platform
 from awf.workflow_engine import LoadedWorkflow, StageSpec
 
 logger = get_logger("orchestrator")
+
+# Extra time on top of a task's own timeout before a claimed job counts as lost (slow uploads, clone time).
+LEASE_MARGIN_SECONDS = 900
 
 # Outputs of standalone tool jobs: output key -> (artifact type, media type, extension)
 TOOL_OUTPUTS: dict[str, dict[str, tuple[str, str, str]]] = {
@@ -739,6 +743,11 @@ class Orchestrator:
                         "trace_summary": self._trace_summary(session, run)},
             "input_artifact_ids": built.input_artifact_ids,
         }
+        if route.definition is not None:
+            lease = route.definition.contract.timeout_policy.seconds + LEASE_MARGIN_SECONDS
+        else:
+            lease = 3 * self.p.policy.config.limit("command_timeout_seconds", 600) + LEASE_MARGIN_SECONDS
+        payload["limits"] = {"lease_seconds": lease}
         agent_run = None
         if task.task_type == TaskType.TOOL:
             payload["tool"] = {"name": task.input_json["tool"], "input": task.input_json.get("tool_input") or {}}
@@ -797,7 +806,8 @@ class Orchestrator:
         timeout = timedelta(seconds=self.p.settings.worker_heartbeat_timeout_seconds)
         now = utcnow()
         changed = False
-        for worker in session.scalars(select(Worker).where(Worker.status != WorkerStatus.OFFLINE)):
+        for worker in session.scalars(select(Worker).where(
+                Worker.status.not_in([WorkerStatus.OFFLINE, WorkerStatus.REVOKED]))):
             last = aware(worker.last_heartbeat)
             if last is not None and now - last <= timeout:
                 continue
@@ -807,30 +817,9 @@ class Orchestrator:
                          payload={"name": worker.name, "last_heartbeat": str(last)})
             for job in session.scalars(select(Job).where(Job.worker_id == worker.id,
                                                           Job.state.in_(list(ACTIVE_JOB_STATES)))):
-                self._requeue_or_fail(session, job, f"worker {worker.name} went offline")
+                requeue_or_fail(session, job, f"worker {worker.name} went offline")
+        changed |= expire_leases(session) > 0
         return changed
-
-    def _requeue_or_fail(self, session: Session, job: Job, reason: str) -> None:
-        task = session.get(Task, job.task_id)
-        if job.attempt < job.max_attempts:
-            job.state = JobState.QUEUED
-            job.attempt += 1
-            job.worker_id = None
-            if task and task.state == TaskState.RUNNING:
-                self._set_state(task, TaskState.WAITING)
-            if job.agent_run_id:
-                ar = session.get(AgentRun, job.agent_run_id)
-                if ar:
-                    ar.status = AgentRunStatus.QUEUED
-                    ar.retry_count += 1
-            audit.record(session, EventType.JOB_REQUEUED, workflow_run_id=job.workflow_run_id, task_id=job.task_id,
-                         payload={"job_id": job.id, "reason": reason, "attempt": job.attempt})
-        else:
-            job.state = JobState.FAILED
-            job.error = reason
-            job.retryable = False
-            job.processed = False
-            job.finished_at = utcnow()
 
 
 __all__ = ["Orchestrator", "OrchestratorError"]

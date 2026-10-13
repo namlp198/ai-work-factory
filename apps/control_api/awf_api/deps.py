@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from awf.domain.models import Worker
 from awf.orchestrator.orchestrator import Orchestrator
 from awf.platform import Platform
-from awf.security import hash_token, token_matches
+from awf.security import SESSION_COOKIE, hash_token, token_matches, verify_claims
 
 
 @dataclass
@@ -44,17 +44,31 @@ def _bearer(authorization: str | None) -> str:
     return authorization[7:].strip()
 
 
-def require_admin(state: AppState = Depends(get_state), authorization: str | None = Header(default=None),
+DASHBOARD_CLIENT_HEADER = "X-AWF-Client"
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def require_admin(request: Request, state: AppState = Depends(get_state),
+                  authorization: str | None = Header(default=None),
                   x_actor: str | None = Header(default=None)) -> str:
-    """Admin API token. Without a configured token only a development environment is open."""
+    """Admin access: `Authorization: Bearer <AWF_API_TOKEN>` (CLI, scripts) or the dashboard session cookie.
+
+    Without a configured token only a development environment is open."""
     expected = state.platform.settings.api_token
     if not expected:
         if state.platform.settings.environment == "development":
             return (x_actor or "admin")[:120]
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AWF_API_TOKEN is not configured")
-    if not hmac.compare_digest(_bearer(authorization), expected):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or missing API token")
-    return (x_actor or "admin")[:120]
+    if authorization and hmac.compare_digest(_bearer(authorization), expected):
+        return (x_actor or "admin")[:120]
+    claims = verify_claims(expected, request.cookies.get(SESSION_COOKIE), "session")
+    if claims is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "login required")
+    # Cookies are sent automatically by browsers, so state-changing calls must also carry a header that
+    # cross-site pages cannot set without a CORS preflight (which this API never grants).
+    if request.method not in SAFE_METHODS and request.headers.get(DASHBOARD_CLIENT_HEADER) != "dashboard":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"missing {DASHBOARD_CLIENT_HEADER} header")
+    return (x_actor or claims.get("sub") or "admin")[:120]
 
 
 def require_worker(worker_id: str, session: Session = Depends(get_session, scope="function"),

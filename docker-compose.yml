@@ -34,6 +34,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       AWF_ARTIFACT_ROOT: /app/var/artifacts
       AWF_API_EXPOSED_HOST: ${AWF_API_BIND:-127.0.0.1}
+      # Requests reach the API through Caddy on the compose network; trust its X-Forwarded-* headers.
+      AWF_TRUSTED_PROXIES: "*"
     command: sh -c "awf db upgrade && awf api --host 0.0.0.0 --port 8000"
     depends_on:
       postgres: {condition: service_healthy}
@@ -62,7 +64,22 @@ services:
     # Mount repositories the worker may clone (read-only source of truth stays on the host).
     volumes: ["${AWF_REPOS_DIR:-./var/repos}:/repos"]
 
+  # Internet-facing HTTPS (optional): docker compose --profile public up -d
+  # Needs AWF_PUBLIC_DOMAIN (DNS -> this host) and ports 80/443 reachable from the internet.
+  caddy:
+    image: caddy:2
+    profiles: [public]
+    environment:
+      AWF_PUBLIC_DOMAIN: ${AWF_PUBLIC_DOMAIN:-}
+      AWF_UPSTREAM: control-api:8000
+    volumes:
+      - ./infrastructure/deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    ports: ["80:80", "443:443"]
+    depends_on: [control-api]
+
 volumes:
+  caddydata:
   pgdata:
   miniodata:
   artifacts:

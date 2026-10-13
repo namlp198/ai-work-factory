@@ -1,0 +1,33 @@
+# HTTPS entry point for a control plane reachable from the internet (workers and dashboard at other sites).
+# Caddy obtains and renews a Let's Encrypt certificate automatically.
+#
+# Requirements: a DNS name pointing at this machine (AWF_PUBLIC_DOMAIN) and ports 80/443 open to the internet.
+# The control plane itself listens on localhost only (AWF_API_HOST=127.0.0.1); only Caddy is exposed.
+#
+#   Native:  AWF_PUBLIC_DOMAIN=factory.example.com caddy run --config infrastructure/deploy/Caddyfile
+#   Docker:  AWF_PUBLIC_DOMAIN=factory.example.com docker compose --profile public up -d
+
+{$AWF_PUBLIC_DOMAIN} {
+	encode zstd gzip
+
+	# Job results carry diffs and reports; keep a generous but bounded body size.
+	request_body {
+		max_size 64MB
+	}
+
+	reverse_proxy {$AWF_UPSTREAM:127.0.0.1:8000} {
+		# Long-running result uploads over slow links.
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+}
