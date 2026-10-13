@@ -247,7 +247,7 @@ tiền model. Xem `examples/*/scripted-responses.yaml`.
 
 ## 7. Dashboard
 
-`http://<host>:8000/` — nút **Token** để nhập `AWF_API_TOKEN` (lưu trong trình duyệt).
+`http://<host>:8000/` — đăng nhập bằng `AWF_API_TOKEN` một lần (giữ 30 ngày), hoặc chạy `awf open` trên máy trung tâm để vào thẳng. Xem [mục 21](#đăng-nhập-dashboard-không-phải-nhập-token-mỗi-lần).
 
 | Trang | Nội dung |
 |---|---|
@@ -464,7 +464,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (52 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (78 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -487,7 +487,11 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |
 | `model provider rejected the request` | Thiếu/sai `ANTHROPIC_API_KEY` trên worker. |
 | `git push ... rejected` vào repo cục bộ | Không đẩy vào nhánh đang checkout; dùng bare mirror. |
-| API 401 | Thiếu header `Authorization: Bearer ...` / nhập Token trên dashboard. |
+| API 401 | Script: thiếu `Authorization: Bearer ...`. Dashboard: đăng nhập lại hoặc `awf open`. |
+| Worker: `worker name ... is in use by another online machine` | Hai máy trùng tên: đặt `AWF_WORKER_NAME` khác nhau. |
+| Worker: `... was revoked` | Worker đã bị Revoke: Delete bản ghi trên dashboard nếu muốn cho tham gia lại. |
+| Worker: `... is a public address over plain HTTP` | Dùng `https://` (Caddy/tunnel) hoặc Tailscale; xem mục 21. |
+| Job tự chạy lại với `JOB_LEASE_EXPIRED` | Worker mất liên lạc quá lâu; kiểm tra mạng/worker đó. |
 
 ## 20. Giới hạn hiện tại và lộ trình
 
@@ -516,86 +520,174 @@ Tiếp theo:
 | Phiên bản Python (`.python-version`) và package (`requirements.lock`) | ✔ | |
 | Line ending (`.gitattributes`) | ✔ | |
 | Lệnh cài đặt và chạy: `bootstrap` → `awf start` | ✔ | |
-| Vai trò máy, URL control plane, token, API key Claude | | `.env` (tạo bằng `awf env init`) |
-| Dữ liệu runtime: DB SQLite, artifact, workspace | | `var/` |
+| Vai trò máy, URL máy trung tâm, token, API key Claude | | `.env` (tạo bằng `awf env init`) |
+| Dữ liệu runtime: DB, artifact, workspace, `worker-id` | | `var/` |
 
 Mọi đường dẫn tương đối (`DATABASE_URL=sqlite:///./var/awf.db`, `AWF_WORKSPACE_ROOT`,
-`AWF_SCRIPTED_RESPONSES`...) được tính theo **thư mục repo**, không theo thư mục hiện hành. Tên worker mặc
-định là hostname; platform và capability tự phát hiện.
+`AWF_SCRIPTED_RESPONSES`...) được tính theo **thư mục repo**. Tên worker mặc định là hostname; platform và
+capability tự phát hiện.
 
 ### Ba vai trò (`AWF_ROLE`)
 
 | Vai trò | Chạy gì | Dùng khi |
 |---|---|---|
-| `all` | API + dashboard + orchestrator + 1 worker cục bộ | 1 máy (dev, nhóm nhỏ) |
-| `control-plane` | API + dashboard + orchestrator (+ DB) | máy trung tâm của nhóm |
-| `worker` | worker kết nối tới `AWF_CONTROL_URL` | máy build/test: Windows (.NET), Linux, Jetson, GPU |
+| `all` | API + dashboard + orchestrator + 1 worker cục bộ | 1 máy |
+| `control-plane` | API + dashboard + orchestrator + **database** | máy trung tâm |
+| `worker` | worker kết nối tới `AWF_CONTROL_URL`, **không có database** | máy build/test ở bất kỳ đâu |
 
-### Dựng một cụm (ví dụ: 1 control plane + nhiều worker)
+### Mô hình: một máy trung tâm, worker ở nhiều địa điểm
 
-**Máy control plane** (Linux hoặc Windows):
-
-```bash
-git clone <repo-url> ai-work-factory && cd ai-work-factory
-scripts/bootstrap.sh --role control-plane        # Windows: .\scripts\bootstrap.ps1 -Role control-plane
-.venv/bin/awf start
+```text
+            Địa điểm A                         Internet / VPN                 Địa điểm B, C, ...
+ ┌──────────────────────────────┐                                   ┌───────────────────────────┐
+ │ MÁY TRUNG TÂM (control-plane)│ ◄── HTTPS, worker gọi RA ──────── │ worker Windows (.NET)     │
+ │  API + dashboard + orchestr. │ ◄── HTTPS ─────────────────────── │ worker Linux / Jetson     │
+ │  DATABASE + artifact (DUY NHẤT)│ ◄── trình duyệt (dashboard) ──── │ laptop của bạn            │
+ └──────────────────────────────┘                                   └───────────────────────────┘
+                    ▲                                                            │
+                    └────────────── GitHub / GitLab (mã nguồn các repo) ◄────────┘
 ```
 
-Bootstrap in ra `AWF_CONTROL_URL` và `AWF_WORKER_REGISTRATION_TOKEN` để đưa cho các worker. Token admin
-cho dashboard nằm trong `.env` (`AWF_API_TOKEN`). API bind `0.0.0.0`; nó **từ chối khởi động** nếu thiếu token.
-Nhớ mở cổng 8000 trên firewall của máy này cho mạng nội bộ.
+**Không đồng bộ database giữa các máy.** Chỉ máy trung tâm có database và artifact — đó là nguồn sự thật duy
+nhất. Worker không lưu trạng thái lâu dài. Nó chủ động kết nối **ra** máy trung tâm để:
 
-**Mỗi máy worker:**
+1. nhận job;
+2. báo heartbeat và tiến độ;
+3. nộp kết quả và artifact.
+
+Mã nguồn các repo đi qua git remote (GitHub/GitLab/Gitea), không qua database. Vì worker chỉ gọi ra, các máy
+worker **không cần mở cổng nào** và chạy được sau NAT/firewall của từng địa điểm. Chỉ máy trung tâm cần
+truy cập được từ xa.
+
+Những gì nền tảng tự lo khi mạng không ổn định:
+
+- **Mất mạng lúc nộp kết quả:** worker thử lại với backoff tới 30 phút (`AWF_RESULT_RETRY_SECONDS`).
+  Báo tiến độ và log là best-effort, nên job không bị dừng chờ chúng.
+- **Worker biến mất hoặc kết quả không bao giờ tới:** mỗi job có **lease**, bằng timeout của task cộng 15 phút.
+  Hết lease, job được giao lại cho worker khác.
+- **Worker khởi động lại:** máy trung tâm giao lại các job nó đang dở.
+- **Hai máy cùng tên worker:** bị từ chối (mỗi máy có `var/worker-id` riêng). Đặt `AWF_WORKER_NAME`.
+- **Kết quả bị gửi trùng:** bị bỏ qua (HTTP 409).
+
+Đã kiểm chứng thật: tắt máy trung tâm 25 giây khi worker (máy khác) đang chạy job.
+
+- Job vẫn chạy xong trong lúc máy trung tâm tắt.
+- Worker thử nộp kết quả 3 lần, rồi nộp thành công ngay khi máy trung tâm bật lại.
+- Job không phải làm lại; run đi tiếp bình thường.
+
+### Đưa máy trung tâm ra internet — chọn một trong hai cách
+
+**Cách A — Mạng riêng Tailscale (khuyến nghị, đơn giản và an toàn nhất)**
+
+Tailscale tạo mạng riêng mã hoá WireGuard giữa các máy của bạn ở mọi địa điểm. Không cần domain, không mở cổng
+ra internet, dashboard không lộ ra ngoài.
+
+1. Cài Tailscale trên máy trung tâm và mọi máy worker, đăng nhập cùng một tài khoản (tailnet).
+2. Máy trung tâm:
+   ```powershell
+   .\scripts\bootstrap.ps1 -Role control-plane -PublicUrl http://<ten-may>.<tailnet>.ts.net:8000
+   .\.venv\Scripts\awf start
+   ```
+3. Bootstrap in ra lệnh cài sẵn cho worker. Chạy lệnh đó trên từng máy worker, rồi `awf start`.
+
+Địa chỉ `*.ts.net` và `100.x.y.z` được worker chấp nhận dù là `http://`, vì đường truyền đã được WireGuard
+mã hoá. Muốn có HTTPS thật trong tailnet thì dùng `tailscale serve`.
+
+**Cách B — Domain công khai + HTTPS (Caddy tự lấy chứng chỉ Let's Encrypt)**
+
+Dùng khi worker là máy không cài được VPN (ví dụ CI runner, máy của đối tác).
+
+1. Trỏ DNS `factory.example.com` về IP công khai của máy trung tâm, mở cổng **80 và 443** (chỉ hai cổng này).
+2. Máy trung tâm:
+   ```powershell
+   .\scripts\bootstrap.ps1 -Role control-plane -PublicUrl https://factory.example.com
+   .\.venv\Scripts\awf start                    # API chỉ nghe 127.0.0.1:8000
+   $env:AWF_PUBLIC_DOMAIN = "factory.example.com"
+   caddy run --config infrastructure\deploy\Caddyfile    # HTTPS 443 -> 127.0.0.1:8000
+   ```
+   Hoặc dùng Docker: `AWF_PUBLIC_DOMAIN=factory.example.com docker compose --profile public up -d`.
+3. Worker: `bootstrap ... -Role worker -ControlUrl https://factory.example.com -RegistrationToken <token>`.
+
+Biến thể không cần mở cổng: Cloudflare Tunnel (`cloudflared tunnel --url http://127.0.0.1:8000`) với domain
+của bạn. Nếu dùng tunnel/proxy ở máy khác, đặt `AWF_TRUSTED_PROXIES` để API tin header `X-Forwarded-*`.
+
+**Bảo vệ có sẵn**
+
+- Worker **từ chối** gửi token và mã nguồn qua `http://` tới địa chỉ công khai; chỉ cho phép HTTPS, LAN hoặc
+  Tailscale. `AWF_ALLOW_INSECURE_HTTP=1` chỉ dùng để thử nghiệm.
+- `awf doctor` báo `FAIL` khi URL không an toàn.
+- API từ chối khởi động trên địa chỉ ngoài localhost nếu thiếu token.
+- Đăng nhập dashboard bị chặn tạm (HTTP 429) sau 10 lần sai trong 10 phút trên một IP.
+- Chứng chỉ của CA riêng: đặt `AWF_CA_BUNDLE=<đường dẫn file .pem>` trên worker.
+
+### Đăng nhập dashboard (không phải nhập token mỗi lần)
+
+- Nhập `AWF_API_TOKEN` **một lần** cho mỗi trình duyệt. Trình duyệt giữ phiên đăng nhập 30 ngày bằng cookie
+  HttpOnly; phiên vẫn còn sau khi khởi động lại server.
+- Trên máy trung tâm, `awf open` mở dashboard và **đăng nhập sẵn**. Lệnh dùng link một lần, hết hạn sau
+  2 phút; token không rời khỏi máy. `awf open --print-only` in link ra để mở ở trình duyệt khác.
+- Nút **Logout** để đăng xuất. Đổi `AWF_API_TOKEN` thì mọi phiên đăng nhập đều hết hiệu lực.
+- Script/CI vẫn dùng header `Authorization: Bearer <AWF_API_TOKEN>`.
+
+### Quản lý worker
+
+- Dashboard → **Workers**: tên, `machine_id`, platform, capability, nhãn, heartbeat.
+- **Revoke** một máy bị mất hoặc nghi bị xâm nhập. Token của nó vô hiệu ngay, job của nó được giao lại, và nó
+  không đăng ký lại được.
+- Nếu máy bị xâm nhập, đổi luôn `AWF_WORKER_REGISTRATION_TOKEN` trên máy trung tâm (`awf env init --force`
+  tạo mới toàn bộ token, nên cần cài lại các worker còn lại). **Delete** bản ghi worker đã revoke để máy
+  đó tham gia lại.
+- Nhãn để định tuyến theo địa điểm: `AWF_WORKER_LABELS=site=hanoi,gpu=rtx4090`.
+
+### Sao lưu (chỉ máy trung tâm)
 
 ```powershell
-git clone <repo-url> ai-work-factory; cd ai-work-factory
-.\scripts\bootstrap.ps1 -Role worker -ControlUrl http://factory-host:8000 -RegistrationToken <token>
-# thêm ANTHROPIC_API_KEY=... vào .env của máy worker này
-.\.venv\Scripts\awf start
+.\.venv\Scripts\awf db backup --keep 14     # SQLite: bản sao nhất quán khi đang chạy -> var\backups\
 ```
 
-`awf doctor` trên worker kiểm tra kết nối tới control plane. Worker tự đăng ký lại khi control plane khởi động
-lại.
+Lên lịch chạy hằng ngày (Task Scheduler/cron). Sao lưu cả thư mục artifact (`var\artifacts`). PostgreSQL thì
+dùng `pg_dump`. Khi đổi máy trung tâm, chép `.env`, `var\` (hoặc dump PostgreSQL) sang máy mới và trỏ
+DNS/Tailscale name sang. Worker không phải cài lại.
 
-**Cập nhật mọi máy** — luôn cùng một quy trình:
+### Cập nhật mọi máy
+
+Luôn cùng một quy trình:
 
 ```bash
 git pull
-scripts/bootstrap.sh          # cài đúng lock mới; giữ nguyên .env
-.venv/bin/awf start           # control plane tự chạy migration mới
+scripts/bootstrap.sh          # Windows: .\scripts\bootstrap.ps1 — cài đúng lock mới, giữ nguyên .env
+.venv/bin/awf start           # máy trung tâm tự chạy migration mới (dữ liệu được giữ)
 ```
+
+Nên cập nhật máy trung tâm trước, rồi đến các worker.
 
 ### Những thứ phải "chung" giữa các máy
 
-- **Repository mà project trỏ tới** phải truy cập được từ mọi worker có thể nhận job của project đó. Dùng
-  remote git (GitHub/GitLab/Gitea) hoặc share mạng — đường dẫn cục bộ như `D:/...` chỉ đúng trên một máy.
-  Credential git (SSH key / credential helper) cài trên từng worker.
-- **Lệnh build/test của project** chạy bằng PATH của worker. Nên dùng lệnh có trên mọi worker cùng loại
-  (`dotnet`, `python`, `cmake`...) và giới hạn worker bằng `labels.platform` + `required_capabilities`.
-- **Database:** một control plane = một DB. Dùng PostgreSQL (`DATABASE_URL=postgresql+psycopg://...`) khi
-  cần backup/HA; SQLite đủ cho một control plane.
-- **Đồng hồ:** heartbeat timeout tính theo giờ của control plane; worker không cần đồng bộ giờ chính xác.
+- **Repository của project** phải truy cập được từ mọi worker có thể nhận job của project đó. Dùng git remote;
+  đường dẫn cục bộ như `D:/...` chỉ đúng trên một máy. Credential git (SSH key / credential helper) cài trên
+  từng worker.
+- **Lệnh build/test của project** chạy bằng PATH của worker. Giới hạn worker bằng `labels.platform` và
+  `required_capabilities` của project.
+- **Database:** một máy trung tâm có một database. SQLite đủ cho một máy trung tâm. Dùng PostgreSQL khi cần
+  sao lưu/HA chuyên nghiệp.
 
 ### Cách đã kiểm chứng
 
-- Clone sạch → bootstrap → `doctor` OK → **52/52 test pass** trên cả Windows và Linux (WSL Ubuntu).
-- Chạy phân tán: control plane trên Linux, worker trên Windows. Workflow đầy đủ chạy tới `COMPLETED`, cả 13
-  job đều do worker Windows nhận.
-- CI (`.github/workflows/ci.yml`) chạy bootstrap + doctor + toàn bộ test trên `ubuntu-latest` và
-  `windows-latest` cho mỗi push.
+- Clone sạch → bootstrap → `doctor` OK → toàn bộ test pass trên Windows và Linux (WSL Ubuntu), và trên CI
+  GitHub Actions (`ubuntu-latest`, `windows-latest`).
+- Phân tán: máy trung tâm Linux, worker Windows. Workflow chạy tới `COMPLETED`; tắt máy trung tâm giữa lúc chạy
+  job vẫn không mất kết quả.
+- Nâng cấp tại chỗ một database đang có dữ liệu từ migration `0001` lên `0002` sau `git pull`.
+- Đăng nhập dashboard bằng `awf open`, phiên vẫn còn sau khi khởi động lại server, đăng xuất: kiểm tra trên
+  trình duyệt thật.
 
-Các khác biệt phụ thuộc OS mà lần kiểm chứng này tìm ra và đã sửa:
-
-- đường dẫn `C:/...` bị coi là tương đối trên Linux;
-- allowlist không nhận đường dẫn `.exe` kiểu Windows khi chạy trên Linux;
-- `python3` chưa được nhận là capability `python`;
-- race commit-sau-response của API.
+**Chưa kiểm chứng trên máy này:** Tailscale, Caddy/Let's Encrypt và Cloudflare Tunnel, vì máy chưa cài các
+công cụ đó và chưa có domain. Docker image cũng chưa được build vì Docker daemon chưa chạy.
 
 ### Docker (tùy chọn)
 
-`docker compose up -d --build` dùng cùng `requirements.lock` và cùng Python 3.12. Để worker ở máy khác kết
-nối vào, đặt `AWF_API_BIND=0.0.0.0` khi chạy compose (kèm token trong `.env`). Worker Windows (.NET) vẫn chạy
-native bằng bootstrap.
+`docker compose up -d --build` dùng cùng `requirements.lock` và Python 3.12. Profile `public` thêm Caddy cho
+HTTPS. Worker Windows (.NET) vẫn chạy native bằng bootstrap.
 
 ### Đổi dependency
 
@@ -605,5 +697,5 @@ Sửa `pyproject.toml`, rồi trên Python 3.12:
 pip install -e ".[dev,postgres]" && pip freeze --exclude-editable > requirements.lock
 ```
 
-Giữ dòng `colorama ... ; sys_platform == "win32"`, rồi commit. Mọi máy nhận phiên bản mới ở lần
-`git pull` + bootstrap kế tiếp; `awf doctor` báo `FAIL` nếu máy nào còn lệch lock.
+Giữ dòng `colorama ... ; sys_platform == "win32"`, rồi commit. `awf doctor` báo `FAIL` nếu máy nào còn lệch
+lock.

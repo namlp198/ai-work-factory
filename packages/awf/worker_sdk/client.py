@@ -111,11 +111,12 @@ class ControlPlaneClient:
         return data.get("job") if data else None
 
     def progress(self, job_id: str, state: str) -> None:
-        self._call("POST", f"/api/v1/jobs/{job_id}/progress", retry_for=30, json={"state": state})
+        # Progress and log lines are best-effort: never stall the job during an outage for them.
+        self._call("POST", f"/api/v1/jobs/{job_id}/progress", retry_for=5, json={"state": state})
 
     def log(self, job_id: str, lines: list[dict[str, str]]) -> None:
         if lines:
-            self._call("POST", f"/api/v1/jobs/{job_id}/log", retry_for=30, json={"lines": lines})
+            self._call("POST", f"/api/v1/jobs/{job_id}/log", retry_for=5, json={"lines": lines})
 
     def complete(self, job_id: str, result: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", f"/api/v1/jobs/{job_id}/complete", retry_for=self.result_retry_seconds, json=result)
