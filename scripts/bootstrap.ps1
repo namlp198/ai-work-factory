@@ -42,6 +42,13 @@ $venvPy = Join-Path $root ".venv\Scripts\python.exe"
 if (Test-Path $venvPy) {
     $have = (& $venvPy -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')").Trim()
     if ($have -ne $want) { Write-Host "Recreating .venv ($have -> $want)"; Remove-Item -Recurse -Force .venv }
+    else {
+        & $venvPy -m pip --version *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Recreating .venv (it has no pip; an earlier setup was interrupted)"
+            Remove-Item -Recurse -Force .venv
+        }
+    }
 }
 if (-not (Test-Path $venvPy)) {
     $python = Find-Python

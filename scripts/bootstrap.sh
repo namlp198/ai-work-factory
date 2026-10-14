@@ -34,15 +34,30 @@ find_python() {
   return 1
 }
 
-# 1. Virtual environment on the pinned Python version (recreated if the version differs).
+# 1. Virtual environment on the pinned Python version. Recreated if the version differs or if it is
+#    broken (e.g. left without pip by an earlier failed attempt).
 if [[ -x .venv/bin/python ]]; then
-  have="$(.venv/bin/python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
-  [[ "$have" != "$want" ]] && { echo "Recreating .venv ($have -> $want)"; rm -rf .venv; }
+  have="$(.venv/bin/python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo broken)"
+  if [[ "$have" != "$want" ]]; then
+    echo "Recreating .venv ($have -> $want)"; rm -rf .venv
+  elif ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
+    echo "Recreating .venv (it has no pip; an earlier setup was interrupted)"; rm -rf .venv
+  fi
 fi
 if [[ ! -x .venv/bin/python ]]; then
   python="$(find_python)"
+  # Debian/Ubuntu ship venv/ensurepip as a separate package.
+  if ! "$python" -c 'import ensurepip, venv' >/dev/null 2>&1; then
+    echo "Python $want is missing the venv module. Install it, then rerun this script:" >&2
+    echo "  sudo apt install -y python$want-venv" >&2
+    exit 1
+  fi
   echo "Creating .venv with $python"
-  "$python" -m venv .venv
+  if ! "$python" -m venv .venv; then
+    rm -rf .venv  # never leave a half-created environment behind
+    echo "Could not create .venv (on Debian/Ubuntu: sudo apt install -y python$want-venv)" >&2
+    exit 1
+  fi
 fi
 
 # 2. Exact dependency versions from requirements.lock, then the project itself.
