@@ -682,7 +682,7 @@ bootstrap:
 ```
 
 - Chạy `awf start --supervise` **ẩn hoàn toàn** (`pythonw`, không có cửa sổ console) trong phiên đăng nhập của
-  bạn, nên dùng được credential git và `.env` của bạn. Log ghi vào `var\logswf.log`, xoay vòng ở 10 MB
+  bạn, nên dùng được credential git và `.env` của bạn. Log ghi vào `var\logs\awf.log`, xoay vòng ở 10 MB
   và giữ 3 bản cũ.
 - Bỏ giới hạn 72 giờ mặc định của Task Scheduler. Vẫn chạy khi máy dùng pin hoặc đang rảnh.
 - Task Scheduler **không** tự chạy lại tác vụ khi tiến trình bị chết, nên script thêm một trigger canh chừng
@@ -695,7 +695,7 @@ bootstrap:
   |---|---|
   | Trạng thái + log gần nhất | `.\scripts\install-task.ps1 -Status` |
   | Áp dụng thay đổi sau khi sửa `.env` hoặc `git pull` + bootstrap | `.\scripts\install-task.ps1 -Restart` |
-  | Xem log trực tiếp | `Get-Content var\logswf.log -Wait` |
+  | Xem log trực tiếp | `Get-Content var\logs\awf.log -Wait` |
   | Tạm tắt, kể cả watchdog (bật lại bằng `-Start`) | `.\scripts\install-task.ps1 -Stop` |
   | Gỡ | `.\scripts\install-task.ps1 -Uninstall` |
 - Tác vụ chỉ chạy khi bạn **đã đăng nhập** Windows; khoá màn hình thì không sao. Nếu muốn PC làm việc lúc
