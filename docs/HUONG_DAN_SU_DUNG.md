@@ -311,7 +311,7 @@ awf worker --url <control-api> --name <tên duy nhất> [--platform linux-arm64]
 - Đăng ký cần `AWF_WORKER_REGISTRATION_TOKEN`; worker nhận token riêng dùng cho mọi call sau đó.
 - Heartbeat mỗi 15s; quá `worker_heartbeat_timeout_seconds` (90s) → offline, job đang chạy được requeue.
 - Mỗi job: clone mới vào `<workspace_root>/<job_id>`, xoá sau khi xong.
-- Chạy như service: Linux dùng `sudo scripts/install-systemd.sh` (xem mục 21); Windows dùng Task Scheduler/NSSM với lệnh `awf start`.
+- Chạy như service: Linux dùng `sudo scripts/install-systemd.sh`, Windows dùng `.\scripts\install-task.ps1` (xem mục 21).
 
 Routing theo stage: thêm `worker: {platform: linux, capabilities: [cuda]}` vào stage trong workflow, hoặc
 `labels.platform` + `repository.required_capabilities` ở project.
@@ -673,6 +673,46 @@ sudo scripts/install-systemd.sh          # cài, bật khi khởi động, chạ
 - chạy backup qua service;
 - dừng sạch;
 - gỡ cài đặt.
+
+**Windows — Task Scheduler (không cần quyền admin).** Thường dùng cho PC Windows làm worker, sau khi đã chạy
+bootstrap:
+
+```powershell
+.\scripts\install-task.ps1          # đăng ký, chạy mỗi lần bạn đăng nhập Windows, chạy ngay
+```
+
+- Chạy `awf start --supervise` **ẩn hoàn toàn** (`pythonw`, không có cửa sổ console) trong phiên đăng nhập của
+  bạn, nên dùng được credential git và `.env` của bạn. Log ghi vào `var\logswf.log`, xoay vòng ở 10 MB
+  và giữ 3 bản cũ.
+- Bỏ giới hạn 72 giờ mặc định của Task Scheduler. Vẫn chạy khi máy dùng pin hoặc đang rảnh.
+- Task Scheduler **không** tự chạy lại tác vụ khi tiến trình bị chết, nên script thêm một trigger canh chừng
+  (watchdog) kích hoạt lại mỗi 5 phút. Lúc worker đang chạy thì lần kích hoạt đó bị bỏ qua.
+- Lỗi Python bất ngờ thì `--supervise` tự khởi động lại trong vài giây. Lỗi cấu hình (sai token, URL không an
+  toàn) thì dừng và ghi rõ lý do vào log.
+- Lệnh thường dùng:
+
+  | Việc | Lệnh |
+  |---|---|
+  | Trạng thái + log gần nhất | `.\scripts\install-task.ps1 -Status` |
+  | Áp dụng thay đổi sau khi sửa `.env` hoặc `git pull` + bootstrap | `.\scripts\install-task.ps1 -Restart` |
+  | Xem log trực tiếp | `Get-Content var\logswf.log -Wait` |
+  | Tạm tắt, kể cả watchdog (bật lại bằng `-Start`) | `.\scripts\install-task.ps1 -Stop` |
+  | Gỡ | `.\scripts\install-task.ps1 -Uninstall` |
+- Tác vụ chỉ chạy khi bạn **đã đăng nhập** Windows; khoá màn hình thì không sao. Nếu muốn PC làm việc lúc
+  bạn vắng mặt, đặt chế độ sleep thành *Never* (Settings → System → Power).
+
+Đã thử trên Windows 10:
+
+- cài đặt;
+- chạy ẩn;
+- worker đăng ký với máy trung tâm Linux và chạy trọn một workflow 13 job;
+- `-Restart`;
+- giết tiến trình → watchdog bật lại;
+- `-Stop` → watchdog **không** bật lại;
+- `-Start`;
+- `-Uninstall` không để sót tiến trình.
+
+Riêng trigger "khi đăng nhập" chưa thử bằng một lần đăng xuất/đăng nhập thật.
 
 ### Sao lưu (chỉ máy trung tâm)
 

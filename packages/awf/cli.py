@@ -220,6 +220,83 @@ def _worker_namespace() -> argparse.Namespace:
     )
 
 
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUPS = 3
+
+
+class _RotatingStream:
+    """Text stream that appends to `path` and rotates it (path.1 .. path.N) once it exceeds max_bytes."""
+
+    def __init__(self, path: Path, max_bytes: int = LOG_MAX_BYTES, backups: int = LOG_BACKUPS):
+        self.path, self.max_bytes, self.backups = path, max_bytes, backups
+        self._lock = threading.Lock()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115 - lives for the whole process
+        self._maybe_rotate()
+
+    def _maybe_rotate(self) -> None:
+        if self._file.tell() < self.max_bytes:
+            return
+        self._file.close()
+        for i in range(self.backups, 0, -1):
+            older = self.path.with_name(f"{self.path.name}.{i}")
+            newer = self.path.with_name(f"{self.path.name}.{i - 1}") if i > 1 else self.path
+            if newer.exists():
+                older.unlink(missing_ok=True)
+                newer.rename(older)
+        self._file = open(self.path, "a", encoding="utf-8")  # noqa: SIM115
+
+    def write(self, text: str) -> int:
+        with self._lock:
+            written = self._file.write(text)
+            if "\n" in text:
+                self._file.flush()
+                self._maybe_rotate()
+            return written
+
+    def flush(self) -> None:
+        with self._lock:
+            self._file.flush()
+
+    def isatty(self) -> bool:
+        return False
+
+
+def _redirect_output(path: Path) -> None:
+    """Send stdout/stderr to a size-rotated file (pythonw/Task Scheduler have no console)."""
+    sys.stdout = sys.stderr = _RotatingStream(path)  # type: ignore[assignment]
+
+
+def cmd_start_entry(args: argparse.Namespace) -> int:
+    """`awf start`, optionally logging to a file and supervised (restarted in-process after a crash)."""
+    if args.log_file:
+        log = Path(args.log_file)
+        _redirect_output(log if log.is_absolute() else _settings().home / log)
+    if not args.supervise:
+        return cmd_start(args)
+    delay = 5.0
+    while True:
+        started = time.monotonic()
+        try:
+            code = cmd_start(args)
+        except KeyboardInterrupt:
+            return 0
+        except SystemExit as exc:  # configuration errors (bad token, insecure URL...): retrying cannot fix them
+            print(f"awf start stopped: {exc}", flush=True)
+            return exc.code if isinstance(exc.code, int) else 1
+        except Exception as exc:  # noqa: BLE001 - supervisor: log and restart
+            import traceback
+
+            traceback.print_exc()
+            code = None
+            print(f"awf start crashed ({type(exc).__name__}: {exc})", flush=True)
+        if time.monotonic() - started > 300:
+            delay = 5.0  # it ran fine for a while: restart quickly
+        print(f"awf start exited (code={code}); restarting in {delay:.0f}s", flush=True)
+        time.sleep(delay)
+        delay = min(delay * 2, 300.0)
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     """Start whatever this machine's AWF_ROLE says: control-plane, worker, or all (both)."""
     from awf.logging import configure_logging
@@ -422,7 +499,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("start", help="start this machine according to AWF_ROLE in .env")
     p.add_argument("--role", choices=ROLES, help="override AWF_ROLE")
-    p.set_defaults(func=cmd_start)
+    p.add_argument("--supervise", action="store_true", help="restart automatically after an unexpected crash")
+    p.add_argument("--log-file", help="write output to this file (rotated at 10 MB) instead of the console")
+    p.set_defaults(func=cmd_start_entry)
 
     p = sub.add_parser("env", help="machine configuration")
     p.add_argument("action", choices=["init"])
