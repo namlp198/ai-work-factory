@@ -311,7 +311,7 @@ awf worker --url <control-api> --name <tên duy nhất> [--platform linux-arm64]
 - Đăng ký cần `AWF_WORKER_REGISTRATION_TOKEN`; worker nhận token riêng dùng cho mọi call sau đó.
 - Heartbeat mỗi 15s; quá `worker_heartbeat_timeout_seconds` (90s) → offline, job đang chạy được requeue.
 - Mỗi job: clone mới vào `<workspace_root>/<job_id>`, xoá sau khi xong.
-- Chạy như service: Windows dùng NSSM/Task Scheduler; Linux dùng systemd (`ExecStart=/opt/awf/.venv/bin/awf worker ...`).
+- Chạy như service: Linux dùng `sudo scripts/install-systemd.sh` (xem mục 21); Windows dùng Task Scheduler/NSSM với lệnh `awf start`.
 
 Routing theo stage: thêm `worker: {platform: linux, capabilities: [cuda]}` vào stage trong workflow, hoặc
 `labels.platform` + `repository.required_capabilities` ở project.
@@ -638,6 +638,41 @@ của bạn. Nếu dùng tunnel/proxy ở máy khác, đặt `AWF_TRUSTED_PROXIE
   tạo mới toàn bộ token, nên cần cài lại các worker còn lại). **Delete** bản ghi worker đã revoke để máy
   đó tham gia lại.
 - Nhãn để định tuyến theo địa điểm: `AWF_WORKER_LABELS=site=hanoi,gpu=rtx4090`.
+
+### Chạy như dịch vụ (tự bật khi khởi động máy)
+
+**Linux (Ubuntu/Debian/Jetson) — systemd.** Sau khi đã chạy bootstrap:
+
+```bash
+sudo scripts/install-systemd.sh          # cài, bật khi khởi động, chạy ngay
+```
+
+- `awf.service` chạy `awf start` bằng user sở hữu thư mục repo (không chạy bằng root). Vai trò vẫn lấy từ
+  `.env`, nên cùng một lệnh dùng được cho máy trung tâm và máy worker Linux.
+- Tự chạy lại sau 5 giây nếu tiến trình chết. Dừng nhẹ nhàng khi tắt máy.
+- Máy có database SQLite (`control-plane`/`all`) được cài thêm `awf-backup.timer`: sao lưu lúc 02:30 mỗi đêm vào
+  `var/backups/`, giữ 14 bản. Nếu máy tắt lúc 02:30 thì timer chạy bù khi bật lại.
+- Lệnh thường dùng:
+
+  | Việc | Lệnh |
+  |---|---|
+  | Xem trạng thái | `systemctl status awf` |
+  | Xem log trực tiếp | `journalctl -u awf -f` |
+  | Áp dụng thay đổi sau khi sửa `.env` hoặc `git pull` + bootstrap | `sudo systemctl restart awf` |
+  | Xem lịch sao lưu | `systemctl list-timers awf-backup` |
+  | Gỡ dịch vụ (dữ liệu trong `var/` được giữ nguyên) | `sudo scripts/install-systemd.sh --uninstall` |
+- Máy trung tâm có `ufw` đang bật: mở cổng cho LAN, ví dụ
+  `sudo ufw allow from 192.168.0.0/16 to any port 8000 proto tcp`.
+
+Đã thử trên Ubuntu 24.04 (systemd 255):
+
+- cài đặt;
+- `systemd-analyze verify`;
+- API trả lời;
+- giết tiến trình bằng `SIGKILL` → tự chạy lại;
+- chạy backup qua service;
+- dừng sạch;
+- gỡ cài đặt.
 
 ### Sao lưu (chỉ máy trung tâm)
 

@@ -1,0 +1,11 @@
+# Nightly database backup; runs at the next boot if the machine was off at 02:30.
+[Unit]
+Description=Nightly AI Work Factory database backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

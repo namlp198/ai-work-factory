@@ -1,0 +1,13 @@
+# One consistent copy of the control-plane database into @REPO@/var/backups (keeps the newest 14).
+[Unit]
+Description=AI Work Factory database backup
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/.venv/bin/awf db backup --keep 14
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
