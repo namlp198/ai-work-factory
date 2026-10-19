@@ -105,8 +105,15 @@ function bindProjects() {
   };
 }
 
+// Machine picker for run placement: "" lets the orchestrator choose the least loaded matching machine.
+function machineSelect(workers, selected = "", auto = "Automatic (least loaded matching machine)") {
+  const opts = workers.filter((w) => w.status !== "revoked").map((w) =>
+    `<option value="${esc(w.name)}" ${w.name === selected ? "selected" : ""}>${esc(w.name)} · ${esc(w.platform)} · ${esc(w.status)}</option>`).join("");
+  return `<select name="worker"><option value="">${esc(auto)}</option>${opts}</select>`;
+}
+
 async function viewProject(id) {
-  const [p, runs, workflows] = await Promise.all([api(`/projects/${id}`), api(`/projects/${id}/workflow-runs`), api("/workflows")]);
+  const [p, runs, workflows, workers] = await Promise.all([api(`/projects/${id}`), api(`/projects/${id}/workflow-runs`), api("/workflows"), api("/workers")]);
   const rows = runs.map((r) => `<tr class="click" data-href="#/runs/${r.id}"><td><code>${short(r.id)}</code></td><td>${esc(r.workflow_id)}</td>
     <td>${pill(r.status)}</td><td>${esc(r.input?.objective || "")}</td><td>${when(r.created_at)}</td></tr>`).join("");
   const options = workflows.filter((w) => w.status === "active").map((w) => `<option value="${esc(w.id)}">${esc(w.name || w.id)} v${esc(w.version)}</option>`).join("");
@@ -116,6 +123,7 @@ async function viewProject(id) {
     <div>Spend / budget</div><div>${money(p.spend_usd)} / ${p.budget_usd == null ? "∞" : money(p.budget_usd)}</div></div>
     <h2>Start a workflow run</h2>
     <form class="grid" id="run-form"><label>Workflow<select name="workflow_id">${options}</select></label>
+      <label>Machine${machineSelect(workers)}</label>
       <label class="full">Objective<textarea name="objective" rows="3" required></textarea></label>
       <div class="full row"><button>Start</button><span id="run-error" class="error"></span></div></form>
     <h2>Runs</h2><div class="table-wrap"><table><tr><th>Run</th><th>Workflow</th><th>Status</th><th>Objective</th><th>Created</th></tr>${rows || '<tr><td colspan="5" class="muted">No runs</td></tr>'}</table></div>`;
@@ -128,14 +136,16 @@ function bindProject(id) {
     e.preventDefault();
     const f = new FormData(form);
     try {
-      const r = await api(`/projects/${id}/workflow-runs`, { method: "POST", body: JSON.stringify({ workflow_id: f.get("workflow_id"), inputs: { objective: f.get("objective") } }) });
+      const body = { workflow_id: f.get("workflow_id"), inputs: { objective: f.get("objective") } };
+      if (f.get("worker")) body.placement = { worker: f.get("worker") };
+      const r = await api(`/projects/${id}/workflow-runs`, { method: "POST", body: JSON.stringify(body) });
       location.hash = `#/runs/${r.id}`;
     } catch (err) { $("#run-error").textContent = err.message; }
   };
 }
 
 async function viewRun(id) {
-  const [run, tasks, approvals] = await Promise.all([api(`/workflow-runs/${id}`), api(`/workflow-runs/${id}/tasks`), api("/approvals?state=pending")]);
+  const [run, tasks, approvals, workers] = await Promise.all([api(`/workflow-runs/${id}`), api(`/workflow-runs/${id}/tasks`), api("/approvals?state=pending"), api("/workers")]);
   const pipeline = run.stages.map((s) => `<div class="stage ${esc(s.status)}"><div class="t">${esc(s.title)}</div>
     <div class="m">${esc(s.kind)}${s.gate ? " · gate" : ""} · iter ${s.iteration}</div><div>${pill(s.status)}</div></div>`).join('<div class="arrow">→</div>');
   const rows = tasks.map((t) => `<tr class="click" data-task="${t.id}"><td>${esc(t.stage_id)}</td><td>${esc(t.title)}</td>
@@ -146,6 +156,7 @@ async function viewRun(id) {
       ${run.status === "RUNNING" ? '<button class="danger" id="cancel-run">Cancel run</button>' : ""}</div>
     <div class="kv"><div>Workflow</div><div>${esc(run.workflow_id)} v${esc(run.workflow_version)}</div>
       <div>Objective</div><div>${esc(run.input?.objective)}</div>
+      ${placementRows(run, workers)}
       <div>Integration branch</div><div><code>${esc(run.integration_branch)}</code></div>
       <div>Fix loops</div><div>${esc(JSON.stringify(run.fix_loops))}</div>
       <div>LLM cost</div><div>${money(run.cost_usd)}</div>
@@ -156,7 +167,27 @@ async function viewRun(id) {
     <h2>Artifacts</h2><div id="run-artifacts" class="muted">Loading…</div>`;
 }
 
+function placementRows(run, workers) {
+  if (run.placement?.mode !== "run") return `<div>Machine</div><div class="muted">any matching machine per job (placement: stage)</div>`;
+  const w = run.assigned_worker;
+  const machine = w ? `<b>${esc(w.name || short(w.id))}</b> ${w.status ? pill(w.status) : ""} <span class="muted">since ${when(run.assigned_at)}</span>`
+    : `<span class="muted">not assigned yet</span>`;
+  const req = run.requirements || {};
+  const move = run.status === "RUNNING" ? `<form id="reassign-form" class="row">${machineSelect(workers, run.placement.worker || "", "Let the orchestrator choose")}
+      <button class="ghost">Move run</button><span id="reassign-error" class="error"></span></form>` : "";
+  return `<div>Machine</div><div>${machine}${run.placement.worker ? ' <span class="muted">(chosen by hand)</span>' : ""}
+      ${run.placement.wait ? `<div class="error">${esc(run.placement.wait)}</div>` : ""}${move}</div>
+    <div>Requirements</div><div>platform <code>${esc(req.platform || "any")}</code> · capabilities <code>${esc((req.capabilities || []).join(", "))}</code></div>`;
+}
+
 async function bindRun(id) {
+  const form = $("#reassign-form");
+  if (form) form.onsubmit = async (e) => {
+    e.preventDefault();
+    const worker = new FormData(form).get("worker") || null;
+    try { await api(`/workflow-runs/${id}/reassign`, { method: "POST", body: JSON.stringify({ worker }) }); render(); }
+    catch (err) { $("#reassign-error").textContent = err.message; }
+  };
   const btn = $("#cancel-run");
   if (btn) btn.onclick = async () => { if (confirm("Cancel this run?")) { await api(`/workflow-runs/${id}/cancel`, { method: "POST" }); render(); } };
   document.querySelectorAll("tr[data-task]").forEach((tr) => (tr.onclick = () => openTask(tr.dataset.task)));
@@ -246,15 +277,16 @@ async function viewWorkers() {
     : `<button class="danger" data-revoke-worker="${w.id}" data-name="${esc(w.name)}" title="Lost or compromised machine">Revoke</button>`;
   const rows = workers.map((w) => `<tr><td>${esc(w.name)}<div class="muted"><code>${esc(w.machine_id || "")}</code></div></td><td>${pill(w.status)}</td><td><code>${esc(w.platform)}</code></td>
     <td>${(w.capabilities || []).map(esc).join(", ")}</td><td>${esc(Object.entries(w.labels || {}).map(([k, v]) => `${k}=${v}`).join(", "))}</td>
+    <td>${w.active_runs ?? 0} <span class="muted">· ${w.max_jobs ?? 1} job slot${(w.max_jobs ?? 1) === 1 ? "" : "s"}</span></td>
     <td>${esc(JSON.stringify(w.load))}</td><td>${when(w.last_heartbeat)}</td><td>${action(w)}</td></tr>`).join("");
-  return `<h1>Workers</h1><div class="table-wrap"><table><tr><th>Name</th><th>Status</th><th>Platform</th><th>Capabilities</th><th>Labels</th><th>Load</th><th>Last heartbeat</th><th></th></tr>${rows || '<tr><td colspan="8" class="muted">No workers registered</td></tr>'}</table></div>
+  return `<h1>Workers</h1><div class="table-wrap"><table><tr><th>Name</th><th>Status</th><th>Platform</th><th>Capabilities</th><th>Labels</th><th>Runs</th><th>Load</th><th>Last heartbeat</th><th></th></tr>${rows || '<tr><td colspan="9" class="muted">No workers registered</td></tr>'}</table></div>
     <p class="muted">Revoke immediately invalidates a worker's token, requeues its jobs and blocks it from re-registering.
       If the machine was compromised, also rotate <code>AWF_WORKER_REGISTRATION_TOKEN</code> on the control plane.</p>`;
 }
 
 function bindWorkers() {
   document.querySelectorAll("[data-revoke-worker]").forEach((b) => (b.onclick = async () => {
-    if (!confirm(`Revoke worker ${b.dataset.name}? Its running jobs are handed to other workers.`)) return;
+    if (!confirm(`Revoke worker ${b.dataset.name}? Its runs move to other matching machines.`)) return;
     await api(`/workers/${b.dataset.revokeWorker}/revoke`, { method: "POST" }); render();
   }));
   document.querySelectorAll("[data-delete-worker]").forEach((b) => (b.onclick = async () => {

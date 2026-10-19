@@ -433,6 +433,12 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
     headers = {"Authorization": f"Bearer {settings.api_token}"} if settings.api_token else {}
     api = httpx.Client(base_url=base, headers=headers, timeout=30)
+    # The worker registers before the run starts: runs are refused when no registered machine matches them.
+    worker_args = argparse.Namespace(url=base, name="demo-linux-worker", workspace_root=str(settings.home / "var" / "workspaces"),
+                                     platform="linux-amd64", capabilities="git,python", label=["location=local"],
+                                     poll_interval=1.0)
+    worker = build_worker(worker_args)
+    threading.Thread(target=worker.serve_forever, daemon=True).start()
     py = sys.executable
     project = api.post("/api/v1/projects", json={
         "name": f"perception-service demo {time.strftime('%H%M%S')}",
@@ -445,12 +451,6 @@ def cmd_demo(args: argparse.Namespace) -> int:
         "workflow_id": "software-development",
         "inputs": {"objective": args.objective},
     }).raise_for_status().json()
-
-    worker_args = argparse.Namespace(url=base, name="demo-linux-worker", workspace_root=str(settings.home / "var" / "workspaces"),
-                                     platform="linux-amd64", capabilities="git,python", label=["location=local"],
-                                     poll_interval=1.0)
-    worker = build_worker(worker_args)
-    threading.Thread(target=worker.serve_forever, daemon=True).start()
 
     print(f"\nDashboard: {base}/   (run {run['id']})")
     print(f"Demo repository: {repo}")
