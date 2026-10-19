@@ -53,7 +53,8 @@ from awf.domain.models import (
 from awf.domain.state_machine import can_transition_task, check_task_transition
 from awf.logging import get_logger
 from awf.orchestrator import audit
-from awf.orchestrator.jobs import expire_leases, requeue_or_fail
+from awf.orchestrator import placement
+from awf.orchestrator.jobs import expire_leases, requeue_or_fail, requirements_met
 from awf.orchestrator.context import ContextBuilder, task_meta
 from awf.orchestrator.critic import CHANGES_REQUIRED, Critic, CriticResult
 from awf.orchestrator.task_router import TaskRouter, slug
@@ -113,7 +114,9 @@ class Orchestrator:
         return project
 
     def start_run(self, session: Session, project: Project, workflow_id: str, inputs: dict[str, Any],
-                  actor: str = "admin") -> WorkflowRun:
+                  actor: str = "admin", worker_name: str | None = None) -> WorkflowRun:
+        """Start a run. With run placement (the default) `worker_name` pins it to that machine; otherwise
+        the orchestrator picks the least loaded matching machine at the first dispatch."""
         workflow = self.p.workflows.get(workflow_id)
         if workflow.spec.status != "active":
             raise OrchestratorError(f"workflow '{workflow_id}' is not active (status {workflow.spec.status})")
@@ -125,11 +128,24 @@ class Orchestrator:
         missing = [name for name in workflow.spec.inputs if not inputs.get(name)]
         if missing:
             raise OrchestratorError(f"missing workflow inputs: {missing}")
+        placed = workflow.spec.placement == placement.RUN
+        requirements: dict[str, Any] = {}
+        if placed:
+            try:
+                requirements = placement.run_requirements(workflow.spec, project, inputs.get("repository"),
+                                                          self.p.settings.default_worker_platform)
+            except placement.PlacementError as exc:
+                raise OrchestratorError(str(exc)) from None
+            self._check_placeable(session, requirements, worker_name)
+        elif worker_name:
+            raise OrchestratorError(f"workflow '{workflow_id}' uses placement: stage; it cannot be pinned to a worker")
         run_id = new_id()
         run = WorkflowRun(
             id=run_id, project_id=project.id, workflow_id=workflow.spec.id, workflow_version=workflow.spec.version,
             status=RunStatus.RUNNING, input_json=inputs, started_at=utcnow(),
-            context_json={"stage_iteration": {}, "fix_loops": {}, "integration_branch": f"awf/run-{run_id[:8]}"},
+            context_json={"stage_iteration": {}, "fix_loops": {}, "integration_branch": f"awf/run-{run_id[:8]}",
+                          "placement": {"mode": workflow.spec.placement, "worker": worker_name, "wait": None}},
+            requirements=requirements,
         )
         session.add(run)
         session.flush()
@@ -140,7 +156,46 @@ class Orchestrator:
         self._update_ctx(run, objective_artifact_id=objective.id)
         audit.record(session, EventType.WORKFLOW_STARTED, actor_type="human", actor_id=actor, project_id=project.id,
                      workflow_run_id=run.id, payload={"workflow_id": workflow.spec.id,
-                                                      "version": workflow.spec.version})
+                                                      "version": workflow.spec.version,
+                                                      "placement": workflow.spec.placement,
+                                                      "requirements": requirements, "worker": worker_name})
+        return run
+
+    @staticmethod
+    def _check_placeable(session: Session, requirements: dict[str, Any], worker_name: str | None) -> None:
+        """Refuse runs no registered machine could ever execute (an Ubuntu box must never get a Windows-only
+        .NET project). With no workers registered yet the run is accepted and waits for one."""
+        if worker_name:
+            worker = session.scalar(select(Worker).where(Worker.name == worker_name))
+            if worker is None:
+                raise OrchestratorError(f"worker '{worker_name}' is not registered")
+            if worker.status == WorkerStatus.REVOKED:
+                raise OrchestratorError(f"worker '{worker_name}' is revoked")
+            if not requirements_met(worker, requirements):
+                raise OrchestratorError(f"worker '{worker_name}' ({worker.platform}, capabilities "
+                                        f"{worker.capabilities}) does not meet {placement.describe(requirements)}")
+            return
+        workers = session.scalars(select(Worker).where(Worker.status != WorkerStatus.REVOKED)).all()
+        if workers and not any(requirements_met(w, requirements) for w in workers):
+            registered = ", ".join(f"{w.name} ({w.platform}, {w.capabilities})" for w in workers)
+            raise OrchestratorError(f"no registered worker meets {placement.describe(requirements)}; "
+                                    f"registered: {registered}")
+
+    def reassign_run(self, session: Session, run: WorkflowRun, worker_name: str | None,
+                     actor: str = "admin") -> WorkflowRun:
+        """Move a run to `worker_name` (pinned from now on) or, with None, let the orchestrator choose again."""
+        if run.status in TERMINAL_RUN_STATUSES:
+            raise OrchestratorError(f"run is already {run.status}")
+        if not placement.is_run_placed(run):
+            raise OrchestratorError("run does not use run placement")
+        if run.assigned_worker_id and placement.active_jobs_on(session, run, run.assigned_worker_id):
+            raise OrchestratorError("a job of this run is executing; wait for it to finish before moving the run")
+        self._check_placeable(session, run.requirements or {}, worker_name)
+        placement.set_pinned_worker(run, worker_name)
+        reason = f"moved to {worker_name}" if worker_name else "placement reset"
+        if run.assigned_worker_id:
+            placement.release_run(session, run, f"{reason} by {actor}", actor=actor)
+        self._place(session, run, session.get(Project, run.project_id), actor=actor)
         return run
 
     def cancel_run(self, session: Session, run: WorkflowRun, actor: str = "admin", reason: str = "cancelled") -> None:
@@ -215,6 +270,7 @@ class Orchestrator:
             return True
         changed |= self._materialize(session, run, workflow)
         changed |= self._promote(session, run)
+        changed |= self._ensure_placement(session, run, project)
         changed |= self._dispatch(session, run, workflow, project)
         changed |= self._check_completion(session, run, workflow)
         return changed
@@ -705,11 +761,14 @@ class Orchestrator:
         for task in self._current_tasks(session, run):
             if task.state != TaskState.READY:
                 continue
-            changed = True
             stage = workflow.spec.stage(task.stage_id)
             if task.task_type == TaskType.GATE:
+                changed = True
                 self._request_approval(session, run, stage, task, self._stage_input_artifacts(session, run, workflow, stage))
                 continue
+            if placement.is_run_placed(run) and not run.assigned_worker_id:
+                continue  # waiting for a machine (see _ensure_placement); the task stays READY
+            changed = True
             try:
                 self._dispatch_job(session, run, workflow, project, stage, task)
             except Exception as exc:  # routing/config errors fail the task, not the orchestrator
@@ -769,8 +828,11 @@ class Orchestrator:
                                  input_json={"input_artifact_ids": built.input_artifact_ids,
                                              "task": task_meta(task), "context_chars": len(built.user_message)})
             session.add(agent_run)
+        placed = placement.is_run_placed(run)
         job = Job(id=new_id(), task_id=task.id, workflow_run_id=run.id, agent_run_id=agent_run.id if agent_run else None,
-                  job_type=payload["job_type"], payload=payload, requirements=route.requirements,
+                  job_type=payload["job_type"], payload=payload,
+                  requirements=run.requirements if placed else route.requirements,
+                  pinned=placed, assigned_worker_id=run.assigned_worker_id if placed else None,
                   state=JobState.QUEUED, max_attempts=self.p.settings.job_max_attempts)
         session.add(job)
         if agent_run:
@@ -779,7 +841,7 @@ class Orchestrator:
         audit.record(session, EventType.TASK_ASSIGNED, project_id=run.project_id, workflow_run_id=run.id,
                      task_id=task.id, payload={
                          "job_id": job.id, "role": task.assigned_role, "attempt": task.attempt,
-                         "requirements": route.requirements,
+                         "requirements": job.requirements, "worker_id": job.assigned_worker_id,
                          "model": route.model_route.as_dict() if route.model_route else None})
         return job
 
@@ -819,7 +881,58 @@ class Orchestrator:
                                                           Job.state.in_(list(ACTIVE_JOB_STATES)))):
                 requeue_or_fail(session, job, f"worker {worker.name} went offline")
         changed |= expire_leases(session) > 0
+        changed |= self._check_placements(session)
         return changed
+
+    def _check_placements(self, session: Session) -> bool:
+        """Take runs off machines that can no longer execute them (ADR-008). An offline machine keeps its
+        runs for run_reassign_after_seconds (restarts, network blips) and only while they have work queued;
+        a run waiting on a human approval stays where it is until it has something to run."""
+        grace = timedelta(seconds=self.p.settings.run_reassign_after_seconds)
+        now = utcnow()
+        changed = False
+        for run in session.scalars(select(WorkflowRun).where(WorkflowRun.status == RunStatus.RUNNING,
+                                                             WorkflowRun.assigned_worker_id.is_not(None))):
+            worker = session.get(Worker, run.assigned_worker_id)
+            if worker is None:
+                reason = "assigned worker was deleted"
+            elif worker.status == WorkerStatus.REVOKED:
+                reason = f"worker {worker.name} was revoked"
+            elif not requirements_met(worker, run.requirements or {}):
+                reason = f"worker {worker.name} no longer meets {placement.describe(run.requirements or {})}"
+            elif worker.status == WorkerStatus.OFFLINE and (placement.offline_for(worker, now) or grace) >= grace \
+                    and self._has_pending_work(session, run):
+                minutes = int((placement.offline_for(worker, now) or grace).total_seconds() // 60)
+                reason = f"worker {worker.name} offline for {minutes} min"
+            else:
+                continue
+            if worker is not None and placement.active_jobs_on(session, run, worker.id):
+                continue  # let the job finish or its lease expire first
+            placement.release_run(session, run, reason)
+            self._place(session, run, session.get(Project, run.project_id))
+            changed = True
+        return changed
+
+    def _has_pending_work(self, session: Session, run: WorkflowRun) -> bool:
+        if session.scalar(select(Job.id).where(Job.workflow_run_id == run.id, Job.state == JobState.QUEUED).limit(1)):
+            return True
+        return any(t.state == TaskState.READY and t.task_type != TaskType.GATE for t in self._current_tasks(session, run))
+
+    # ================================================================== placement
+    def _ensure_placement(self, session: Session, run: WorkflowRun, project: Project) -> bool:
+        """Give a run-placed run its machine as soon as it has something to execute."""
+        if not placement.is_run_placed(run) or run.assigned_worker_id:
+            return False
+        if not self._has_pending_work(session, run):
+            return False
+        return self._place(session, run, project)
+
+    def _place(self, session: Session, run: WorkflowRun, project: Project, actor: str = "orchestrator") -> bool:
+        choice = placement.choose_worker(session, run, project, self.p.settings.worker_heartbeat_timeout_seconds)
+        if choice.worker is None:
+            return placement.set_wait(run, choice.reason)
+        placement.assign_run(session, run, choice, actor=actor)
+        return True
 
 
 __all__ = ["Orchestrator", "OrchestratorError"]

@@ -24,6 +24,7 @@ class RegistrationIn(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     labels: dict[str, Any] = Field(default_factory=dict)
     machine_id: str | None = Field(default=None, max_length=64)
+    max_jobs: int = Field(default=1, ge=1, le=64)
 
 
 @router.post("/workers/register", status_code=201)

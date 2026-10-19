@@ -34,12 +34,19 @@ def project(p: Project) -> dict[str, Any]:
             "labels": p.labels, "created_at": _ts(p.created_at), "updated_at": _ts(p.updated_at)}
 
 
-def run(r: WorkflowRun, stages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def run(r: WorkflowRun, stages: list[dict[str, Any]] | None = None, worker: Worker | None = None) -> dict[str, Any]:
     ctx = r.context_json or {}
+    placement = ctx.get("placement") or {}
     data = {"id": r.id, "project_id": r.project_id, "workflow_id": r.workflow_id,
             "workflow_version": r.workflow_version, "status": r.status, "input": r.input_json,
             "integration_branch": ctx.get("integration_branch"), "fix_loops": ctx.get("fix_loops", {}),
             "planned_tasks": ctx.get("planned_tasks", []), "error": r.error,
+            "placement": {"mode": placement.get("mode", "stage"), "worker": placement.get("worker"),
+                          "wait": placement.get("wait")},
+            "requirements": r.requirements or {},
+            "assigned_worker": ({"id": worker.id, "name": worker.name, "status": worker.status} if worker
+                                else {"id": r.assigned_worker_id} if r.assigned_worker_id else None),
+            "assigned_at": _ts(r.assigned_at),
             "created_at": _ts(r.created_at), "started_at": _ts(r.started_at), "finished_at": _ts(r.finished_at)}
     if stages is not None:
         data["stages"] = stages
@@ -67,7 +74,8 @@ def agent_run(a: AgentRun) -> dict[str, Any]:
 
 def job(j: Job, include_payload: bool = False) -> dict[str, Any]:
     data = {"id": j.id, "task_id": j.task_id, "workflow_run_id": j.workflow_run_id, "agent_run_id": j.agent_run_id,
-            "worker_id": j.worker_id, "job_type": j.job_type, "requirements": j.requirements, "state": j.state,
+            "worker_id": j.worker_id, "pinned": j.pinned, "assigned_worker_id": j.assigned_worker_id,
+            "job_type": j.job_type, "requirements": j.requirements, "state": j.state,
             "attempt": j.attempt, "max_attempts": j.max_attempts, "error": j.error,
             "created_at": _ts(j.created_at), "started_at": _ts(j.started_at), "finished_at": _ts(j.finished_at)}
     if include_payload:
@@ -97,7 +105,7 @@ def approval(a: Approval) -> dict[str, Any]:
 
 def worker(w: Worker) -> dict[str, Any]:
     return {"id": w.id, "name": w.name, "platform": w.platform, "os_version": w.os_version, "status": w.status,
-            "capabilities": w.capabilities, "labels": w.labels, "load": w.load_json,
+            "capabilities": w.capabilities, "labels": w.labels, "load": w.load_json, "max_jobs": w.max_jobs,
             "machine_id": (w.machine_id or "")[:8], "last_heartbeat": _ts(w.last_heartbeat),
             "created_at": _ts(w.created_at)}
 

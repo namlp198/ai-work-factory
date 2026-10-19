@@ -97,16 +97,19 @@ def test_capability_routing_and_duplicate_events(client, platform, orchestrator,
                            policy_path=ROOT / "config" / "policies.yaml", capabilities=["git", "python"],
                            platform_name="windows-amd64")
     windows.register("")
+    orchestrator.run_until_idle()
     assert windows.client.claim() is None  # job requires a linux worker
 
     linux = WorkerDaemon(ControlPlaneClient(http=client), name="lin-01", workspace_root=tmp_path / "l",
                          policy_path=ROOT / "config" / "policies.yaml", capabilities=["python"],
                          platform_name="linux-amd64")
     linux.register("")
+    orchestrator.run_until_idle()
     assert linux.client.claim() is None  # missing the 'git' capability
 
     linux.capabilities = ["git", "python"]
     linux.register("")
+    orchestrator.run_until_idle()  # the run gets its machine, then its first job
     job = linux.client.claim()
     assert job is not None and job["state"] == "CLAIMED"
     linux.client.complete(job["id"], {"status": "succeeded", "outputs": {}})
@@ -125,7 +128,8 @@ def test_offline_worker_jobs_are_requeued(client, platform, orchestrator, worker
     assert job is not None
     with platform.db.transaction() as s:
         w = s.get(Worker, worker.client.worker_id)
-        w.last_heartbeat = datetime.now(timezone.utc) - timedelta(hours=1)
+        # Past the heartbeat timeout, but well inside run_reassign_after_seconds: the run keeps its machine.
+        w.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=platform.settings.worker_heartbeat_timeout_seconds + 30)
     orchestrator.tick()
     with platform.db.session() as s:
         requeued = s.get(Job, job["id"])
@@ -179,7 +183,7 @@ def test_restricted_project_never_reaches_hosted_model(client, platform, orchest
     assert run["status"] == "FAILED" and "LOCAL_PRIVATE" in run["error"]
 
 
-def test_cancel_run_cancels_queued_jobs(client, platform, orchestrator, repository_config):
+def test_cancel_run_cancels_queued_jobs(client, platform, orchestrator, worker, repository_config):
     _use_workflow(platform, DEV_ONLY)
     run_id = _start(client, repository_config)
     orchestrator.run_until_idle()

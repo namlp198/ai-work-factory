@@ -53,6 +53,7 @@ class Settings:
     embedded_orchestrator: bool
     tick_interval_seconds: float
     worker_heartbeat_timeout_seconds: int
+    run_reassign_after_seconds: int
     job_max_attempts: int
     context_max_chars_per_artifact: int
     default_worker_platform: str
@@ -125,6 +126,7 @@ def build_settings(home: Path | None = None) -> Settings:
         embedded_orchestrator=env.get("AWF_EMBEDDED_ORCHESTRATOR", "false").lower() in ("1", "true", "yes"),
         tick_interval_seconds=float(orch.get("tick_interval_seconds", 2)),
         worker_heartbeat_timeout_seconds=int(orch.get("worker_heartbeat_timeout_seconds", 90)),
+        run_reassign_after_seconds=int(orch.get("run_reassign_after_seconds", 600)),
         job_max_attempts=int(orch.get("job_max_attempts", 3)),
         context_max_chars_per_artifact=int(orch.get("context_max_chars_per_artifact", 60000)),
         default_worker_platform=raw.get("routing", {}).get("default_worker", "linux"),

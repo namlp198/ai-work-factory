@@ -11,12 +11,19 @@ pytestmark = pytest.mark.e2e
 
 
 def drive(client, orchestrator, worker, run_id: str, approve: bool = True, max_rounds: int = 80) -> dict:
-    """Alternate orchestrator ticks, worker job execution and human approvals until the run ends."""
+    """Alternate orchestrator ticks, worker job execution and human approvals until the run ends.
+    `worker` may be a list: every machine then asks for work in turn."""
+    workers = worker if isinstance(worker, list) else [worker]
     approved = []
     for _ in range(max_rounds):
         orchestrator.run_until_idle()
-        while worker.run_once():
-            orchestrator.run_until_idle()
+        busy = True
+        while busy:
+            busy = False
+            for w in workers:
+                if w.run_once():
+                    busy = True
+                    orchestrator.run_until_idle()
         run = client.get(f"/api/v1/workflow-runs/{run_id}").json()
         if run["status"] != "RUNNING":
             run["approved_actions"] = approved
@@ -95,6 +102,31 @@ def test_full_software_workflow(client, orchestrator, worker, repository_config,
     assert stats["engineering.developer"]["runs"] == 2
     overview = client.get("/api/v1/overview").json()
     assert overview["waiting_approvals"] == 0 and overview["workers_online"] == 1
+
+
+def test_whole_software_run_executes_on_one_machine(client, platform, orchestrator, worker, repository_config,
+                                                    tmp_path):
+    """Two matching machines: requirement -> ... -> merge, fix loop included, never leaves the chosen one."""
+    from sqlalchemy import select
+
+    from awf.domain.models import Job
+    from awf.worker_sdk import ControlPlaneClient, Worker
+    from tests.conftest import ROOT
+
+    other = Worker(ControlPlaneClient(http=client), name="test-linux-02", workspace_root=tmp_path / "ws2",
+                   policy_path=ROOT / "config" / "policies.yaml", capabilities=["git", "python"],
+                   platform_name="linux-amd64")
+    other.register("")
+    project = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config}).json()
+    run_id = client.post(f"/api/v1/projects/{project['id']}/workflow-runs", json={
+        "inputs": {"objective": "Add a camera pipeline health-check API with tests and documentation."}}).json()["id"]
+
+    final = drive(client, orchestrator, [other, worker], run_id)
+    assert final["status"] == "COMPLETED", final.get("error")
+    assert final["fix_loops"] == {"review": 1}
+    with platform.db.session() as s:
+        jobs = s.scalars(select(Job).where(Job.workflow_run_id == run_id)).all()
+    assert len(jobs) >= 9 and {j.worker_id for j in jobs} == {final["assigned_worker"]["id"]}
 
 
 def test_architecture_rejection_reruns_architect_then_fails(client, orchestrator, worker, repository_config):

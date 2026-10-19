@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from awf.domain.enums import ACTIVE_JOB_STATES, AgentRunStatus, EventType, JobState, TaskState, WorkerStatus
@@ -97,6 +97,7 @@ def register_worker(session: Session, data: dict[str, Any], stale_after_seconds:
     worker.os_version = data.get("os_version", "")
     worker.capabilities = sorted(set(data.get("capabilities") or []))
     worker.labels = data.get("labels") or {}
+    worker.max_jobs = max(1, int(data.get("max_jobs") or 1))
     worker.status = WorkerStatus.ONLINE
     worker.token_hash = hash_token(token)
     worker.last_heartbeat = utcnow()
@@ -114,17 +115,26 @@ def heartbeat(session: Session, worker: Worker, status: dict[str, Any]) -> None:
 
 
 def claim_job(session: Session, worker: Worker) -> Job | None:
-    if worker.status != WorkerStatus.ONLINE:
+    """Next queued job for this worker: its own pinned jobs (run placement, ADR-008) or any unpinned job it
+    meets the requirements of. A draining worker only finishes the runs it already holds."""
+    mine = and_(Job.pinned.is_(True), Job.assigned_worker_id == worker.id)
+    if worker.status == WorkerStatus.DRAINING:
+        allowed = mine
+    elif worker.status == WorkerStatus.ONLINE:
+        allowed = or_(mine, Job.pinned.is_(False))
+    else:
         return None
-    candidates = session.scalars(select(Job).where(Job.state == JobState.QUEUED).order_by(Job.created_at)).all()
+    candidates = session.scalars(select(Job).where(Job.state == JobState.QUEUED, allowed)
+                                 .order_by(Job.created_at)).all()
     for job in candidates:
         if not requirements_met(worker, job.requirements or {}):
             continue
-        # Atomic claim: only one worker can move QUEUED -> CLAIMED.
+        # Atomic claim: only one worker can move QUEUED -> CLAIMED, and not after the run moved machines.
         lease = int(((job.payload or {}).get("limits") or {}).get("lease_seconds") or DEFAULT_LEASE_SECONDS)
         now = utcnow()
+        owner = Job.assigned_worker_id == worker.id if job.pinned else Job.pinned.is_(False)
         claimed = session.execute(
-            update(Job).where(Job.id == job.id, Job.state == JobState.QUEUED)
+            update(Job).where(Job.id == job.id, Job.state == JobState.QUEUED, owner)
             .values(state=JobState.CLAIMED, worker_id=worker.id, started_at=now,
                     lease_expires_at=now + timedelta(seconds=lease))
         ).rowcount

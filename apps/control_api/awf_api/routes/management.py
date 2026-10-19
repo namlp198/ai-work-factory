@@ -107,9 +107,15 @@ def list_agents(state: AppState = Depends(get_state)):
             for d in state.platform.agents.all()]
 
 
+class PlacementIn(BaseModel):
+    # Name of the machine that must execute the whole run; omitted: the orchestrator chooses.
+    worker: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class RunIn(BaseModel):
     workflow_id: str = "software-development"
     inputs: dict[str, Any]
+    placement: PlacementIn | None = None
 
 
 @router.post("/projects/{project_id}/workflow-runs", status_code=201)
@@ -117,10 +123,11 @@ def start_run(project_id: str, body: RunIn, state: AppState = Depends(get_state)
               session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
     project = _get(session, Project, project_id)
     try:
-        run = state.orchestrator.start_run(session, project, body.workflow_id, body.inputs, actor=actor)
+        run = state.orchestrator.start_run(session, project, body.workflow_id, body.inputs, actor=actor,
+                                           worker_name=body.placement.worker if body.placement else None)
     except (OrchestratorError, KeyError) as exc:
         raise HTTPException(422, str(exc)) from None
-    return ser.run(run)
+    return ser.run(run, worker=None)
 
 
 @router.get("/projects/{project_id}/workflow-runs")
@@ -135,9 +142,23 @@ def get_run(run_id: str, state: AppState = Depends(get_state), session: Session 
     run = _get(session, WorkflowRun, run_id)
     cost = session.scalar(select(func.coalesce(func.sum(AgentRun.cost_estimate), 0))
                           .join(Task, Task.id == AgentRun.task_id).where(Task.workflow_run_id == run_id))
-    data = ser.run(run, state.orchestrator.stage_overview(session, run))
+    worker = session.get(Worker, run.assigned_worker_id) if run.assigned_worker_id else None
+    data = ser.run(run, state.orchestrator.stage_overview(session, run), worker=worker)
     data["cost_usd"] = float(cost or 0)
     return data
+
+
+@router.post("/workflow-runs/{run_id}/reassign")
+def reassign_run(run_id: str, body: PlacementIn, state: AppState = Depends(get_state),
+                 session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
+    """Move a run to another machine (`worker`), or let the orchestrator choose again (no `worker`)."""
+    run = _get(session, WorkflowRun, run_id)
+    try:
+        state.orchestrator.reassign_run(session, run, body.worker, actor=actor)
+    except OrchestratorError as exc:
+        raise HTTPException(409, str(exc)) from None
+    worker = session.get(Worker, run.assigned_worker_id) if run.assigned_worker_id else None
+    return ser.run(run, worker=worker)
 
 
 @router.post("/workflow-runs/{run_id}/cancel")
@@ -278,7 +299,12 @@ def reject(approval_id: str, body: ApprovalDecisionIn | None = None, state: AppS
 # ---------------------------------------------------------------------------- observability
 @router.get("/workers")
 def list_workers(session: Session = Depends(get_session, scope="function")):
-    return [ser.worker(w) for w in session.scalars(select(Worker).order_by(Worker.name))]
+    runs = dict(session.execute(select(WorkflowRun.assigned_worker_id, func.count(WorkflowRun.id))
+                                .where(WorkflowRun.status == RunStatus.RUNNING,
+                                       WorkflowRun.assigned_worker_id.is_not(None))
+                                .group_by(WorkflowRun.assigned_worker_id)).all())
+    return [{**ser.worker(w), "active_runs": runs.get(w.id, 0)}
+            for w in session.scalars(select(Worker).order_by(Worker.name))]
 
 
 @router.post("/workers/{worker_id}/revoke")

@@ -22,5 +22,7 @@ routing:
 orchestrator:
   tick_interval_seconds: 2
   worker_heartbeat_timeout_seconds: 90
+  # A run whose machine has been offline this long moves to another matching machine (ADR-008).
+  run_reassign_after_seconds: ${AWF_RUN_REASSIGN_AFTER_SECONDS:-600}
   job_max_attempts: 3
   context_max_chars_per_artifact: 60000
