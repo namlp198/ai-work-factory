@@ -1,0 +1,9 @@
+id: content.editor
+version: "1.0"
+contract: content.editor
+prompt: content.editor.md
+task_type: content_editing
+model_policy: {class: BALANCED, fallback: REASONING}
+context:
+  include: [objective, task, upstream, feedback]
+  knowledge: [content/style-guide.md]

@@ -1,0 +1,9 @@
+id: content.researcher
+version: "1.0"
+contract: content.researcher
+prompt: content.researcher.md
+task_type: content_research
+model_policy: {class: BALANCED, fallback: REASONING}
+context:
+  include: [objective, task, feedback]
+  knowledge: [content/style-guide.md]

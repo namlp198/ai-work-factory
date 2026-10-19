@@ -93,7 +93,7 @@ async function viewProjects() {
     <h2>New project</h2>
     <form class="grid" id="project-form">
       <label>Name<input name="name" required></label>
-      <label>Repository URL / path<input name="url" required placeholder="https://… or D:/src/repo"></label>
+      <label>Repository URL / path<input name="url" placeholder="optional for content: https://… or D:/src/repo"></label>
       <label>Base branch<input name="base_branch" value="main"></label>
       <label>Platform<select name="platform" required>${platformOptions()}</select></label>
       <label>Required capabilities<input name="required_capabilities" placeholder="dotnet-windowsdesktop, msbuild"></label>
@@ -112,11 +112,13 @@ function bindProjects() {
   form.onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(form);
-    const repo = { url: f.get("url"), base_branch: f.get("base_branch") || "main" };
-    for (const k of ["build_command", "test_command", "lint_command"]) if (f.get(k)) repo[k] = f.get(k);
-    repo.required_capabilities = capList(f.get("required_capabilities"));
-    const body = { name: f.get("name"), repository: repo, confidentiality: f.get("confidentiality"),
-      labels: { platform: f.get("platform") } };
+    const body = { name: f.get("name"), confidentiality: f.get("confidentiality"), labels: { platform: f.get("platform") } };
+    if (f.get("url")) {  // software projects; content projects may have no repository
+      const repo = { url: f.get("url"), base_branch: f.get("base_branch") || "main" };
+      for (const k of ["build_command", "test_command", "lint_command"]) if (f.get(k)) repo[k] = f.get(k);
+      repo.required_capabilities = capList(f.get("required_capabilities"));
+      body.repository = repo;
+    }
     if (f.get("budget_usd")) body.budget_usd = Number(f.get("budget_usd"));
     try { const p = await api("/projects", { method: "POST", body: JSON.stringify(body) }); location.hash = `#/projects/${p.id}`; }
     catch (err) { $("#project-error").textContent = err.message; }
@@ -163,7 +165,7 @@ function projectMachines(p, models) {
         placeholder="dotnet-windowsdesktop, msbuild"></label>
       <label>Default model<select name="llm">${llmOptions(models, p.labels?.llm || "")}</select></label>
       <div class="full row"><button class="ghost">Save</button><span id="project-edit-error" class="error"></span>
-        <span class="muted">Every run also needs <code>git</code>; workflow stages may add more.</span></div></form>
+        <span class="muted">Projects with a repository also need <code>git</code>; workflow stages and the model may add more.</span></div></form>
     <div class="table-wrap"><table><tr><th>Machine</th><th>Status</th><th>Platform</th><th>Can run it</th></tr>
       ${rows || '<tr><td colspan="4" class="muted">No workers registered</td></tr>'}</table></div>`;
 }
@@ -211,7 +213,7 @@ async function viewRun(id) {
     <div class="kv"><div>Workflow</div><div>${esc(run.workflow_id)} v${esc(run.workflow_version)}</div>
       <div>Objective</div><div>${esc(run.input?.objective)}</div>
       ${placementRows(run, workers)}
-      <div>Integration branch</div><div><code>${esc(run.integration_branch)}</code></div>
+      ${run.input?.repository ? `<div>Integration branch</div><div><code>${esc(run.integration_branch)}</code></div>` : ""}
       <div>Fix loops</div><div>${esc(JSON.stringify(run.fix_loops))}</div>
       <div>LLM cost</div><div>${money(run.cost_usd)}</div>
       ${run.error ? `<div>Error</div><div class="error">${esc(run.error)}</div>` : ""}</div>

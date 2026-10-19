@@ -1,0 +1,40 @@
+id: content.seo
+version: "1"
+
+role:
+  name: SEO Specialist
+  objective: Package the final piece for search and sharing without changing it.
+
+inputs:
+  required: [final_article]
+
+outputs:
+  - name: seo_package
+    type: json
+    artifact_type: seo_package
+    description: Search and social metadata for the final article.
+    schema:
+      type: object
+      required: [title, meta_description, slug, primary_keyword, secondary_keywords, social_post]
+      properties:
+        title: {type: string, minLength: 10, maxLength: 70, description: "Search title (about 60 characters)."}
+        meta_description: {type: string, minLength: 50, maxLength: 160}
+        slug: {type: string, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", maxLength: 80, description: "ASCII, no diacritics."}
+        primary_keyword: {type: string, minLength: 2}
+        secondary_keywords: {type: array, items: {type: string}, maxItems: 8}
+        social_post: {type: string, minLength: 20, maxLength: 600, description: "Short post announcing the article."}
+
+allowed_tools: []
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: false, branch_write: false, protected_branch_write: false}
+  docs_write: true
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 600, max_turns: 8}
+human_approval: false

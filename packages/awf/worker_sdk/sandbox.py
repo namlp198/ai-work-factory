@@ -56,6 +56,7 @@ class Workspace:
         self.integration_branch: str | None = None
         self.task_branch: str | None = None
         self.start_sha: str | None = None
+        self.is_git = False
 
     @property
     def base_ref(self) -> str:
@@ -68,6 +69,7 @@ class Workspace:
         self.root.mkdir(parents=True, exist_ok=True)
         self.base_branch = base_branch
         git(["clone", "--no-tags", "--quiet", repo_url, str(self.repo)], self.root, timeout=900)
+        self.is_git = True
         exclude = self.repo / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
         with exclude.open("a", encoding="utf-8") as fh:
@@ -142,6 +144,12 @@ class Workspace:
         commits = git(["log", "--no-merges", "--pretty=format:%h %s", f"{self.base_ref}..{ref}"],
                       self.repo).stdout.splitlines()
         return {"diff": diff, "commits": commits, "head": ref, **stats}
+
+    def prepare_scratch(self) -> None:
+        """Empty working directory for agents that need no repository (content, research)."""
+        if self.root.exists():
+            self.cleanup()
+        self.repo.mkdir(parents=True)
 
     def cleanup(self) -> None:
         if self.root.exists():

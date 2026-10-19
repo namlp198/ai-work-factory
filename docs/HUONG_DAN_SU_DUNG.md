@@ -415,6 +415,48 @@ Artifact `source_patch` (`delivery/patch.patch`) áp dụng được bằng `git
 chứa nhánh nguồn/đích, diffstat, danh sách commit, trace artifact. Merge vào nhánh protected **luôn** do
 người thực hiện (policy level 2).
 
+## 9b. Quy trình viết content (`content-production`)
+
+Một run content đi trọn quy trình trên **một** máy, như run phần mềm:
+
+```text
+research -> plan -> draft -> review --(CHANGES_REQUIRED, tối đa 2 vòng)--> draft
+                                    \-> edit -> seo -> publish (người duyệt)
+```
+
+| Stage | Agent | Kết quả (artifact) |
+|---|---|---|
+| research | `content.researcher` | `research_brief`: Audience, Key facts (F1, F2…), Sources, Open questions |
+| plan | `content.strategist` | `content_plan`: Angle, Key messages, Outline, Call to action, Format |
+| draft | `content.copywriter` | `content_draft`: bài hoàn chỉnh (markdown) |
+| review | `content.reviewer` | `content_review` + verdict; `CHANGES_REQUIRED` gửi bài về draft kèm nhận xét |
+| edit | `content.editor` | `content_final` (bản xuất bản) + `editor_notes` (Changes, Before publishing) |
+| seo | `content.seo` | `seo_package` (JSON): title, meta description, slug không dấu, keywords, social post |
+| publish | gate `approve_publish` | người duyệt đọc bài cuối, ghi chú của editor và gói SEO (tin Telegram/Zalo/WhatsApp kèm link) |
+
+Cách dùng:
+
+1. Tạo project **không cần repository**: dashboard → Projects → để trống *Repository URL*, chọn
+   *Platform* = **Any machine** (`any`).
+2. Bắt đầu run với workflow **Content production**. Viết brief vào *Objective*: chủ đề, người đọc, kênh
+   (blog, LinkedIn, Facebook, newsletter), độ dài, giọng văn, ngôn ngữ. Ví dụ: "Viết bài blog 800 chữ giới
+   thiệu tính năng X cho trưởng nhóm kỹ thuật ở doanh nghiệp vừa; giọng thân thiện; tiếng Việt."
+3. Duyệt ở bước *Publish approval*. Bài cuối nằm trong artifact `content_final` của run.
+
+Project content không có repository chạy được trên máy **không có git**: agent làm việc trong một thư mục trống,
+không clone gì. Nếu project có repository (tài liệu sản phẩm, bài cũ, ghi chú), agent đọc được tài liệu tham khảo
+từ đó (chỉ đọc, không ghi), và run khi đó cần máy có `git`.
+
+Agent không có công cụ duyệt web: researcher chỉ dựa vào tài liệu trong repository của project và kiến thức của
+model, phải đánh dấu "(cần kiểm chứng)" những gì không chắc, và không được bịa số liệu, trích dẫn, nguồn.
+Reviewer chặn những khẳng định không có trong research brief. Mục *Before publishing* của editor liệt kê những gì
+người duyệt phải tự kiểm tra.
+
+Giọng văn và quy tắc của công ty: sửa [`knowledge/content/style-guide.md`](../knowledge/content/style-guide.md);
+mọi agent content đều đọc file này. Prompt của từng agent ở `agents/prompts/content.*.md`.
+
+Chưa có: đăng bài tự động (WordPress, Facebook…) sau khi duyệt, tìm kiếm web cho researcher, workflow video.
+
 ## 10. Worker: Windows, Linux, Jetson, GPU
 
 ```text
@@ -528,7 +570,7 @@ stages:
 Quy tắc: mỗi stage có đúng một trong `role` / `tool` / `parallel`, hoặc chỉ `gate`. `foreach: planned_task`
 cần stage Planner phía trước. `goto` phải là stage phía trên. Workflow được validate khi khởi động (cycle,
 stage/role/tool không tồn tại). Tool job hiện có: `lint.run`, `test.run`, `build.run`, `git.export_patch`.
-`status: draft` để giữ workflow chưa đủ role (như `content-production`, `video-production`).
+`status: draft` để giữ workflow chưa đủ role (như `video-production`).
 
 ## 13. Viết agent (contract + profile + prompt)
 
@@ -641,7 +683,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (162 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (165 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -699,7 +741,7 @@ Tiếp theo:
 2. **Phase 2:** container per job, Jetson/GPU worker thực tế, staging deploy (level 1), security/dependency
    scan làm tool stage, release workflow + gate production.
 3. **Phase 3:** pgvector cho project memory/semantic search, impact analysis khi requirement đổi tự tạo task.
-4. **Phase 4:** content/video workflow (đang ở trạng thái draft).
+4. **Phase 4:** content workflow đã có (mục 9b); còn đăng bài tự động, tìm kiếm web, workflow video (draft).
 5. **Phase 5:** budget đa project, adaptive routing theo KPI agent.
 
 ## 21. Chạy trên nhiều máy: cùng source, cùng lệnh

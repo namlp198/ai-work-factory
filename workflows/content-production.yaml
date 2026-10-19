@@ -1,16 +1,58 @@
-# Phase 4 (Content Factory). Draft: roles are not implemented yet, so the workflow cannot be started.
 id: content-production
-version: "0.1"
-status: draft
+version: "1.0"
 name: Content production
-inputs: [topic]
+description: >
+  Research -> Plan -> Draft -> Review (fix loop back to Draft) -> Edit -> SEO -> Publish approval (human gate).
+  Write the brief in the objective: topic, audience, channel, length, tone, language. A repository is optional:
+  when the project has one, agents can read reference material from it.
+
+inputs:
+  - objective
+
 stages:
-  - {id: research, role: content.researcher}
-  - {id: content-plan, role: content.strategist, depends_on: [research]}
-  - {id: draft, role: content.copywriter, depends_on: [content-plan]}
-  - {id: technical-review, role: engineering.code-reviewer, depends_on: [draft]}
-  - {id: edit, role: content.editor, depends_on: [technical-review]}
-  - {id: seo, role: content.seo, depends_on: [edit]}
+  - id: research
+    title: Research
+    role: content.researcher
+    outputs: [research_brief]
+
+  - id: plan
+    title: Content plan
+    role: content.strategist
+    depends_on: [research]
+    outputs: [content_plan]
+
+  - id: draft
+    title: Draft
+    role: content.copywriter
+    depends_on: [plan]
+    outputs: [draft]
+
+  - id: review
+    title: Review
+    role: content.reviewer
+    depends_on: [draft]
+    relation: reviews
+    on_changes_required:
+      goto: draft
+      max_iterations: 2
+
+  - id: edit
+    title: Edit
+    role: content.editor
+    depends_on: [review]
+    outputs: [final_article, editor_notes]
+
+  - id: seo
+    title: SEO and social
+    role: content.seo
+    depends_on: [edit]
+    outputs: [seo_package]
+
   - id: publish
-    depends_on: [seo]
-    gate: {type: human_approval, action: approve_publish}
+    title: Publish approval
+    depends_on: [edit, seo]   # both, so the approver gets the final article, the editor's notes and the SEO package
+    gate:
+      type: human_approval
+      action: approve_publish
+      risk_level: 2
+      description: Read the final article, the editor's "Before publishing" list and the SEO package.

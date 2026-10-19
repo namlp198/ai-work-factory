@@ -1,0 +1,9 @@
+id: content.reviewer
+version: "1.0"
+contract: content.reviewer
+prompt: content.reviewer.md
+task_type: content_review
+model_policy: {class: REASONING, fallback: BALANCED}
+context:
+  include: [objective, task, upstream]
+  knowledge: [content/style-guide.md]

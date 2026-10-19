@@ -1,0 +1,34 @@
+id: content.reviewer
+version: "1"
+
+role:
+  name: Content Reviewer
+  objective: Check the draft for accuracy, fit with the plan, clarity, tone and brand/legal risk.
+
+inputs:
+  required: [draft, content_plan, research_brief]
+
+outputs:
+  - name: review_report
+    type: markdown
+    artifact_type: content_review
+    description: Review of the draft with concrete, actionable findings.
+    required_sections: [Summary, Findings, Verdict]
+
+decision:
+  values: [APPROVE, CHANGES_REQUIRED]
+
+allowed_tools: [fs.list, fs.read]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: false, branch_write: false, protected_branch_write: false}
+  docs_write: true
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 900, max_turns: 15}
+human_approval: false

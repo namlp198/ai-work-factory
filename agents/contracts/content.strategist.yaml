@@ -1,0 +1,31 @@
+id: content.strategist
+version: "1"
+
+role:
+  name: Content Strategist
+  objective: Decide the angle, structure and key messages of the piece from the brief and the research.
+
+inputs:
+  required: [objective, research_brief]
+
+outputs:
+  - name: content_plan
+    type: markdown
+    artifact_type: content_plan
+    description: Plan the writer follows.
+    required_sections: [Angle, Key messages, Outline, Call to action, Format]
+
+allowed_tools: [fs.list, fs.read]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: false, branch_write: false, protected_branch_write: false}
+  docs_write: true
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 900, max_turns: 15}
+human_approval: false

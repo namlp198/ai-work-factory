@@ -1,4 +1,4 @@
-# Phase 4 (Content Factory). Draft: roles/tools are not implemented yet.
+# Phase 4 (Content Factory). Draft: the media roles/tools (storyboard, image, voice, render) do not exist yet.
 id: video-production
 version: "0.1"
 status: draft

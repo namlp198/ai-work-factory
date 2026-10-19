@@ -1,0 +1,35 @@
+id: content.editor
+version: "1"
+
+role:
+  name: Editor
+  objective: Turn the approved draft into the publication-ready final version.
+
+inputs:
+  required: [draft, review_report]
+
+outputs:
+  - name: final_article
+    type: markdown
+    artifact_type: content_final
+    description: Publication-ready piece in markdown.
+  - name: editor_notes
+    type: markdown
+    artifact_type: editor_notes
+    description: What the editor changed and anything a human must still check before publishing.
+    required_sections: [Changes, Before publishing]
+
+allowed_tools: [fs.list, fs.read]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: false, branch_write: false, protected_branch_write: false}
+  docs_write: true
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 900, max_turns: 15}
+human_approval: false

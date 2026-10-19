@@ -41,12 +41,16 @@ class JobExecutor:
             notify("PREPARING")
             repo = payload.get("repository") or {}
             wsp = payload.get("workspace") or {}
-            if not repo.get("url"):
+            if repo.get("url"):
+                ws.prepare(repo["url"], repo.get("base_branch") or "main", wsp.get("integration_branch"),
+                           wsp.get("task_branch") if wsp.get("write") else None)
+                log(f"workspace ready at {ws.repo} (branch {wsp.get('task_branch') or wsp.get('integration_branch')})",
+                    "system")
+            elif payload.get("job_type") == "agent" and not wsp.get("write"):
+                ws.prepare_scratch()  # content/research runs without a repository: an empty working directory
+                log(f"empty workspace at {ws.repo} (no repository)", "system")
+            else:
                 raise ValueError("job payload has no repository url")
-            ws.prepare(repo["url"], repo.get("base_branch") or "main", wsp.get("integration_branch"),
-                       wsp.get("task_branch") if wsp.get("write") else None)
-            log(f"workspace ready at {ws.repo} (branch {wsp.get('task_branch') or wsp.get('integration_branch')})",
-                "system")
             notify("RUNNING")
             if payload.get("job_type") == "tool":
                 result = self._run_tool_job(payload, ws, log)
@@ -166,6 +170,8 @@ def _allowed_actions(policy: PolicyEngine, permissions: dict[str, Any]) -> set[s
 def _dirty_files(ws: Workspace) -> list[str]:
     from awf.tool_sdk.command import git
 
+    if not ws.is_git:
+        return []
     return [line for line in git(["status", "--porcelain"], ws.repo).stdout.splitlines() if line.strip()]
 
 

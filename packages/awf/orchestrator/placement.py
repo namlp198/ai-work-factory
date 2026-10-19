@@ -94,7 +94,8 @@ def run_requirements(spec: WorkflowSpec, project: Project, repository: dict[str,
                 f"{source} needs platform '{value}' but {', '.join(seen)} already need '{platform}'; "
                 f"one machine cannot run this workflow (use placement: stage in the workflow)") from None
         seen.append(source)
-    caps = {"git"}
+    needs_git = "repository" in spec.inputs or bool((repository or {}).get("url") or (project.repository or {}).get("url"))
+    caps = {"git"} if needs_git else set()
     caps.update((repository or {}).get("required_capabilities") or [])
     caps.update((project.repository or {}).get("required_capabilities") or [])
     for stage in spec.stages:
@@ -106,7 +107,8 @@ def run_requirements(spec: WorkflowSpec, project: Project, repository: dict[str,
 
 def project_requirements(project: Project) -> dict[str, Any]:
     """What any machine running this project needs, before a workflow adds its stage requirements."""
-    caps = {"git"} | set((project.repository or {}).get("required_capabilities") or [])
+    caps = ({"git"} if (project.repository or {}).get("url") else set()) \
+        | set((project.repository or {}).get("required_capabilities") or [])
     return {"platform": (project.labels or {}).get("platform"), "capabilities": sorted(caps)}
 
 

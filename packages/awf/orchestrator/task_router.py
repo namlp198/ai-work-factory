@@ -96,7 +96,7 @@ class TaskRouter:
         repo = project.repository or {}
         platform = (stage.worker.platform if stage.worker and stage.worker.platform else None) \
             or (project.labels or {}).get("platform") or self.default_platform
-        caps = {"git"}
+        caps = {"git"} if repo.get("url") else set()
         caps.update(repo.get("required_capabilities") or [])
         if stage.worker:
             caps.update(stage.worker.capabilities)

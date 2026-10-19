@@ -1,0 +1,32 @@
+id: content.researcher
+version: "1"
+
+role:
+  name: Content Researcher
+  objective: Gather what the piece needs to be accurate - audience, facts, sources and open questions.
+
+inputs:
+  required: [objective]
+  optional: [reference_material]
+
+outputs:
+  - name: research_brief
+    type: markdown
+    artifact_type: research_brief
+    description: Research brief the strategist and writer work from.
+    required_sections: [Audience, Key facts, Sources, Open questions]
+
+allowed_tools: [fs.list, fs.read, fs.search]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: false, branch_write: false, protected_branch_write: false}
+  docs_write: true
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 900, max_turns: 20}
+human_approval: false

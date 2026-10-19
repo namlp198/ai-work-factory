@@ -33,7 +33,7 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
 - Sau `git pull`: chạy lại bootstrap rồi `awf start`.
 - Dashboard: đăng nhập bằng `AWF_API_TOKEN` một lần (giữ 30 ngày), hoặc `awf open` để vào thẳng.
 - Máy trung tâm + worker ở nhiều địa điểm qua internet (Tailscale hoặc HTTPS/Caddy): xem §21 của hướng dẫn.
-- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (162 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
+- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (165 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
 - Claude thật: đặt `ANTHROPIC_API_KEY` trong `.env` của máy worker.
 
 ## Tài liệu
@@ -59,8 +59,8 @@ packages/awf/
   orchestrator/                orchestrator, critic, task router, context, artifacts, audit, jobs
   cli.py                       lệnh `awf`
 workers/linux_worker/          entry point worker
-agents/{contracts,profiles,prompts}/   7 role: analyst, architect, planner, developer, test engineer, reviewer, QA
-workflows/                     software-development (active), content/video (draft)
+agents/{contracts,profiles,prompts}/   7 role phần mềm + 6 role content (researcher, strategist, copywriter, reviewer, editor, SEO)
+workflows/                     software-development, content-production (active), video (draft)
 config/                        system, model-routing, policies
 knowledge/                     coding standard, architecture guidelines, security policy, templates
 infrastructure/                Alembic migrations, Dockerfile

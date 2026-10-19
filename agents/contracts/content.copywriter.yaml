@@ -1,0 +1,31 @@
+id: content.copywriter
+version: "1"
+
+role:
+  name: Copywriter
+  objective: Write the piece following the content plan, using only facts from the research brief.
+
+inputs:
+  required: [objective, content_plan, research_brief]
+  optional: [review_report]
+
+outputs:
+  - name: draft
+    type: markdown
+    artifact_type: content_draft
+    description: The complete piece in markdown, starting with a level-1 title.
+
+allowed_tools: [fs.list, fs.read]
+
+permissions:
+  filesystem: {read: true, workspace_write: false}
+  git: {read: false, branch_write: false, protected_branch_write: false}
+  docs_write: true
+  build: false
+  test: false
+  deploy: false
+  production_access: false
+
+retry_policy: {max_attempts: 2}
+timeout_policy: {seconds: 1200, max_turns: 15}
+human_approval: false

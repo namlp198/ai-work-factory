@@ -1,0 +1,9 @@
+id: content.strategist
+version: "1.0"
+contract: content.strategist
+prompt: content.strategist.md
+task_type: content_strategy
+model_policy: {class: REASONING, fallback: BALANCED}
+context:
+  include: [objective, task, upstream, feedback]
+  knowledge: [content/style-guide.md]

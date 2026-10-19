@@ -1,0 +1,9 @@
+id: content.seo
+version: "1.0"
+contract: content.seo
+prompt: content.seo.md
+task_type: seo
+model_policy: {class: FAST, fallback: BALANCED}
+context:
+  include: [objective, task, "upstream:edit"]
+  knowledge: []
