@@ -70,17 +70,28 @@ async function viewOverview() {
     <h2>Waiting approvals</h2>${approvalTable(approvals)}`;
 }
 
+// Every project says where it runs (no silent default). Free text is accepted too, e.g. linux-amd64.
+const PLATFORMS = [["windows", "Windows"], ["linux", "Linux (any)"], ["linux-amd64", "Linux x64"],
+  ["linux-arm64", "Linux ARM64 (Jetson)"], ["any", "Any machine"]];
+const platformOptions = (selected = "") => `<option value="" ${selected ? "" : "selected"} disabled>Choose…</option>` +
+  PLATFORMS.map(([v, t]) => `<option value="${v}" ${v === selected ? "selected" : ""}>${esc(t)} — ${v}</option>`).join("") +
+  (selected && !PLATFORMS.some(([v]) => v === selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : "");
+const capList = (raw) => String(raw || "").split(",").map((c) => c.trim()).filter(Boolean);
+
 async function viewProjects() {
   const projects = await api("/projects");
   const rows = projects.map((p) => `<tr class="click" data-href="#/projects/${p.id}"><td>${esc(p.name)}</td><td><code>${esc(p.slug)}</code></td>
+    <td>${p.labels?.platform ? `<code>${esc(p.labels.platform)}</code>` : '<span class="error">not set</span>'}</td>
     <td>${esc(p.repository?.url || "")}</td><td>${esc(p.confidentiality)}</td><td>${when(p.created_at)}</td></tr>`).join("");
   return `<h1>Projects</h1>
-    <div class="table-wrap"><table><tr><th>Name</th><th>Slug</th><th>Repository</th><th>Confidentiality</th><th>Created</th></tr>${rows || '<tr><td colspan="5" class="muted">No projects yet</td></tr>'}</table></div>
+    <div class="table-wrap"><table><tr><th>Name</th><th>Slug</th><th>Platform</th><th>Repository</th><th>Confidentiality</th><th>Created</th></tr>${rows || '<tr><td colspan="6" class="muted">No projects yet</td></tr>'}</table></div>
     <h2>New project</h2>
     <form class="grid" id="project-form">
       <label>Name<input name="name" required></label>
       <label>Repository URL / path<input name="url" required placeholder="https://… or D:/src/repo"></label>
       <label>Base branch<input name="base_branch" value="main"></label>
+      <label>Platform<select name="platform" required>${platformOptions()}</select></label>
+      <label>Required capabilities<input name="required_capabilities" placeholder="dotnet-windowsdesktop, msbuild"></label>
       <label>Build command<input name="build_command" placeholder="python -m compileall -q src"></label>
       <label>Test command<input name="test_command" placeholder="python -m pytest -q"></label>
       <label>Lint command<input name="lint_command" placeholder="ruff check ."></label>
@@ -98,7 +109,9 @@ function bindProjects() {
     const f = new FormData(form);
     const repo = { url: f.get("url"), base_branch: f.get("base_branch") || "main" };
     for (const k of ["build_command", "test_command", "lint_command"]) if (f.get(k)) repo[k] = f.get(k);
-    const body = { name: f.get("name"), repository: repo, confidentiality: f.get("confidentiality") };
+    repo.required_capabilities = capList(f.get("required_capabilities"));
+    const body = { name: f.get("name"), repository: repo, confidentiality: f.get("confidentiality"),
+      labels: { platform: f.get("platform") } };
     if (f.get("budget_usd")) body.budget_usd = Number(f.get("budget_usd"));
     try { const p = await api("/projects", { method: "POST", body: JSON.stringify(body) }); location.hash = `#/projects/${p.id}`; }
     catch (err) { $("#project-error").textContent = err.message; }
@@ -121,6 +134,7 @@ async function viewProject(id) {
     <div class="kv"><div>Repository</div><div><code>${esc(p.repository?.url)}</code> (${esc(p.repository?.base_branch)})</div>
     <div>Commands</div><div>build: <code>${esc(JSON.stringify(p.repository?.build_command ?? null))}</code> test: <code>${esc(JSON.stringify(p.repository?.test_command ?? null))}</code> lint: <code>${esc(JSON.stringify(p.repository?.lint_command ?? null))}</code></div>
     <div>Spend / budget</div><div>${money(p.spend_usd)} / ${p.budget_usd == null ? "∞" : money(p.budget_usd)}</div></div>
+    ${projectMachines(p)}
     <h2>Start a workflow run</h2>
     <form class="grid" id="run-form"><label>Workflow<select name="workflow_id">${options}</select></label>
       <label>Machine${machineSelect(workers)}</label>
@@ -129,7 +143,37 @@ async function viewProject(id) {
     <h2>Runs</h2><div class="table-wrap"><table><tr><th>Run</th><th>Workflow</th><th>Status</th><th>Objective</th><th>Created</th></tr>${rows || '<tr><td colspan="5" class="muted">No runs</td></tr>'}</table></div>`;
 }
 
+function projectMachines(p) {
+  const req = p.requirements || {};
+  const rows = (p.machines || []).map((m) => `<tr><td>${esc(m.name)}</td><td>${pill(m.status)}</td><td><code>${esc(m.platform)}</code></td>
+    <td>${m.matches ? '<span class="pill s-PASS">yes</span>' : `<span class="error">${esc(m.reasons.join("; "))}</span>`}</td></tr>`).join("");
+  const none = req.platform && (p.machines || []).length && !(p.machines || []).some((m) => m.matches);
+  return `<h2>Where it runs</h2>
+    ${req.platform ? "" : '<p class="error">This project has no platform yet: runs are refused until you choose one below.</p>'}
+    ${none ? '<p class="error">No registered machine can run this project.</p>' : ""}
+    <form class="grid" id="project-edit-form">
+      <label>Platform<select name="platform" required>${platformOptions(req.platform || "")}</select></label>
+      <label>Required capabilities<input name="required_capabilities" value="${esc((p.repository?.required_capabilities || []).join(", "))}"
+        placeholder="dotnet-windowsdesktop, msbuild"></label>
+      <div class="full row"><button class="ghost">Save</button><span id="project-edit-error" class="error"></span>
+        <span class="muted">Every run also needs <code>git</code>; workflow stages may add more.</span></div></form>
+    <div class="table-wrap"><table><tr><th>Machine</th><th>Status</th><th>Platform</th><th>Can run it</th></tr>
+      ${rows || '<tr><td colspan="4" class="muted">No workers registered</td></tr>'}</table></div>`;
+}
+
 function bindProject(id) {
+  const edit = $("#project-edit-form");
+  if (edit) edit.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(edit);
+    try {
+      const p = await api(`/projects/${id}`);
+      const body = { labels: { ...(p.labels || {}), platform: f.get("platform") } };
+      if (p.repository?.url) body.repository = { ...p.repository, required_capabilities: capList(f.get("required_capabilities")) };
+      await api(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+      render();
+    } catch (err) { $("#project-edit-error").textContent = err.message; }
+  };
   const form = $("#run-form");
   if (!form) return;
   form.onsubmit = async (e) => {

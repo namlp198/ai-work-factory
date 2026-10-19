@@ -184,7 +184,7 @@ $project = @{
     lint_command  = @("dotnet","build","InternalFileServer.csproj","-nologo","-warnaserror","-p:EnforceCodeStyleInBuild=true")
     required_capabilities = @("dotnet")
   }
-  labels = @{ platform = "windows" }   # job chỉ đi tới worker windows-*
+  labels = @{ platform = "windows" }   # BẮT BUỘC: run chỉ đi tới máy windows-*
   budget_usd = 20
   confidentiality = "internal"         # "restricted" = cấm gửi code ra model hosted
 } | ConvertTo-Json -Depth 5
@@ -192,7 +192,20 @@ $p = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/projects -
 ```
 
 `labels.platform` + `required_capabilities` quyết định **máy nào được nhận run** (xem mục 10, "Một run — một
-máy"). Nếu không có máy nào đã đăng ký đáp ứng, run bị từ chối ngay khi tạo, kèm danh sách máy hiện có.
+máy"). Nếu không có máy nào đã đăng ký đáp ứng, run bị từ chối ngay khi tạo, kèm lý do từng máy không đạt.
+
+**`labels.platform` là bắt buộc**: `windows`, `linux`, `linux-amd64`, `linux-arm64`, … hoặc `any` khi project
+chạy được ở mọi nơi. Không có giá trị mặc định ngầm: project tạo trước khi có quy định này sẽ bị từ chối khi
+bắt đầu run cho tới khi được khai báo, trên trang project (**Where it runs → Save**) hoặc:
+
+```powershell
+Invoke-RestMethod -Method Patch -Uri http://127.0.0.1:8000/api/v1/projects/<id> -Headers $H `
+  -ContentType "application/json" -Body '{"labels": {"platform": "windows"}}'
+```
+
+Trang project liệt kê mọi máy đã đăng ký: máy nào chạy được project, và máy không chạy được thì thiếu gì (sai
+platform, thiếu capability nào). Một project WPF/WinForms nên yêu cầu `dotnet-windowsdesktop` thay vì chỉ
+`dotnet`, vì máy Linux cũng có thể cài .NET SDK.
 
 ### Bước 5 — Bắt đầu run với một objective
 
@@ -307,8 +320,19 @@ awf worker --url <control-api> --name <tên duy nhất> [--platform linux-arm64]
 
 - Platform tự phát hiện: `windows-amd64`, `linux-amd64`, `linux-arm64` (Jetson)… Job yêu cầu `platform: linux`
   khớp mọi `linux-*`.
-- Capability tự phát hiện từ PATH (git, python, docker, cmake, ctest, dotnet, npm, node, nvcc→cuda, ros2);
-  thêm capability phần cứng (vd. `realsense`) bằng `--capabilities`.
+- Capability tự phát hiện từ PATH (git, python, docker, cmake, ctest, dotnet, npm, node, nvcc→cuda, ros2), cùng
+  các capability chi tiết cho .NET/Windows:
+
+  | Capability | Nghĩa | Phát hiện từ |
+  |---|---|---|
+  | `dotnet-sdk-8`, `dotnet-sdk-9`, … | có .NET SDK major đó | `dotnet --list-sdks` |
+  | `dotnet-windowsdesktop` | build/chạy được WPF, WinForms (chỉ có trên Windows) | `dotnet --list-runtimes` |
+  | `msbuild` | MSBuild của Visual Studio (.NET Framework, C++) | `msbuild` trên PATH hoặc `vswhere` |
+  | `vs-2022`, `vs-2026`, … | phiên bản Visual Studio | `vswhere` |
+
+- Capability không dò được (thiết bị, SDK riêng): `AWF_WORKER_EXTRA_CAPABILITIES=realsense,robo-station-sdk`
+  (hoặc `--extra-capabilities`) **cộng thêm** vào kết quả dò. `AWF_WORKER_CAPABILITIES` / `--capabilities`
+  **thay thế** hoàn toàn kết quả dò. `awf doctor` in ra capability máy sẽ khai báo.
 - Đăng ký cần `AWF_WORKER_REGISTRATION_TOKEN`; worker nhận token riêng dùng cho mọi call sau đó.
 - Heartbeat mỗi 15s; quá `worker_heartbeat_timeout_seconds` (90s) → offline, job đang chạy được requeue.
 - Mỗi job: clone mới vào `<workspace_root>/<job_id>`, xoá sau khi xong.
@@ -470,7 +494,8 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 
 | Method | Path | Mô tả |
 |---|---|---|
-| POST/GET | `/projects`, `/projects/{id}` | tạo / liệt kê / chi tiết (kèm `spend_usd`) |
+| POST/GET | `/projects`, `/projects/{id}` | tạo (bắt buộc `labels.platform`) / liệt kê / chi tiết (kèm `spend_usd`, `requirements`, `machines`: máy nào chạy được và lý do) |
+| PATCH | `/projects/{id}` | sửa các trường gửi lên; `repository`, `labels` được thay cả khối |
 | GET | `/workflows`, `/agents` | định nghĩa workflow, agent |
 | POST | `/projects/{id}/workflow-runs` | `{workflow_id, inputs: {objective}, placement?: {worker}}` |
 | GET | `/projects/{id}/workflow-runs`, `/workflow-runs/{id}` | run + stage overview + chi phí + máy được giao (`assigned_worker`, `requirements`, `placement.wait`) |
@@ -490,7 +515,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (107 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (125 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -505,7 +530,9 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 |---|---|
 | Task `READY` mãi, run ghi "waiting for an online worker ..." | Không máy online nào đáp ứng yêu cầu của run. Bật máy phù hợp, hoặc trang run → *Move run*. |
 | Task `WAITING` mãi | Máy được giao chưa nhận job (offline, đang bận job khác). Xem trang run → *Machine*; xem Workers. |
-| Tạo run lỗi `no registered worker meets ...` | Không máy nào đã đăng ký có platform/capability project yêu cầu. Kiểm tra `labels.platform`, `required_capabilities` và trang Workers. |
+| Tạo run lỗi `no registered worker meets ...` | Không máy nào đã đăng ký có platform/capability project yêu cầu; lỗi ghi rõ từng máy thiếu gì. Xem trang project → **Where it runs**. |
+| Tạo run lỗi `does not say which platform it runs on` | Project cũ chưa khai báo platform: chọn trên trang project hoặc `PATCH /projects/{id}`. |
+| Máy có .NET nhưng thiếu `dotnet-windowsdesktop`/`msbuild` | Máy không phải Windows, hoặc chưa cài Visual Studio/workload desktop. Chạy `awf doctor` trên máy đó để xem capability. |
 | `executable 'x' is not in the command allowlist` | Thêm vào `command_allowlist` trong `config/policies.yaml`. |
 | Developer fail `MISSING_ACCEPTANCE_EVIDENCE` | Agent không chạy `build.run`/`test.run`, hoặc lệnh chưa cấu hình. |
 | `COMPLETION_RULE_FAILED` | Build/test thật sự fail — xem log job và `test_evidence`. |

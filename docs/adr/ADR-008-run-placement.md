@@ -16,6 +16,10 @@ do (an Ubuntu box with a .NET SDK still cannot build a Windows-only robo-station
   `repository.required_capabilities` merged with the `worker:` of **every** stage. The chosen machine must
   satisfy the whole run, not just its first step. Platforms merge by prefix (`linux` + `linux-arm64` →
   `linux-arm64`); incompatible platforms refuse the run.
+- Every project **must declare `labels.platform`** (`windows`, `linux`, `linux-arm64`, ... or an explicit
+  `any`); there is no implicit default for run-placed runs. Workers report precise toolchain capabilities
+  (`dotnet-sdk-<major>`, `dotnet-windowsdesktop`, `msbuild`, `vs-<year>`) so a project can ask for what it
+  really needs rather than just `dotnet`.
 - A run no registered (non-revoked) worker matches is **refused at creation**. With no worker registered at
   all, it is accepted and waits.
 - The orchestrator **chooses** the machine at the run's first dispatch: online, fresh heartbeat, not draining,
