@@ -65,3 +65,39 @@ def test_lan_bind_requires_tokens(monkeypatch):
 def test_installed_dependencies_match_lock_file():
     check = ops._check_lock(ROOT)
     assert check.status == "OK", check.detail
+
+
+# ---------------------------------------------------------------------------- tailscale in doctor
+ME = {"dns": "factory.tail1234.ts.net", "ips": ["100.101.102.103"], "state": "Running"}
+
+
+def test_tailscale_check_control_plane(monkeypatch):
+    monkeypatch.setenv("AWF_PUBLIC_URL", "https://factory.tail1234.ts.net")
+    assert ops._check_tailscale("control-plane", ME).status == "OK"
+    monkeypatch.setenv("AWF_PUBLIC_URL", "https://other.tail1234.ts.net")
+    assert ops._check_tailscale("control-plane", ME).status == "WARN"
+    monkeypatch.delenv("AWF_PUBLIC_URL")
+    hint = ops._check_tailscale("control-plane", ME)
+    assert "AWF_PUBLIC_URL=https://factory.tail1234.ts.net" in hint.detail
+
+
+def test_tailscale_check_worker(monkeypatch):
+    monkeypatch.setenv("AWF_CONTROL_URL", "https://factory.tail1234.ts.net")
+    assert ops._check_tailscale("worker", None, probe=False).status == "FAIL"  # tailnet URL, no Tailscale here
+    assert ops._check_tailscale("worker", {**ME, "state": "Stopped"}).status == "FAIL"
+    assert ops._check_tailscale("worker", ME).status == "OK"
+    monkeypatch.setenv("AWF_CONTROL_URL", "https://factory.example.com")
+    assert ops._check_tailscale("worker", None, probe=False) is None  # not a tailnet URL: nothing to say
+    assert ops._check_tailscale("worker", {**ME, "state": "Stopped"}).status == "WARN"
+
+
+def test_tailscale_self_parses_status_json(monkeypatch):
+    import json
+    import subprocess
+
+    fake = subprocess.CompletedProcess([], 0, stdout=json.dumps({
+        "BackendState": "Running", "Self": {"DNSName": "pc.tail1234.ts.net.", "TailscaleIPs": ["100.1.2.3"]}}))
+    monkeypatch.setattr(ops.shutil, "which", lambda name: "/usr/bin/tailscale")
+    assert ops.tailscale_self(run=lambda *a, **k: fake) == {"dns": "pc.tail1234.ts.net", "ips": ["100.1.2.3"],
+                                                            "state": "Running"}
+

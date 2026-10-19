@@ -813,19 +813,97 @@ Những gì nền tảng tự lo khi mạng không ổn định:
 
 **Cách A — Mạng riêng Tailscale (khuyến nghị, đơn giản và an toàn nhất)**
 
-Tailscale tạo mạng riêng mã hoá WireGuard giữa các máy của bạn ở mọi địa điểm. Không cần domain, không mở cổng
-ra internet, dashboard không lộ ra ngoài.
+Tailscale nối mọi máy của bạn (máy chủ Ubuntu, PC Windows, máy Linux, Jetson, điện thoại) vào một mạng riêng
+mã hoá WireGuard, ở bất kỳ đâu (nhà, công ty, 4G). Không cần domain, không mở cổng nào ra internet, không cần
+IP tĩnh; dashboard chỉ những thiết bị trong mạng riêng của bạn (tailnet) mới thấy.
 
-1. Cài Tailscale trên máy trung tâm và mọi máy worker, đăng nhập cùng một tài khoản (tailnet).
-2. Máy trung tâm:
-   ```powershell
-   .\scripts\bootstrap.ps1 -Role control-plane -PublicUrl http://<ten-may>.<tailnet>.ts.net:8000
-   .\.venv\Scripts\awf start
-   ```
-3. Bootstrap in ra lệnh cài sẵn cho worker. Chạy lệnh đó trên từng máy worker, rồi `awf start`.
+```text
+  Điện thoại (app Tailscale) ─┐
+  PC Windows (worker)  ───────┤   tailnet (WireGuard)   ┌─ máy chủ Ubuntu 24.04
+  Máy Linux/Jetson (worker) ──┘ ───────────────────────►│  tailscale serve :443 → 127.0.0.1:8000 (awf)
+                                                         └─ https://factory.<tailnet>.ts.net
+```
 
-Địa chỉ `*.ts.net` và `100.x.y.z` được worker chấp nhận dù là `http://`, vì đường truyền đã được WireGuard
-mã hoá. Muốn có HTTPS thật trong tailnet thì dùng `tailscale serve`.
+Bước 1 — Tạo tailnet và bật HTTPS (một lần, trên trình duyệt): đăng ký tại tailscale.com (Google/Microsoft/
+GitHub account; gói miễn phí cá nhân thường đủ cho vài người và vài chục máy, xem tailscale.com/pricing). Trong trang quản trị → **DNS**: bật
+**MagicDNS** và **HTTPS Certificates**.
+
+Bước 2 — Máy chủ Ubuntu:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh     # bộ cài chính thức, tự bật dịch vụ tailscaled khi khởi động
+sudo tailscale up --hostname=factory                 # mở link in ra để đăng nhập vào tailnet
+sudo tailscale serve --bg 8000                       # HTTPS https://factory.<tailnet>.ts.net -> 127.0.0.1:8000
+tailscale serve status                               # in ra URL đầy đủ
+```
+
+`--bg` giữ cấu hình qua các lần khởi động lại. Sau đó chạy bootstrap với URL vừa in ra (HTTPS, nên API chỉ nghe
+`127.0.0.1`; không ai vào được cổng 8000 từ mạng, kể cả LAN):
+
+```bash
+scripts/bootstrap.sh --role control-plane --public-url https://factory.<tailnet>.ts.net
+sudo scripts/install-postgres.sh --import-sqlite
+sudo scripts/install-systemd.sh
+```
+
+Bootstrap in ra lệnh cài sẵn cho worker (kèm `--registration-token`).
+
+Bước 3 — Mỗi PC Windows làm worker: cài Tailscale từ tailscale.com/download (chạy nền như dịch vụ Windows, tự bật
+cùng máy), đăng nhập cùng tài khoản. Rồi:
+
+```powershell
+.\scripts\bootstrap.ps1 -Role worker -ControlUrl https://factory.<tailnet>.ts.net -RegistrationToken <token>
+.\scripts\install-task.ps1          # tự chạy worker, ẩn, có watchdog (mục "Chạy như dịch vụ" bên dưới)
+```
+
+Bước 4 — Mỗi máy Linux/Jetson làm worker:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
+scripts/bootstrap.sh --role worker --control-url https://factory.<tailnet>.ts.net --registration-token <token>
+sudo scripts/install-systemd.sh
+```
+
+Bước 5 — Điện thoại: cài app **Tailscale** (iOS/Android), đăng nhập cùng tài khoản, bật VPN. Mở
+`https://factory.<tailnet>.ts.net` trong trình duyệt; đăng nhập dashboard một lần (giữ 30 ngày). Đặt
+`AWF_PUBLIC_URL` là URL này (bootstrap đã làm), thì link trong tin Telegram/Zalo/WhatsApp mở thẳng được trên
+điện thoại.
+
+Kiểm tra:
+
+| Ở đâu | Lệnh | Mong đợi |
+|---|---|---|
+| mọi máy | `tailscale status` | thấy tên các máy khác của tailnet |
+| worker | `tailscale ping factory` | `pong from factory (100.x.y.z)` |
+| worker | `awf doctor` | `[OK] tailscale this machine is ...` và `[OK] control plane https://factory... -> ok` |
+| máy chủ | `awf doctor` | `[OK] tailscale this machine is factory.<tailnet>.ts.net` |
+| máy chủ | `tailscale serve status` | liệt kê `https://factory.<tailnet>.ts.net` (tailnet only) → `http://127.0.0.1:8000` |
+
+Thêm (tùy chọn):
+
+- **Quản trị từ xa không cần mở SSH ra ngoài:** `sudo tailscale up --ssh` trên máy chủ, rồi từ máy bạn
+  `ssh <user>@factory`.
+- **Giới hạn ai vào được máy chủ:** trang quản trị → **Access controls**, ví dụ chỉ cho phép vào cổng 443 của
+  máy chủ (gắn tag `tag:factory`) từ tài khoản của bạn và các worker:
+  ```json
+  {"tagOwners": {"tag:factory": ["autogroup:admin"], "tag:worker": ["autogroup:admin"]},
+   "grants": [{"src": ["autogroup:member", "tag:worker"], "dst": ["tag:factory"], "ip": ["443"]}]}
+  ```
+  Gắn tag cho máy chủ bằng `sudo tailscale up --advertise-tags=tag:factory` (và `tag:worker` cho worker).
+- **Máy tắt key-expiry:** trang quản trị → Machines → máy chủ và các worker → *Disable key expiry*, để máy chạy
+  24/7 không bị đăng xuất khỏi tailnet sau 180 ngày.
+- Không dùng `tailscale serve`: đặt `AWF_API_HOST` = IP Tailscale của máy chủ (`tailscale ip -4`) và
+  `--public-url http://factory.<tailnet>.ts.net:8000`. Worker chấp nhận `http://` tới `*.ts.net`/`100.x.y.z` vì
+  đường truyền đã được WireGuard mã hoá, nhưng trình duyệt điện thoại sẽ báo "không bảo mật".
+
+Sự cố thường gặp:
+
+| Triệu chứng | Cách xử lý |
+|---|---|
+| `tailscale serve` báo cần bật HTTPS | Trang quản trị → DNS → bật *HTTPS Certificates* rồi chạy lại. |
+| Worker `doctor`: `tailscale ... FAIL` | Máy chưa cài/chưa `tailscale up`, hoặc đăng nhập tài khoản khác. |
+| Điện thoại không mở được URL | App Tailscale trên điện thoại chưa bật VPN, hoặc ACL chặn. |
+| Tên `factory` không phân giải | Bật MagicDNS; trên Linux kiểm tra `tailscale up --accept-dns`. |
 
 **Cách B — Domain công khai + HTTPS (Caddy tự lấy chứng chỉ Let's Encrypt)**
 
@@ -916,6 +994,16 @@ Nên chép `var/backups/` và `var/artifacts/` sang máy khác (rsync, ổ mạn
 với database không cứu được khi hỏng ổ.
 
 ### Chạy như dịch vụ (tự bật khi khởi động máy)
+
+Tóm tắt cho từng loại máy (cùng một lệnh dùng cho máy chủ và worker; `AWF_ROLE` trong `.env` quyết định máy đó làm
+gì):
+
+| Máy | Cách tự chạy | Lệnh cài | Khi nào chạy |
+|---|---|---|---|
+| Máy chủ Ubuntu (control-plane) | systemd `awf.service` + `awf-backup.timer` | `sudo scripts/install-systemd.sh` | ngay khi bật máy, không cần đăng nhập |
+| Worker Linux / Jetson | systemd `awf.service` | `sudo scripts/install-systemd.sh` | ngay khi bật máy, không cần đăng nhập |
+| Worker Windows | Task Scheduler (ẩn, watchdog 5 phút) | `.\scripts\install-task.ps1` | khi bạn **đăng nhập** Windows |
+| Tailscale (mọi máy) | dịch vụ của chính Tailscale | cài là xong | ngay khi bật máy |
 
 **Linux (Ubuntu/Debian/Jetson) — systemd.** Sau khi đã chạy bootstrap:
 
@@ -1035,7 +1123,8 @@ Nên cập nhật máy trung tâm trước, rồi đến các worker.
 - Đăng nhập dashboard bằng `awf open`, phiên vẫn còn sau khi khởi động lại server, đăng xuất: kiểm tra trên
   trình duyệt thật.
 
-**Chưa kiểm chứng trên máy này:** Tailscale, Caddy/Let's Encrypt và Cloudflare Tunnel, vì máy chưa cài các
+**Chưa kiểm chứng trên máy này:** Tailscale (các lệnh theo tài liệu chính thức của Tailscale; `awf doctor`
+kiểm tra được trạng thái), Caddy/Let's Encrypt và Cloudflare Tunnel, vì máy chưa cài các
 công cụ đó và chưa có domain. Docker image cũng chưa được build vì Docker daemon chưa chạy.
 
 ### Docker (tùy chọn)

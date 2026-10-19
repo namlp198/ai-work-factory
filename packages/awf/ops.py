@@ -222,6 +222,57 @@ def _check_public_url() -> Check:
     return Check("public url", "OK", url)
 
 
+def tailscale_self(run=None) -> dict | None:
+    """This machine on the tailnet ({"dns": "pc.tailnet.ts.net", "ips": [...], "state": "Running"}), or None when
+    the Tailscale CLI is missing or does not answer."""
+    import json
+
+    exe = shutil.which("tailscale")
+    if not exe and os.name == "nt":
+        candidate = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Tailscale" / "tailscale.exe"
+        exe = str(candidate) if candidate.is_file() else None
+    if not exe:
+        return None
+    try:
+        out = (run or subprocess.run)([exe, "status", "--json"], capture_output=True, text=True, timeout=10)
+        data = json.loads(out.stdout or "{}")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    me = data.get("Self") or {}
+    return {"dns": (me.get("DNSName") or "").rstrip("."), "ips": me.get("TailscaleIPs") or [],
+            "state": data.get("BackendState") or ""}
+
+
+def _tailnet_host(url: str) -> str | None:
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    if host.endswith(".ts.net") or host.startswith("100."):
+        return host
+    return None
+
+
+def _check_tailscale(role: str, me: dict | None = None, probe: bool = True) -> Check | None:
+    """Only reported when this machine's URLs point into a tailnet, or Tailscale is installed."""
+    url = os.environ.get("AWF_PUBLIC_URL" if role != "worker" else "AWF_CONTROL_URL", "")
+    host = _tailnet_host(url)
+    me = me if me is not None or not probe else tailscale_self()
+    if me is None:
+        if host:
+            return Check("tailscale", "FAIL", f"{url} is a tailnet address but Tailscale is not installed/running here "
+                                              f"(install it and log in to the same tailnet)")
+        return None
+    if me["state"] != "Running":
+        return Check("tailscale", "FAIL" if host else "WARN", f"Tailscale is {me['state'] or 'not running'}: "
+                                                              f"run `tailscale up`")
+    detail = f"this machine is {me['dns'] or '?'} ({', '.join(me['ips'][:1])})"
+    if role != "worker" and host and host.endswith(".ts.net") and me["dns"] and host != me["dns"].lower():
+        return Check("tailscale", "WARN", f"{detail} but AWF_PUBLIC_URL names {host}")
+    if role != "worker" and not url:
+        detail += f"; for workers and phones set AWF_PUBLIC_URL=https://{me['dns']} (tailscale serve --bg 8000)"
+    return Check("tailscale", "OK", detail)
+
+
 def _check_api_exposure() -> Check:
     host = os.environ.get("AWF_API_HOST", "127.0.0.1")
     if host not in LOOPBACK and not os.environ.get("AWF_API_TOKEN"):
@@ -285,6 +336,9 @@ def doctor(home: Path) -> int:
                         f"role={role}" if (home / ".env").is_file() else "missing: run `awf env init`"))
     if role in ("all", "control-plane"):
         checks += [_check_database(), _check_backups(role), _check_api_exposure(), _check_public_url()]
+    tailscale = _check_tailscale(role)
+    if tailscale:
+        checks.append(tailscale)
     if role in ("all", "worker"):
         checks += [_check_worker_identity(), _check_model_credentials()]
     if role == "worker":
