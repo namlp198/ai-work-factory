@@ -891,18 +891,20 @@ class Orchestrator:
         grace = timedelta(seconds=self.p.settings.run_reassign_after_seconds)
         now = utcnow()
         changed = False
-        for run in session.scalars(select(WorkflowRun).where(WorkflowRun.status == RunStatus.RUNNING,
-                                                             WorkflowRun.assigned_worker_id.is_not(None))):
+        runs = session.scalars(select(WorkflowRun).where(WorkflowRun.status == RunStatus.RUNNING,
+                                                         WorkflowRun.assigned_worker_id.is_not(None))).all()
+        for run in runs:
             worker = session.get(Worker, run.assigned_worker_id)
+            offline = placement.offline_for(worker, now) if worker is not None else None
             if worker is None:
                 reason = "assigned worker was deleted"
             elif worker.status == WorkerStatus.REVOKED:
                 reason = f"worker {worker.name} was revoked"
             elif not requirements_met(worker, run.requirements or {}):
                 reason = f"worker {worker.name} no longer meets {placement.describe(run.requirements or {})}"
-            elif worker.status == WorkerStatus.OFFLINE and (placement.offline_for(worker, now) or grace) >= grace \
+            elif worker.status == WorkerStatus.OFFLINE and (offline is None or offline >= grace) \
                     and self._has_pending_work(session, run):
-                minutes = int((placement.offline_for(worker, now) or grace).total_seconds() // 60)
+                minutes = int((offline or grace).total_seconds() // 60)
                 reason = f"worker {worker.name} offline for {minutes} min"
             else:
                 continue

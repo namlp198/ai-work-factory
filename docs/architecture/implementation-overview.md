@@ -18,6 +18,7 @@ Tài liệu này ánh xạ bản thiết kế (`AI_WORK_FACTORY_INITIAL_TECHNICA
 | approval-service | `Orchestrator.resolve_approval` + `/api/v1/approvals` | gate stage + contract `human_approval` |
 | critic | `packages/awf/orchestrator/critic.py` | rule + severity, evidence-based, không chấm điểm |
 | task router | `packages/awf/orchestrator/task_router.py` | role, model route, worker requirements, sandbox write/read |
+| run placement | `packages/awf/orchestrator/placement.py` | một run — một máy: yêu cầu của run, chọn máy theo tải, chuyển máy khi máy hỏng (ADR-008) |
 | audit / logging | `packages/awf/orchestrator/audit.py`, `packages/awf/logging.py` | bảng append-only + JSON log có redaction |
 
 ## 2. Vòng đời một workflow run

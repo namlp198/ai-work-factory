@@ -191,7 +191,8 @@ $project = @{
 $p = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/projects -Headers $H -ContentType "application/json" -Body $project
 ```
 
-`labels.platform` + `required_capabilities` quyết định worker nào được nhận job (routing theo capability).
+`labels.platform` + `required_capabilities` quyết định **máy nào được nhận run** (xem mục 10, "Một run — một
+máy"). Nếu không có máy nào đã đăng ký đáp ứng, run bị từ chối ngay khi tạo, kèm danh sách máy hiện có.
 
 ### Bước 5 — Bắt đầu run với một objective
 
@@ -313,8 +314,32 @@ awf worker --url <control-api> --name <tên duy nhất> [--platform linux-arm64]
 - Mỗi job: clone mới vào `<workspace_root>/<job_id>`, xoá sau khi xong.
 - Chạy như service: Linux dùng `sudo scripts/install-systemd.sh`, Windows dùng `.\scripts\install-task.ps1` (xem mục 21).
 
-Routing theo stage: thêm `worker: {platform: linux, capabilities: [cuda]}` vào stage trong workflow, hoặc
+Yêu cầu theo stage: thêm `worker: {platform: linux, capabilities: [cuda]}` vào stage trong workflow, hoặc
 `labels.platform` + `repository.required_capabilities` ở project.
+
+### Một run — một máy (ADR-008)
+
+Mặc định **mọi job của một run chạy trên cùng một máy**: một task phần mềm đi từ requirement tới merge trên
+máy được giao.
+
+- **Yêu cầu của run** được tính một lần khi tạo run: platform và capability của project, cộng với `worker:`
+  của **mọi** stage. Stage cuối cần `cuda` thì ngay từ stage đầu run đã được giao cho máy có `cuda`. Hai stage
+  đòi hai hệ điều hành khác nhau → run bị từ chối.
+- **Chọn máy**: ở lần dispatch đầu tiên, orchestrator chọn máy online, đáp ứng yêu cầu, ít việc nhất
+  (job đang chờ + đang chạy chia cho số slot), rồi máy giữ ít run hơn, rồi máy có nhãn
+  `preferred_for=<slug project hoặc id workflow>`. Không có máy online phù hợp → run chờ, dashboard ghi lý do.
+- **Chọn tay**: dashboard → project → *Machine*, hoặc API `placement: {worker: "<tên>"}` khi tạo run.
+  Chuyển run sang máy khác: trang run → *Move run* (không được khi một job của run đang chạy).
+- **Máy hỏng**: máy offline quá `run_reassign_after_seconds` (mặc định 600 giây,
+  `AWF_RUN_REASSIGN_AFTER_SECONDS`) trong lúc run có việc đang chờ → run chuyển sang máy phù hợp khác và chạy
+  tiếp từ nhánh `awf/run-*` trên origin. Máy bị **Revoke** → chuyển ngay. Máy chỉ restart → giữ nguyên run.
+  Run đang chờ phê duyệt thì giữ máy cho tới khi có việc để chạy.
+- **Draining**: máy draining chạy nốt các run đang giữ, không nhận run mới.
+- Workflow cần nhiều máy (ví dụ build Linux rồi test Windows): đặt `placement: stage` ở đầu workflow để
+  từng job được giao cho bất kỳ máy nào khớp, như trước đây.
+
+Lưu ý: các phần song song trong một run (nhiều task development, verification song song) chạy tuần tự trên
+máy được giao, vì worker hiện chạy một job mỗi lần.
 
 ## 11. Cấu hình
 
@@ -447,8 +472,9 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 |---|---|---|
 | POST/GET | `/projects`, `/projects/{id}` | tạo / liệt kê / chi tiết (kèm `spend_usd`) |
 | GET | `/workflows`, `/agents` | định nghĩa workflow, agent |
-| POST | `/projects/{id}/workflow-runs` | `{workflow_id, inputs: {objective}}` |
-| GET | `/projects/{id}/workflow-runs`, `/workflow-runs/{id}` | run + stage overview + chi phí |
+| POST | `/projects/{id}/workflow-runs` | `{workflow_id, inputs: {objective}, placement?: {worker}}` |
+| GET | `/projects/{id}/workflow-runs`, `/workflow-runs/{id}` | run + stage overview + chi phí + máy được giao (`assigned_worker`, `requirements`, `placement.wait`) |
+| POST | `/workflow-runs/{id}/reassign` | `{worker}` chuyển run sang máy đó; `{}` để orchestrator chọn lại |
 | POST | `/workflow-runs/{id}/cancel` | huỷ |
 | GET | `/workflow-runs/{id}/tasks`, `/tasks/{id}` | task, agent run, job, approval, artifact |
 | POST | `/tasks/{id}/retry` | retry task FAILED |
@@ -464,7 +490,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (78 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (107 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -477,7 +503,9 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|
-| Task `WAITING` mãi | Không worker nào khớp `requirements` (platform/capability). Xem job (`/jobs/{id}`) → `requirements`; xem Workers. |
+| Task `READY` mãi, run ghi "waiting for an online worker ..." | Không máy online nào đáp ứng yêu cầu của run. Bật máy phù hợp, hoặc trang run → *Move run*. |
+| Task `WAITING` mãi | Máy được giao chưa nhận job (offline, đang bận job khác). Xem trang run → *Machine*; xem Workers. |
+| Tạo run lỗi `no registered worker meets ...` | Không máy nào đã đăng ký có platform/capability project yêu cầu. Kiểm tra `labels.platform`, `required_capabilities` và trang Workers. |
 | `executable 'x' is not in the command allowlist` | Thêm vào `command_allowlist` trong `config/policies.yaml`. |
 | Developer fail `MISSING_ACCEPTANCE_EVIDENCE` | Agent không chạy `build.run`/`test.run`, hoặc lệnh chưa cấu hình. |
 | `COMPLETION_RULE_FAILED` | Build/test thật sự fail — xem log job và `test_evidence`. |
@@ -631,13 +659,14 @@ của bạn. Nếu dùng tunnel/proxy ở máy khác, đặt `AWF_TRUSTED_PROXIE
 
 ### Quản lý worker
 
-- Dashboard → **Workers**: tên, `machine_id`, platform, capability, nhãn, heartbeat.
-- **Revoke** một máy bị mất hoặc nghi bị xâm nhập. Token của nó vô hiệu ngay, job của nó được giao lại, và nó
-  không đăng ký lại được.
+- Dashboard → **Workers**: tên, `machine_id`, platform, capability, nhãn, số run đang giữ, heartbeat.
+- **Revoke** một máy bị mất hoặc nghi bị xâm nhập. Token của nó vô hiệu ngay, các run của nó chuyển sang máy
+  phù hợp khác, và nó không đăng ký lại được.
 - Nếu máy bị xâm nhập, đổi luôn `AWF_WORKER_REGISTRATION_TOKEN` trên máy trung tâm (`awf env init --force`
   tạo mới toàn bộ token, nên cần cài lại các worker còn lại). **Delete** bản ghi worker đã revoke để máy
   đó tham gia lại.
-- Nhãn để định tuyến theo địa điểm: `AWF_WORKER_LABELS=site=hanoi,gpu=rtx4090`.
+- Nhãn để định tuyến theo địa điểm: `AWF_WORKER_LABELS=site=hanoi,gpu=rtx4090`. Ưu tiên một máy cho một
+  project: `AWF_WORKER_LABELS=preferred_for=robo-station`.
 
 ### Chạy như dịch vụ (tự bật khi khởi động máy)
 
