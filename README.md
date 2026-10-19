@@ -31,12 +31,13 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
 - Nhiều máy: `bootstrap -Role control-plane -PublicUrl <url>` trên máy trung tâm (in sẵn lệnh cho worker),
   `bootstrap -Role worker -ControlUrl ... -RegistrationToken ...` trên mỗi worker, rồi `awf start` ở mọi máy.
 - Sau `git pull`: chạy lại bootstrap rồi `awf start`.
-- Dashboard: đăng nhập bằng `AWF_API_TOKEN` một lần (giữ 30 ngày), hoặc `awf open` để vào thẳng.
+- Dashboard: đăng nhập bằng `AWF_API_TOKEN` một lần (giữ 30 ngày), hoặc `awf open` để vào thẳng. Cài lên điện
+  thoại như một ứng dụng (PWA, cần HTTPS, ví dụ `tailscale serve`): §7 của hướng dẫn.
 - Máy trung tâm + worker ở nhiều địa điểm, xem dashboard từ điện thoại: Tailscale từng bước ở §21 của hướng dẫn
   ("Cách A"). Tự chạy khi bật máy: `sudo scripts/install-systemd.sh` (Ubuntu/Linux/Jetson),
   `.\scripts\install-task.ps1` (Windows, khi đăng nhập) hoặc `.\scripts\install-task.ps1 -AtStartup` (Windows 24/7,
   không cần đăng nhập; PowerShell admin).
-- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (171 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
+- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (176 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
 - Claude thật: đặt `ANTHROPIC_API_KEY` trong `.env` của máy worker.
 
 ## Tài liệu

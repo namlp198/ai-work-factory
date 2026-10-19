@@ -58,3 +58,27 @@ form.grid .full { grid-column: 1 / -1; }
 .approval-card { max-width: 640px; }
 .approval-card textarea { width: 100%; box-sizing: border-box; margin: 8px 0; }
 .decide button { flex: 1; min-height: 48px; font-size: 1.05em; }
+/* ---------------------------------------------------------------- phone / installed app */
+body { padding-bottom: env(safe-area-inset-bottom); }
+header { padding-top: max(10px, env(safe-area-inset-top)); padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+a.card { color: inherit; text-decoration: none; display: block; }
+a.card[href]:hover { border-color: var(--accent); }
+.list { display: flex; flex-direction: column; gap: 8px; }
+.item { display: block; background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--info); border-radius: 8px; padding: 10px 12px; color: inherit; text-decoration: none; }
+.item.warn { border-left-color: var(--warn); display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.item .obj { margin: 4px 0 6px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.progress { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-bottom: 4px; }
+.progress span { display: block; height: 100%; background: var(--accent); }
+.banner { position: sticky; top: 0; z-index: 6; background: var(--warn); color: #000; padding: 6px 16px; font-size: 13px; text-align: center; }
+.hint { background: var(--panel); border: 1px dashed var(--accent); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; justify-content: space-between; }
+@media (max-width: 640px) {
+  header { gap: 10px; padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); flex-wrap: nowrap; }
+  .brand { font-size: 13px; white-space: nowrap; }
+  nav { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; gap: 16px; -webkit-overflow-scrolling: touch; }
+  nav::-webkit-scrollbar { display: none; }
+  nav a { white-space: nowrap; padding: 8px 0; }
+  .cards { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .card { padding: 10px; } .card .v { font-size: 20px; }
+}
+@media (display-mode: standalone) { .brand { display: none; } }
+

@@ -462,7 +462,7 @@ def list_audit(project_id: str | None = None, run_id: str | None = None, task_id
 
 
 @router.get("/overview")
-def overview(session: Session = Depends(get_session, scope="function")):
+def overview(state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function")):
     def count(model, *where) -> int:
         return session.scalar(select(func.count()).select_from(model).where(*where)) or 0
 
@@ -476,7 +476,31 @@ def overview(session: Session = Depends(get_session, scope="function")):
         "workers_online": count(Worker, Worker.status == WorkerStatus.ONLINE),
         "workers_total": count(Worker),
         "total_cost_usd": float(session.scalar(select(func.coalesce(func.sum(AgentRun.cost_estimate), 0))) or 0),
+        "runs": _active_runs(state, session),
     }
+
+
+def _active_runs(state: AppState, session: Session, limit: int = 20) -> list[dict[str, Any]]:
+    """Running runs at a glance (the phone view): progress through the stages, current stage, machine."""
+    rows = []
+    for run in session.scalars(select(WorkflowRun).where(WorkflowRun.status == RunStatus.RUNNING)
+                               .order_by(WorkflowRun.created_at.desc()).limit(limit)):
+        try:
+            stages = state.orchestrator.stage_overview(session, run)
+        except KeyError:  # workflow definition removed since the run started
+            stages = []
+        current = next((s for s in stages if s["status"] in ("active", "failed")), None)
+        worker = session.get(Worker, run.assigned_worker_id) if run.assigned_worker_id else None
+        project = session.get(Project, run.project_id)
+        placement = (run.context_json or {}).get("placement") or {}
+        rows.append({"id": run.id, "workflow_id": run.workflow_id, "project": project.name if project else None,
+                     "objective": (run.input_json or {}).get("objective", "")[:200],
+                     "stages_done": sum(1 for s in stages if s["status"] == "done"), "stages_total": len(stages),
+                     "current_stage": current["title"] if current else None,
+                     "current_gate": bool(current and current.get("gate")),
+                     "worker": worker.name if worker else None, "waiting_for": placement.get("wait"),
+                     "created_at": run.created_at.isoformat() if run.created_at else None})
+    return rows
 
 
 @router.get("/stats/agents")

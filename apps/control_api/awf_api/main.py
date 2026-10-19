@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -84,5 +84,18 @@ def create_app(platform: Platform | None = None, orchestrator: Orchestrator | No
     @app.get("/", include_in_schema=False)
     def dashboard() -> HTMLResponse:
         return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
+
+    # Installable app (PWA). The service worker must be served from the root to control the whole dashboard;
+    # it is rendered with the asset fingerprint so every update installs a fresh one.
+    manifest = (STATIC_DIR / "manifest.webmanifest").read_text(encoding="utf-8")
+    service_worker = (STATIC_DIR / "sw.js").read_text(encoding="utf-8").replace("__VERSION__", digest)
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def web_manifest() -> Response:
+        return Response(manifest, media_type="application/manifest+json", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/sw.js", include_in_schema=False)
+    def sw() -> Response:
+        return Response(service_worker, media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
     return app

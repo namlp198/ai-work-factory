@@ -299,7 +299,7 @@ tiền model. Xem `examples/*/scripted-responses.yaml`.
 
 | Trang | Nội dung |
 |---|---|
-| Overview | project, run/task đang chạy, task lỗi, approval chờ, worker online, chi phí LLM |
+| Overview | số liệu tổng, yêu cầu đang chờ duyệt, các run đang chạy (tiến độ stage, stage hiện tại, máy đang chạy) |
 | Projects | danh sách, tạo project, chi tiết project, bắt đầu run |
 | Run | pipeline stage (iteration, trạng thái), bảng task (critic decision + verdict), approval chờ, artifact |
 | Task (click dòng) | tiêu chí chấp nhận, feedback, agent run (model, route reason, token, chi phí, critic findings, tool calls), log job |
@@ -308,6 +308,34 @@ tiền model. Xem `examples/*/scripted-responses.yaml`.
 | Workers | platform, capability, tải, heartbeat |
 | Agents | KPI theo role: số run, success, retry, critic rejection, latency, chi phí |
 | Audit | toàn bộ sự kiện |
+| Notifications | kênh Telegram/WhatsApp/Zalo, tin đã gửi, gửi tin thử |
+
+### Cài dashboard lên điện thoại (ứng dụng PWA)
+
+Dashboard cài được như một ứng dụng: có biểu tượng trên màn hình chính, mở toàn màn hình (không thanh địa chỉ),
+số yêu cầu chờ duyệt hiện trên biểu tượng, và vẫn mở được khi mất mạng (hiện thông báo thay vì trang trắng).
+
+Điều kiện: điện thoại mở dashboard qua **HTTPS**. Cách đơn giản nhất là Tailscale + `tailscale serve` (mục 21,
+"Cách A"): `https://factory.<tailnet>.ts.net`. Với `http://...:8000` vẫn dùng được trên trình duyệt nhưng không cài
+được thành ứng dụng (trình duyệt chỉ cho phép trên HTTPS).
+
+- **Android (Chrome):** mở URL → đăng nhập → trên trang Overview bấm **Install app** (hoặc menu ⋮ → *Cài đặt ứng
+  dụng*). Giữ lâu biểu tượng để vào nhanh *Duyệt* hoặc *Máy*.
+- **iPhone/iPad (Safari):** mở URL → nút **Chia sẻ** → **Thêm vào MH chính**. Ứng dụng trên màn hình chính có bộ
+  nhớ riêng, nên **đăng nhập lại một lần** trong ứng dụng (phiên giữ 30 ngày).
+- **Máy tính (Chrome/Edge):** biểu tượng cài đặt trên thanh địa chỉ.
+
+Cách hoạt động:
+
+- Ứng dụng chỉ lưu trên máy phần "vỏ" (trang, script, CSS, biểu tượng). Dữ liệu run, artifact, yêu cầu duyệt
+  **không bao giờ** được lưu trên điện thoại: luôn lấy trực tiếp từ máy chủ và cần đăng nhập.
+- Đang mở: tự cập nhật mỗi 4 giây. Chuyển sang ứng dụng khác hoặc tắt màn hình: dừng cập nhật (đỡ tốn pin), mở
+  lại là cập nhật ngay.
+- Mất kết nối (mất mạng, Tailscale tắt, máy chủ khởi động lại): dữ liệu đang xem vẫn giữ, kèm dải vàng báo mất
+  kết nối, tự thử lại.
+- Cập nhật phiên bản mới (sau `git pull` + khởi động lại `awf` trên máy chủ): ứng dụng tự lấy bản mới ở lần mở kế
+  tiếp, không cần cài lại.
+- Thông báo đẩy khi có việc cần duyệt: dùng Telegram/Zalo/WhatsApp (mục 8); tin có link mở thẳng trang duyệt.
 
 ## 8. Duyệt (human approval) và fix loop
 
@@ -683,7 +711,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (171 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (176 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop

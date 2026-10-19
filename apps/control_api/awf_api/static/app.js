@@ -12,10 +12,15 @@ const money = (v) => `$${Number(v || 0).toFixed(4)}`;
 // Auth: an HttpOnly session cookie set by POST /api/v1/session (30 days). The admin token is typed once
 // per browser, or never when the dashboard is opened with `awf open` (one-time login link).
 class AuthRequired extends Error {}
+// The control plane cannot be reached (no network, Tailscale off, server restarting): keep showing what we have.
+class Offline extends Error {}
 
 async function api(path, opts = {}) {
   const headers = { "Content-Type": "application/json", "X-AWF-Client": "dashboard", ...(opts.headers || {}) };
-  const res = await fetch(API + path, { ...opts, headers, credentials: "same-origin" });
+  let res;
+  try { res = await fetch(API + path, { ...opts, headers, credentials: "same-origin" }); }
+  catch { throw new Offline(); }
+  if ([502, 503, 504].includes(res.status)) throw new Offline();  // proxy (tailscale serve/Caddy) up, awf down
   if (res.status === 401) throw new AuthRequired();
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   const type = res.headers.get("content-type") || "";
@@ -61,13 +66,51 @@ function drawer(html) { $("#drawer-body").innerHTML = html; $("#drawer").classLi
 // ------------------------------------------------------------------------------------ views
 async function viewOverview() {
   const [o, approvals] = await Promise.all([api("/overview"), api("/approvals?state=pending")]);
-  const card = (k, v) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`;
-  return `<h1>Overview</h1>
-    <div class="cards">${card("Projects", o.projects)}${card("Active runs", o.active_runs)}
-    ${card("Active tasks", o.active_tasks)}${card("Failed tasks", o.failed_tasks)}
-    ${card("Waiting approvals", o.waiting_approvals)}${card("Workers online", `${o.workers_online}/${o.workers_total}`)}
-    ${card("LLM cost", money(o.total_cost_usd))}</div>
-    <h2>Waiting approvals</h2>${approvalTable(approvals)}`;
+  const card = (k, v, href) => `<a class="card" ${href ? `href="${href}"` : ""}><div class="k">${k}</div><div class="v">${v}</div></a>`;
+  const waiting = approvals.slice(0, 5).map((a) => `<a class="item warn" href="#/approvals/${a.id}"><b>${esc(a.action)}</b>
+      <span class="muted">run <code>${short(a.workflow_run_id)}</code> · ${when(a.created_at)}</span></a>`).join("");
+  const runs = (o.runs || []).map((r) => {
+    const pct = r.stages_total ? Math.round((100 * r.stages_done) / r.stages_total) : 0;
+    const where = r.worker ? `on ${esc(r.worker)}` : (r.waiting_for ? `<span class="error">${esc(r.waiting_for)}</span>` : "");
+    return `<a class="item" href="#/runs/${r.id}">
+      <div class="row"><b>${esc(r.project || "")}</b><span class="muted">${esc(r.workflow_id)}</span></div>
+      <div class="obj">${esc(r.objective)}</div>
+      <div class="progress"><span style="width:${pct}%"></span></div>
+      <div class="muted">${r.stages_done}/${r.stages_total} · ${r.current_gate ? "⏳ " : ""}${esc(r.current_stage || "")} ${where}</div></a>`;
+  }).join("");
+  return `<h1>Overview</h1>${installHint()}
+    <div class="cards">${card("Active runs", o.active_runs)}${card("Waiting approvals", o.waiting_approvals, "#/approvals")}
+    ${card("Workers online", `${o.workers_online}/${o.workers_total}`, "#/workers")}${card("Failed tasks", o.failed_tasks)}
+    ${card("Active tasks", o.active_tasks)}${card("Projects", o.projects, "#/projects")}${card("LLM cost", money(o.total_cost_usd))}</div>
+    ${approvals.length ? `<h2>Waiting for your approval</h2><div class="list">${waiting}
+      ${approvals.length > 5 ? `<a href="#/approvals">See all ${approvals.length} →</a>` : ""}</div>` : ""}
+    <h2>Running</h2><div class="list">${runs || '<p class="muted">Nothing running.</p>'}</div>`;
+}
+
+// ---------------------------------------------------------------- installable app (PWA)
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installPrompt = e; });
+const standalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+
+function installHint() {
+  if (standalone()) return "";
+  if (installPrompt) return `<div class="hint row"><span>Cài dashboard thành ứng dụng trên máy này.</span><button id="install-btn">Install app</button></div>`;
+  if (/iPhone|iPad/.test(navigator.userAgent) && window.isSecureContext) {
+    return `<div class="hint">iPhone/iPad: bấm <b>Chia sẻ</b> → <b>Thêm vào MH chính</b> để dùng như một ứng dụng.</div>`;
+  }
+  return "";
+}
+
+document.addEventListener("click", async (e) => {
+  if (e.target.id !== "install-btn" || !installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+  render();
+});
+
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
 }
 
 // Every project says where it runs (no silent default). Free text is accepted too, e.g. linux-amd64.
@@ -428,6 +471,7 @@ const routes = [
 
 let rendering = false;
 let signedOut = false;
+let shown = false;  // some live data is on screen (an offline banner can say "previous data")
 async function render() {
   if (rendering) return;
   rendering = true;
@@ -439,17 +483,26 @@ async function render() {
       document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === nav));
       const html = await view(...m.slice(1));
       const focused = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
-      if (!focused || signedOut) { $("#view").innerHTML = html; document.querySelectorAll("tr[data-href]").forEach((tr) => (tr.onclick = () => (location.hash = tr.dataset.href))); if (bind) await bind(...m.slice(1)); }
+      if (!focused || signedOut) { $("#view").innerHTML = html; shown = true; document.querySelectorAll("tr[data-href]").forEach((tr) => (tr.onclick = () => (location.hash = tr.dataset.href))); if (bind) await bind(...m.slice(1)); }
       break;
     }
     signedOut = false;
+    $("#offline").classList.add("hidden");
     const pending = await api("/approvals?state=pending");
     const badge = $("#approval-badge");
     badge.textContent = pending.length; badge.classList.toggle("hidden", !pending.length);
+    // Number on the installed app's icon (Android, Windows, iOS 16.4+ home-screen apps).
+    if (navigator.setAppBadge) (pending.length ? navigator.setAppBadge(pending.length) : navigator.clearAppBadge()).catch(() => {});
     const session = await api("/session");
     $("#logout-btn").classList.toggle("hidden", !session.auth_required);
   } catch (err) {
-    if (err instanceof AuthRequired) {
+    if (err instanceof Offline) {
+      $("#offline").classList.toggle("hidden", !shown);  // banner over the last view; nothing yet: the card says it
+      if (!shown) {
+        $("#view").innerHTML = `<div class="card"><h1>Không kết nối được máy chủ</h1><p class="muted">Kiểm tra mạng, bật
+          Tailscale trên điện thoại, hoặc máy chủ đang khởi động lại. Trang tự thử lại mỗi vài giây.</p></div>`;
+      }
+    } else if (err instanceof AuthRequired) {
       $("#logout-btn").classList.add("hidden");
       if (!signedOut) { $("#view").innerHTML = viewLogin(); bindLogin(); signedOut = true; }
     } else {
@@ -461,5 +514,9 @@ async function render() {
 window.addEventListener("hashchange", () => {
   if (location.hash.startsWith("#login=")) { signedOut = false; consumeLoginLink().then(render); } else { render(); }
 });
-setInterval(() => { if ($("#drawer").classList.contains("hidden") && !signedOut) render(); }, 4000);
+// Live refresh while the page is on screen; none in the background (phone battery), catch up when it comes back.
+setInterval(() => {
+  if (document.visibilityState === "visible" && $("#drawer").classList.contains("hidden") && !signedOut) render();
+}, 4000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !signedOut) render(); });
 consumeLoginLink().then(render);
