@@ -33,7 +33,7 @@ awf = "awf.cli:main"
 where = ["packages", "apps/control_api", "workers/linux_worker"]
 
 [tool.setuptools.package-data]
-awf_api = ["static/*"]
+awf_api = ["static/*", "static/icons/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
