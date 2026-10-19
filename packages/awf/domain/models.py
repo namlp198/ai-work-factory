@@ -69,6 +69,11 @@ class WorkflowRun(Base):
     # Engine bookkeeping: stage iterations, planned tasks, fix-loop feedback, integration branch.
     context_json: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Run placement (ADR-008): the one machine that executes every job of this run, and what it must offer.
+    assigned_worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # {platform, capabilities[]} merged over the project and every stage of the workflow.
+    requirements: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -190,6 +195,8 @@ class Worker(Base):
     token_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
     # Stable id generated once per machine (var/worker-id); stops two machines sharing a worker name.
     machine_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Job slots the machine offers; placement divides its queued + running jobs by this.
+    max_jobs: Mapped[int] = mapped_column(Integer, default=1)
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -202,6 +209,10 @@ class Job(Base):
     workflow_run_id: Mapped[str] = mapped_column(String(36), index=True)
     agent_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # Pinned jobs belong to a run-placed run: only assigned_worker_id may claim them, and while the run has
+    # no machine (failover in progress) nobody may.
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    assigned_worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     job_type: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
     # {platform, capabilities[]}

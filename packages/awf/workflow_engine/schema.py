@@ -86,6 +86,8 @@ class WorkflowSpec(_Strict):
     name: str | None = None
     description: str = ""
     status: Literal["active", "draft"] = "active"
+    # run: one machine executes the whole run (ADR-008). stage: every job may go to any matching machine.
+    placement: Literal["run", "stage"] = "run"
     inputs: list[str] = Field(default_factory=list)
     stages: list[StageSpec]
 

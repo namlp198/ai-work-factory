@@ -14,7 +14,7 @@ from awf.domain.db import Database
 from awf.settings import build_settings
 
 ROOT = Path(__file__).resolve().parents[2]
-HEAD = "0002"
+HEAD = "0003"
 
 
 @pytest.fixture
@@ -93,4 +93,36 @@ def test_existing_database_is_upgraded_in_place(db_url):
                      "'2026-10-10')")
     assert _upgrade() == 0 and _revision(path) == HEAD
     with sqlite3.connect(path) as conn:
-        assert conn.execute("select name, machine_id from workers").fetchall() == [("old-worker", None)]
+        assert conn.execute("select name, machine_id, max_jobs from workers").fetchall() == [("old-worker", None, 1)]
+
+
+def test_migrations_match_the_models(db_url):
+    """A fresh `awf db upgrade` must produce exactly the schema the ORM models describe."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import create_engine
+
+    from awf.domain.models import Base
+
+    url, _ = db_url
+    assert _upgrade() == 0
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        diff = compare_metadata(MigrationContext.configure(conn), Base.metadata)
+    engine.dispose()
+    assert diff == []
+
+
+def test_run_placement_downgrade(db_url):
+    from alembic import command
+    from alembic.config import Config
+
+    url, path = db_url
+    assert _upgrade() == 0
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "infrastructure" / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    command.downgrade(cfg, "0002")
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
+    assert "pinned" not in columns and "lease_expires_at" in columns
