@@ -74,7 +74,7 @@ def merge_platform(a: str | None, b: str | None) -> str | None:
 
 
 def run_requirements(spec: WorkflowSpec, project: Project, repository: dict[str, Any] | None,
-                     default_platform: str) -> dict[str, Any]:
+                     default_platform: str, extra_capabilities: set[str] | None = None) -> dict[str, Any]:
     """What the one machine of a run must offer: the union over the project and every stage."""
     if not (project.labels or {}).get("platform"):
         raise PlacementError(f"project '{project.slug}' does not say which platform it runs on; set labels.platform "
@@ -100,6 +100,7 @@ def run_requirements(spec: WorkflowSpec, project: Project, repository: dict[str,
     for stage in spec.stages:
         if stage.worker:
             caps.update(stage.worker.capabilities)
+    caps.update(extra_capabilities or ())
     return {"platform": platform or default_platform, "capabilities": sorted(caps)}
 
 

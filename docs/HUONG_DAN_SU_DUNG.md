@@ -225,7 +225,7 @@ $r.id
   làm lại với comment của bạn).
 - Sau `approve_merge`: lấy nhánh `awf/run-<id>`, patch và `pull_request.md` (mục 9).
 
-## 6. Bật Claude (model thật)
+## 6. Bật Claude hoặc Gemini (model thật)
 
 Mặc định `config/model-routing.yaml` định tuyến theo model class:
 
@@ -253,6 +253,40 @@ công (để mọi tool call đi qua Policy Engine), prompt caching tự động
 `fallbacks: "default"` khi model bị từ chối (refusal), lỗi 429/5xx là retryable, 400/401/403 là không retry.
 Chi phí ước tính theo bảng `pricing` và hiển thị theo agent run / run / project. Đặt `budget_usd` cho
 project: khi ngân sách còn dưới `budget_downgrade_threshold_usd`, router tự hạ class.
+
+### Gemini
+
+Mỗi run dùng **một** nhà cung cấp cho mọi agent của nó: Claude (`anthropic`, mặc định) hoặc Gemini (`google`).
+Bảng `providers.google` trong `config/model-routing.yaml` ánh xạ cùng các class sang model Gemini:
+
+| Class | Gemini |
+|---|---|
+| FAST | `gemini-3.5-flash-lite` (thinking low) |
+| BALANCED | `gemini-3.8-flash` (thinking medium) |
+| REASONING, CODE_SPECIALIST | `gemini-4-argon` (thinking high) |
+| MULTIMODAL | `gemini-3.8-flash` |
+| LOCAL_PRIVATE | không đổi: project `restricted` không bao giờ được gửi sang model hosted |
+
+Chọn nhà cung cấp, theo thứ tự ưu tiên:
+
+1. Khi tạo run: dashboard → **Model**, hoặc API `{"llm": "google"}`.
+2. Mặc định của project: trang project → **Default model** (lưu ở `labels.llm`).
+3. `default_provider` trong `config/model-routing.yaml` (`anthropic`).
+
+Key đặt **trên máy worker**: `GEMINI_API_KEY=<key từ Google AI Studio>` (hoặc `GOOGLE_API_KEY`) trong `.env`
+của worker, rồi khởi động lại worker. Worker tự khai báo capability theo key nó có: `llm-anthropic`,
+`llm-google`. Run dùng Gemini chỉ được giao cho máy có `llm-google`; nếu không máy nào có, run bị từ chối
+ngay khi tạo, kèm lý do. Với `AWF_WORKER_CAPABILITIES` (ghi đè), các capability `llm-*` vẫn theo key thật.
+
+Sau khi cập nhật lên phiên bản này, **khởi động lại mọi worker** để chúng khai báo `llm-*`; worker cũ chưa
+khai báo sẽ không nhận run dùng model thật.
+
+Chi tiết tích hợp (`awf/agent_runtime/adapters/gemini_adapter.py`): API `generateContent` qua REST (không thêm
+SDK), function calling thủ công qua Policy Engine như Claude, trả lại nguyên lượt trả lời của model (Gemini
+gắn *thought signature* vào đó và đòi gửi lại), `thinkingLevel` theo `effort` (Gemini 3 trở lên), token suy
+nghĩ tính vào output khi ước tính chi phí. 429/5xx thử lại 3 lần rồi báo retryable; 400/401/403/404 không
+retry; bị chặn vì an toàn thì dừng (không retry). Giá trong bảng `pricing` là giá tháng 10/2026; Google tăng
+giá Gemini 4 Argon từ 1/12/2026 và 3.8 Flash từ 1/1/2027 (ghi chú trong file).
 
 **Chế độ scripted** (`AWF_MODEL_PROVIDER=scripted` + `AWF_SCRIPTED_RESPONSES=<file.yaml>`): agent không gọi
 model mà phát lại kịch bản; role không có trong kịch bản dùng hành vi tự động từ contract. Phần nền tảng
@@ -585,7 +619,8 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 | POST/GET | `/projects`, `/projects/{id}` | tạo (bắt buộc `labels.platform`) / liệt kê / chi tiết (kèm `spend_usd`, `requirements`, `machines`: máy nào chạy được và lý do) |
 | PATCH | `/projects/{id}` | sửa các trường gửi lên; `repository`, `labels` được thay cả khối |
 | GET | `/workflows`, `/agents` | định nghĩa workflow, agent |
-| POST | `/projects/{id}/workflow-runs` | `{workflow_id, inputs: {objective}, placement?: {worker}}` |
+| GET | `/models` | nhà cung cấp model (Claude, Gemini) và model của từng class |
+| POST | `/projects/{id}/workflow-runs` | `{workflow_id, inputs: {objective}, placement?: {worker}, llm?: "anthropic"\|"google"}` |
 | GET | `/projects/{id}/workflow-runs`, `/workflow-runs/{id}` | run + stage overview + chi phí + máy được giao (`assigned_worker`, `requirements`, `placement.wait`) |
 | POST | `/workflow-runs/{id}/reassign` | `{worker}` chuyển run sang máy đó; `{}` để orchestrator chọn lại |
 | POST | `/workflow-runs/{id}/cancel` | huỷ |
@@ -606,7 +641,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (148 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (162 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -641,7 +676,8 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `critic blocked: ... credential-like material` | Diff/output chứa secret. Gỡ secret khỏi repo/thay đổi, dùng biến môi trường. |
 | `INTEGRATION_CONFLICT` | Hai task song song sửa cùng chỗ; Planner nên đặt `depends_on`. |
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |
-| `model provider rejected the request` | Thiếu/sai `ANTHROPIC_API_KEY` trên worker. |
+| `model provider rejected the request` | Thiếu/sai `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trên worker. |
+| Tạo run lỗi `missing llm-google` (hoặc `llm-anthropic`) | Không máy nào có key của nhà cung cấp đó: đặt key trong `.env` của worker rồi khởi động lại worker. |
 | `git push ... rejected` vào repo cục bộ | Không đẩy vào nhánh đang checkout; dùng bare mirror. |
 | API 401 | Script: thiếu `Authorization: Bearer ...`. Dashboard: đăng nhập lại hoặc `awf open`. |
 | Worker: `worker name ... is in use by another online machine` | Hai máy trùng tên: đặt `AWF_WORKER_NAME` khác nhau. |

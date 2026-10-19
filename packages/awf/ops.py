@@ -269,10 +269,13 @@ def _check_model_credentials() -> Check:
     provider = os.environ.get("AWF_MODEL_PROVIDER", "")
     if provider == "scripted":
         return Check("model", "OK", "scripted (offline) provider")
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        return Check("model", "OK", "Claude credentials present")
-    return Check("model", "WARN", "no ANTHROPIC_API_KEY on this worker: Claude-routed agent jobs will fail here "
-                 "(scripted routes from the control plane still work)")
+    from awf.worker_sdk.worker import llm_capabilities
+
+    caps = sorted(llm_capabilities())
+    if caps:
+        return Check("model", "OK", "model keys present: " + ", ".join(caps) + " (runs on other providers go elsewhere)")
+    return Check("model", "WARN", "no ANTHROPIC_API_KEY or GEMINI_API_KEY on this worker: it only takes runs that "
+                 "use no hosted model (scripted)")
 
 
 def doctor(home: Path) -> int:

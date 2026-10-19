@@ -19,6 +19,8 @@ class RouteRequest:
     task_type: str = "general"
     confidentiality: str = "internal"
     budget_remaining_usd: Decimal | None = None
+    # Preferred provider for the run (e.g. "google"); None: the configured default_provider.
+    provider: str | None = None
 
 
 @dataclass
@@ -39,9 +41,17 @@ class ModelRouter:
         self.classes: dict[str, dict[str, Any]] = config.get("classes", {})
         self.pricing: dict[str, dict[str, float]] = config.get("pricing", {})
         self.provider_override = provider_override
+        self.default_provider: str = config.get("default_provider") or "anthropic"
+        self.alternatives: dict[str, dict[str, dict[str, Any]]] = config.get("providers") or {}
         unknown = set(self.classes) - set(MODEL_CLASSES)
+        for table in self.alternatives.values():
+            unknown |= set(table) - set(MODEL_CLASSES)
         if unknown:
             raise ValueError(f"unknown model classes in routing config: {sorted(unknown)}")
+
+    def providers(self) -> list[str]:
+        """Providers a run may choose: the default one plus every alternative table."""
+        return [self.default_provider, *[p for p in self.alternatives if p != self.default_provider]]
 
     @classmethod
     def load(cls, path: Path, provider_override: str = "") -> ModelRouter:
@@ -76,6 +86,15 @@ class ModelRouter:
             raise ValueError(f"no route configured for model class '{model_class}'")
 
         entry = dict(self.classes[model_class])
+        chosen = req.provider or self.default_provider
+        if chosen not in self.providers():
+            raise ValueError(f"unknown model provider '{chosen}' (configured: {', '.join(self.providers())})")
+        if chosen != self.default_provider and entry.get("provider") != "unavailable":
+            table = self.alternatives.get(chosen) or {}
+            if model_class not in table:
+                raise ValueError(f"no {chosen} model configured for class '{model_class}'")
+            entry = {"provider": chosen, **table[model_class]}
+            reasons.append(f"provider {chosen}")
         provider = entry.pop("provider")
         model = entry.pop("model")
         if self.provider_override and model_class != "LOCAL_PRIVATE":

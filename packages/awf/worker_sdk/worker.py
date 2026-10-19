@@ -94,14 +94,26 @@ def detect_capabilities() -> list[str]:
     return sorted(caps)
 
 
+# Model API keys on this machine -> llm-<provider> capabilities. Agent jobs run on the worker, so a run routed
+# to a provider only goes to machines that hold its key.
+LLM_KEYS = {"llm-anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+            "llm-google": ("GEMINI_API_KEY", "GOOGLE_API_KEY")}
+
+
+def llm_capabilities() -> set[str]:
+    return {cap for cap, names in LLM_KEYS.items() if any(os.environ.get(n) for n in names)}
+
+
 def split_list(raw: str | None) -> list[str]:
     return [item.strip() for item in (raw or "").split(",") if item.strip()]
 
 
 def resolve_capabilities(override: str | None = None, extra: str | None = None) -> list[str]:
     """AWF_WORKER_CAPABILITIES replaces detection entirely; AWF_WORKER_EXTRA_CAPABILITIES adds to it
-    (hardware or SDKs no probe can see, e.g. realsense, robo-station-sdk)."""
+    (hardware or SDKs no probe can see, e.g. realsense, robo-station-sdk). llm-<provider> always follows the
+    API keys actually present, whatever the override says."""
     caps = set(split_list(override)) if split_list(override) else set(detect_capabilities())
+    caps = {c for c in caps if not c.startswith("llm-")} | llm_capabilities()
     return sorted(caps | set(split_list(extra)))
 
 

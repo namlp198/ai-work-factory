@@ -150,6 +150,17 @@ def update_project(project_id: str, body: ProjectPatch, state: AppState = Depend
     return {**ser.project(project), **_machines(session, project)}
 
 
+# ---------------------------------------------------------------------------- models
+@router.get("/models")
+def list_models(state: AppState = Depends(get_state)):
+    """Providers a run can use, and the model each class maps to on each of them."""
+    router_ = state.platform.router
+    tables = {router_.default_provider: {c: e.get("model") for c, e in router_.classes.items()}}
+    for provider, table in router_.alternatives.items():
+        tables[provider] = {c: e.get("model") for c, e in table.items()}
+    return {"default_provider": router_.default_provider, "providers": router_.providers(), "classes": tables}
+
+
 # ---------------------------------------------------------------------------- workflows
 @router.get("/workflows")
 def list_workflows(state: AppState = Depends(get_state)):
@@ -178,6 +189,8 @@ class RunIn(BaseModel):
     workflow_id: str = "software-development"
     inputs: dict[str, Any]
     placement: PlacementIn | None = None
+    # Model provider for every agent of this run: anthropic (Claude) or google (Gemini); default: project/config.
+    llm: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{1,30}$")
 
 
 @router.post("/projects/{project_id}/workflow-runs", status_code=201)
@@ -186,7 +199,8 @@ def start_run(project_id: str, body: RunIn, state: AppState = Depends(get_state)
     project = _get(session, Project, project_id)
     try:
         run = state.orchestrator.start_run(session, project, body.workflow_id, body.inputs, actor=actor,
-                                           worker_name=body.placement.worker if body.placement else None)
+                                           worker_name=body.placement.worker if body.placement else None,
+                                           llm=body.llm)
     except (OrchestratorError, KeyError) as exc:
         raise HTTPException(422, str(exc)) from None
     return ser.run(run, worker=None)

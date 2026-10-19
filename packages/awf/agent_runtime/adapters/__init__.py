@@ -22,6 +22,10 @@ def get_adapter(provider: str) -> ModelAdapter:
         from awf.agent_runtime.adapters.anthropic_adapter import AnthropicAdapter
 
         return AnthropicAdapter()
+    if provider == "google":
+        from awf.agent_runtime.adapters.gemini_adapter import GeminiAdapter
+
+        return GeminiAdapter()
     raise ModelError(f"model provider '{provider}' is not available on this worker", retryable=False)
 
 

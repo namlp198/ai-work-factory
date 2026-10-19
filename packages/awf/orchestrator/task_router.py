@@ -26,6 +26,25 @@ class TaskRoute:
     needs_approval: bool = False
 
 
+# Providers whose agents need an API key on the worker (scripted/unavailable need nothing).
+LLM_PROVIDERS = ("anthropic", "google")
+
+
+def llm_capabilities(agents: AgentRegistry, models: ModelRouter, roles: set[str], confidentiality: str,
+                     provider: str | None) -> set[str]:
+    """llm-<provider> for every provider the agents of a workflow will be routed to."""
+    caps: set[str] = set()
+    for role in roles:
+        profile = agents.get(role).profile
+        route = models.resolve(RouteRequest(profile_class=profile.model_policy.class_,
+                                            fallback_class=profile.model_policy.fallback,
+                                            task_type=profile.task_type, confidentiality=confidentiality,
+                                            provider=provider))
+        if route.provider in LLM_PROVIDERS:
+            caps.add(f"llm-{route.provider}")
+    return caps
+
+
 def slug(text: str, max_len: int = 40) -> str:
     value = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return value[:max_len].strip("-") or "task"
@@ -57,13 +76,17 @@ class TaskRouter:
         budget_remaining = None
         if project.budget_usd is not None:
             budget_remaining = Decimal(str(project.budget_usd)) - project_spend(session, project.id)
+        run = session.get(WorkflowRun, task.workflow_run_id)
         route = self.models.resolve(RouteRequest(
             profile_class=definition.profile.model_policy.class_,
             fallback_class=definition.profile.model_policy.fallback,
             task_type=definition.profile.task_type,
             confidentiality=project.confidentiality,
             budget_remaining_usd=budget_remaining,
+            provider=(run.context_json or {}).get("llm") if run else None,
         ))
+        if route.provider in LLM_PROVIDERS:
+            requirements["capabilities"] = sorted(set(requirements["capabilities"]) | {f"llm-{route.provider}"})
         write = self.policy.evaluate("fs.write", contract.permissions).allowed and \
             self.policy.evaluate("git.branch_write", contract.permissions).allowed
         return TaskRoute(definition, route, requirements, write=write,

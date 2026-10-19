@@ -76,6 +76,11 @@ const PLATFORMS = [["windows", "Windows"], ["linux", "Linux (any)"], ["linux-amd
 const platformOptions = (selected = "") => `<option value="" ${selected ? "" : "selected"} disabled>Choose…</option>` +
   PLATFORMS.map(([v, t]) => `<option value="${v}" ${v === selected ? "selected" : ""}>${esc(t)} — ${v}</option>`).join("") +
   (selected && !PLATFORMS.some(([v]) => v === selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : "");
+const LLM_NAMES = { anthropic: "Claude", google: "Gemini" };
+const llmName = (p) => (LLM_NAMES[p] ? `${LLM_NAMES[p]} (${p})` : p);
+const llmOptions = (models, selected = "", auto = "") =>
+  `<option value="">${esc(auto || `Default — ${llmName(models.default_provider)}`)}</option>` +
+  models.providers.map((p) => `<option value="${esc(p)}" ${p === selected ? "selected" : ""}>${esc(llmName(p))}</option>`).join("");
 const capList = (raw) => String(raw || "").split(",").map((c) => c.trim()).filter(Boolean);
 
 async function viewProjects() {
@@ -126,7 +131,7 @@ function machineSelect(workers, selected = "", auto = "Automatic (least loaded m
 }
 
 async function viewProject(id) {
-  const [p, runs, workflows, workers] = await Promise.all([api(`/projects/${id}`), api(`/projects/${id}/workflow-runs`), api("/workflows"), api("/workers")]);
+  const [p, runs, workflows, workers, models] = await Promise.all([api(`/projects/${id}`), api(`/projects/${id}/workflow-runs`), api("/workflows"), api("/workers"), api("/models")]);
   const rows = runs.map((r) => `<tr class="click" data-href="#/runs/${r.id}"><td><code>${short(r.id)}</code></td><td>${esc(r.workflow_id)}</td>
     <td>${pill(r.status)}</td><td>${esc(r.input?.objective || "")}</td><td>${when(r.created_at)}</td></tr>`).join("");
   const options = workflows.filter((w) => w.status === "active").map((w) => `<option value="${esc(w.id)}">${esc(w.name || w.id)} v${esc(w.version)}</option>`).join("");
@@ -134,16 +139,17 @@ async function viewProject(id) {
     <div class="kv"><div>Repository</div><div><code>${esc(p.repository?.url)}</code> (${esc(p.repository?.base_branch)})</div>
     <div>Commands</div><div>build: <code>${esc(JSON.stringify(p.repository?.build_command ?? null))}</code> test: <code>${esc(JSON.stringify(p.repository?.test_command ?? null))}</code> lint: <code>${esc(JSON.stringify(p.repository?.lint_command ?? null))}</code></div>
     <div>Spend / budget</div><div>${money(p.spend_usd)} / ${p.budget_usd == null ? "∞" : money(p.budget_usd)}</div></div>
-    ${projectMachines(p)}
+    ${projectMachines(p, models)}
     <h2>Start a workflow run</h2>
     <form class="grid" id="run-form"><label>Workflow<select name="workflow_id">${options}</select></label>
       <label>Machine${machineSelect(workers)}</label>
+      <label>Model<select name="llm">${llmOptions(models, "", `Project default — ${llmName(p.labels?.llm || models.default_provider)}`)}</select></label>
       <label class="full">Objective<textarea name="objective" rows="3" required></textarea></label>
       <div class="full row"><button>Start</button><span id="run-error" class="error"></span></div></form>
     <h2>Runs</h2><div class="table-wrap"><table><tr><th>Run</th><th>Workflow</th><th>Status</th><th>Objective</th><th>Created</th></tr>${rows || '<tr><td colspan="5" class="muted">No runs</td></tr>'}</table></div>`;
 }
 
-function projectMachines(p) {
+function projectMachines(p, models) {
   const req = p.requirements || {};
   const rows = (p.machines || []).map((m) => `<tr><td>${esc(m.name)}</td><td>${pill(m.status)}</td><td><code>${esc(m.platform)}</code></td>
     <td>${m.matches ? '<span class="pill s-PASS">yes</span>' : `<span class="error">${esc(m.reasons.join("; "))}</span>`}</td></tr>`).join("");
@@ -155,6 +161,7 @@ function projectMachines(p) {
       <label>Platform<select name="platform" required>${platformOptions(req.platform || "")}</select></label>
       <label>Required capabilities<input name="required_capabilities" value="${esc((p.repository?.required_capabilities || []).join(", "))}"
         placeholder="dotnet-windowsdesktop, msbuild"></label>
+      <label>Default model<select name="llm">${llmOptions(models, p.labels?.llm || "")}</select></label>
       <div class="full row"><button class="ghost">Save</button><span id="project-edit-error" class="error"></span>
         <span class="muted">Every run also needs <code>git</code>; workflow stages may add more.</span></div></form>
     <div class="table-wrap"><table><tr><th>Machine</th><th>Status</th><th>Platform</th><th>Can run it</th></tr>
@@ -168,7 +175,9 @@ function bindProject(id) {
     const f = new FormData(edit);
     try {
       const p = await api(`/projects/${id}`);
-      const body = { labels: { ...(p.labels || {}), platform: f.get("platform") } };
+      const labels = { ...(p.labels || {}), platform: f.get("platform") };
+      if (f.get("llm")) labels.llm = f.get("llm"); else delete labels.llm;
+      const body = { labels };
       if (p.repository?.url) body.repository = { ...p.repository, required_capabilities: capList(f.get("required_capabilities")) };
       await api(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) });
       render();
@@ -182,6 +191,7 @@ function bindProject(id) {
     try {
       const body = { workflow_id: f.get("workflow_id"), inputs: { objective: f.get("objective") } };
       if (f.get("worker")) body.placement = { worker: f.get("worker") };
+      if (f.get("llm")) body.llm = f.get("llm");
       const r = await api(`/projects/${id}/workflow-runs`, { method: "POST", body: JSON.stringify(body) });
       location.hash = `#/runs/${r.id}`;
     } catch (err) { $("#run-error").textContent = err.message; }
@@ -221,7 +231,8 @@ function placementRows(run, workers) {
       <button class="ghost">Move run</button><span id="reassign-error" class="error"></span></form>` : "";
   return `<div>Machine</div><div>${machine}${run.placement.worker ? ' <span class="muted">(chosen by hand)</span>' : ""}
       ${run.placement.wait ? `<div class="error">${esc(run.placement.wait)}</div>` : ""}${move}</div>
-    <div>Requirements</div><div>platform <code>${esc(req.platform || "any")}</code> · capabilities <code>${esc((req.capabilities || []).join(", "))}</code></div>`;
+    <div>Requirements</div><div>platform <code>${esc(req.platform || "any")}</code> · capabilities <code>${esc((req.capabilities || []).join(", "))}</code></div>
+    ${run.llm ? `<div>Model</div><div>${esc(llmName(run.llm))}</div>` : ""}`;
 }
 
 async function bindRun(id) {

@@ -57,7 +57,7 @@ from awf.orchestrator import placement
 from awf.orchestrator.jobs import expire_leases, mismatch_reasons, requeue_or_fail, requirements_met
 from awf.orchestrator.context import ContextBuilder, task_meta
 from awf.orchestrator.critic import CHANGES_REQUIRED, Critic, CriticResult
-from awf.orchestrator.task_router import TaskRouter, slug
+from awf.orchestrator.task_router import TaskRouter, llm_capabilities, slug
 from awf.platform import Platform
 from awf.workflow_engine import LoadedWorkflow, StageSpec
 
@@ -123,9 +123,10 @@ class Orchestrator:
         return project
 
     def start_run(self, session: Session, project: Project, workflow_id: str, inputs: dict[str, Any],
-                  actor: str = "admin", worker_name: str | None = None) -> WorkflowRun:
+                  actor: str = "admin", worker_name: str | None = None, llm: str | None = None) -> WorkflowRun:
         """Start a run. With run placement (the default) `worker_name` pins it to that machine; otherwise
-        the orchestrator picks the least loaded matching machine at the first dispatch."""
+        the orchestrator picks the least loaded matching machine at the first dispatch. `llm` chooses the model
+        provider for every agent of the run (default: the project's labels.llm, then default_provider)."""
         workflow = self.p.workflows.get(workflow_id)
         if workflow.spec.status != "active":
             raise OrchestratorError(f"workflow '{workflow_id}' is not active (status {workflow.spec.status})")
@@ -137,12 +138,21 @@ class Orchestrator:
         missing = [name for name in workflow.spec.inputs if not inputs.get(name)]
         if missing:
             raise OrchestratorError(f"missing workflow inputs: {missing}")
+        provider = llm or (project.labels or {}).get("llm") or self.p.router.default_provider
+        if provider not in self.p.router.providers():
+            raise OrchestratorError(f"unknown model provider '{provider}' (configured: "
+                                    f"{', '.join(self.p.router.providers())})")
+        try:
+            llm_caps = llm_capabilities(self.p.agents, self.p.router, workflow.spec.roles(),
+                                        project.confidentiality, provider)
+        except ValueError as exc:
+            raise OrchestratorError(str(exc)) from None
         placed = workflow.spec.placement == placement.RUN
         requirements: dict[str, Any] = {}
         if placed:
             try:
                 requirements = placement.run_requirements(workflow.spec, project, inputs.get("repository"),
-                                                          self.p.settings.default_worker_platform)
+                                                          self.p.settings.default_worker_platform, llm_caps)
             except placement.PlacementError as exc:
                 raise OrchestratorError(str(exc)) from None
             self._check_placeable(session, requirements, worker_name)
@@ -153,7 +163,8 @@ class Orchestrator:
             id=run_id, project_id=project.id, workflow_id=workflow.spec.id, workflow_version=workflow.spec.version,
             status=RunStatus.RUNNING, input_json=inputs, started_at=utcnow(),
             context_json={"stage_iteration": {}, "fix_loops": {}, "integration_branch": f"awf/run-{run_id[:8]}",
-                          "placement": {"mode": workflow.spec.placement, "worker": worker_name, "wait": None}},
+                          "placement": {"mode": workflow.spec.placement, "worker": worker_name, "wait": None},
+                          "llm": provider},
             requirements=requirements,
         )
         session.add(run)
@@ -167,7 +178,8 @@ class Orchestrator:
                      workflow_run_id=run.id, payload={"workflow_id": workflow.spec.id,
                                                       "version": workflow.spec.version,
                                                       "placement": workflow.spec.placement,
-                                                      "requirements": requirements, "worker": worker_name})
+                                                      "requirements": requirements, "worker": worker_name,
+                                                      "llm": provider})
         return run
 
     @staticmethod
