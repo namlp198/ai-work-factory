@@ -55,3 +55,6 @@ form.grid .full { grid-column: 1 / -1; }
 .kv div:nth-child(odd) { color: var(--muted); }
 .error { color: var(--bad); }
 @media (max-width: 640px) { main { padding: 12px 16px; } .kv { grid-template-columns: 1fr; } }
+.approval-card { max-width: 640px; }
+.approval-card textarea { width: 100%; box-sizing: border-box; margin: 8px 0; }
+.decide button { flex: 1; min-height: 48px; font-size: 1.05em; }

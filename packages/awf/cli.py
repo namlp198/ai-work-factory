@@ -175,9 +175,12 @@ def cmd_orchestrator(args: argparse.Namespace) -> int:
     from awf.orchestrator.orchestrator import Orchestrator
     from awf.platform import Platform
 
+    from awf.notify.service import NotificationService
+
     configure_logging()
     platform = Platform.build()
     orchestrator = Orchestrator(platform)
+    NotificationService(platform, orchestrator).start()  # one per control plane, next to the orchestrator
     get_logger("orchestrator").info("orchestrator loop started (tick %.1fs)", platform.settings.tick_interval_seconds)
     while True:
         try:

@@ -308,6 +308,50 @@ function bindApprovalButtons() {
   document.querySelectorAll("[data-art]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); openArtifact(a.dataset.art); }));
 }
 
+// One approval, opened from the link in a Telegram/WhatsApp/Zalo message: built for a phone screen.
+async function viewApproval(id) {
+  const a = await api(`/approvals/${id}`);
+  const arts = a.artifacts.map((x) => `<li><a href="#" data-art="${x.id}">${esc(x.type)}</a> <span class="muted">${esc(x.name.split("/").pop())} v${x.version}</span></li>`).join("");
+  const pending = a.state === "PENDING";
+  return `<div class="card approval-card">
+      <div class="row"><h1>${esc(a.action)}</h1>${pill(a.state)}</div>
+      <div class="kv">
+        <div>Project</div><div>${a.project ? `<a href="#/projects/${a.project.id}">${esc(a.project.name)}</a>` : "—"}</div>
+        <div>Run</div><div>${a.run ? `<a href="#/runs/${a.run.id}"><code>${short(a.run.id)}</code></a> ${esc(a.run.workflow_id)}` : "—"}</div>
+        <div>Objective</div><div>${esc(a.run?.input?.objective || "")}</div>
+        <div>Risk</div><div>${a.risk_level}</div>
+        ${a.scope?.description ? `<div>What to check</div><div>${esc(a.scope.description)}</div>` : ""}
+        ${a.approved_by ? `<div>Decided by</div><div>${esc(a.approved_by)} ${a.comment ? `— ${esc(a.comment)}` : ""}</div>` : ""}
+      </div>
+      <h3>Artifacts to review</h3><ul>${arts || "<li class='muted'>none</li>"}</ul>
+      ${pending ? `<textarea data-comment="${a.id}" rows="2" placeholder="Comment (optional)"></textarea>
+        <div class="row decide"><button data-approve="${a.id}">Approve</button><button class="danger" data-reject="${a.id}">Reject</button></div>` : ""}
+    </div>`;
+}
+
+async function viewNotifications() {
+  const n = await api("/notifications");
+  const channels = n.channels.length ? n.channels.map((c) => pill(c)).join(" ") : '<span class="error">none configured</span>';
+  const rows = n.items.map((i) => `<tr><td>${when(i.created_at)}</td><td>${esc(i.title)}</td><td>${pill(i.state)}</td>
+    <td>${esc(Object.entries(i.deliveries).map(([c, d]) => `${c}: ${d.done} sent${d.failed ? `, ${d.failed} failed` : ""}${d.error ? ` (${d.error})` : ""}`).join("; "))}</td></tr>`).join("");
+  return `<h1>Notifications</h1>
+    <div class="kv"><div>Channels</div><div>${channels}</div>
+      <div>Events</div><div>${esc(n.events.join(", "))}</div>
+      <div>Approve in Telegram</div><div>${n.telegram_approvals ? "yes (allow-listed users, two taps)" : "no — messages link here"}</div>
+      <div>Links point to</div><div>${n.public_url ? `<code>${esc(n.public_url)}</code>` : '<span class="error">AWF_PUBLIC_URL not set: messages carry no link</span>'}</div></div>
+    <div class="row"><button id="notify-test" ${n.channels.length ? "" : "disabled"}>Send a test message</button><span id="notify-msg" class="muted"></span></div>
+    <h2>Recent</h2><div class="table-wrap"><table><tr><th>Created</th><th>Message</th><th>State</th><th>Delivery</th></tr>
+      ${rows || '<tr><td colspan="4" class="muted">Nothing sent yet</td></tr>'}</table></div>`;
+}
+
+function bindNotifications() {
+  const btn = $("#notify-test");
+  if (btn) btn.onclick = async () => {
+    try { await api("/notifications/test", { method: "POST" }); $("#notify-msg").textContent = "Queued; refresh in a few seconds."; }
+    catch (err) { $("#notify-msg").textContent = err.message; }
+  };
+}
+
 async function viewApprovals() {
   const all = await api("/approvals");
   return `<h1>Approval queue</h1>${approvalTable(all.filter((a) => a.state === "PENDING"))}
@@ -362,6 +406,8 @@ const routes = [
   [/^#\/projects\/([\w-]+)$/, "projects", viewProject, bindProject],
   [/^#\/runs\/([\w-]+)$/, "projects", viewRun, bindRun],
   [/^#\/approvals$/, "approvals", viewApprovals, bindApprovalButtons],
+  [/^#\/approvals\/([\w-]+)$/, "approvals", viewApproval, bindApprovalButtons],
+  [/^#\/notifications$/, "notifications", viewNotifications, bindNotifications],
   [/^#\/workers$/, "workers", viewWorkers, bindWorkers],
   [/^#\/agents$/, "agents", viewAgents],
   [/^#\/audit$/, "audit", viewAudit],

@@ -14,7 +14,7 @@ from awf.domain.db import Database
 from awf.settings import build_settings
 
 ROOT = Path(__file__).resolve().parents[2]
-HEAD = "0003"
+HEAD = "0004"
 
 
 @pytest.fixture

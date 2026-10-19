@@ -13,6 +13,7 @@ from awf.domain.models import (
     ArtifactRelation,
     AuditEvent,
     Job,
+    Notification,
     Project,
     Task,
     Worker,
@@ -94,6 +95,15 @@ def artifact(a: Artifact) -> dict[str, Any]:
 def relation(r: ArtifactRelation) -> dict[str, Any]:
     return {"id": r.id, "from_artifact_id": r.from_artifact_id, "to_artifact_id": r.to_artifact_id,
             "relation_type": r.relation_type, "metadata": r.metadata_json}
+
+
+def notification(n: Notification) -> dict[str, Any]:
+    return {"id": n.id, "kind": n.kind, "event_type": n.event_type, "title": n.title, "body": n.body,
+            "link": n.link, "state": n.state, "attempts": n.attempts, "project_id": n.project_id,
+            "workflow_run_id": n.workflow_run_id, "approval_id": n.approval_id,
+            "deliveries": {ch: {"done": len(d.get("done") or []), "failed": len(d.get("failed") or []),
+                                "error": d.get("error")} for ch, d in (n.deliveries or {}).items()},
+            "created_at": _ts(n.created_at), "sent_at": _ts(n.sent_at)}
 
 
 def approval(a: Approval) -> dict[str, Any]:

@@ -28,6 +28,10 @@ def record(session: Session, event_type: EventType | str, *, actor_type: str = "
         payload=payload,
     )
     session.add(event)
+    # Same transaction: the notification exists exactly when the event does (transactional outbox).
+    from awf.notify.events import enqueue_for_event
+
+    enqueue_for_event(session, event)
     log_event(logger, str(event_type), project_id=project_id, workflow_run_id=workflow_run_id,
               task_id=task_id, actor=f"{actor_type}:{actor_id}", payload=payload)
     return event

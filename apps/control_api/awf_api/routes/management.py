@@ -19,6 +19,7 @@ from awf.domain.models import (
     AuditEvent,
     Job,
     JobLog,
+    Notification,
     Project,
     Task,
     Worker,
@@ -331,6 +332,18 @@ def list_approvals(state_filter: str | None = Query(default=None, alias="state")
     return [ser.approval(a) for a in session.scalars(query)]
 
 
+@router.get("/approvals/{approval_id}")
+def get_approval(approval_id: str, session: Session = Depends(get_session, scope="function")):
+    """Everything needed to decide from a phone: what, which project/run, and the artifacts to look at."""
+    approval = _get(session, Approval, approval_id)
+    run = session.get(WorkflowRun, approval.workflow_run_id) if approval.workflow_run_id else None
+    project = session.get(Project, approval.project_id)
+    ids = (approval.scope or {}).get("artifact_ids") or []
+    artifacts = [ser.artifact(a) for a in session.scalars(select(Artifact).where(Artifact.id.in_(ids)))] if ids else []
+    return {**ser.approval(approval), "project": ser.project(project) if project else None,
+            "run": ser.run(run) if run else None, "artifacts": artifacts}
+
+
 class ApprovalDecisionIn(BaseModel):
     comment: str | None = Field(default=None, max_length=4000)
 
@@ -355,6 +368,36 @@ def approve(approval_id: str, body: ApprovalDecisionIn | None = None, state: App
 def reject(approval_id: str, body: ApprovalDecisionIn | None = None, state: AppState = Depends(get_state),
            session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
     return _resolve(approval_id, False, body or ApprovalDecisionIn(), state, session, actor)
+
+
+# ---------------------------------------------------------------------------- notifications
+@router.get("/notifications")
+def list_notifications(limit: int = Query(default=50, ge=1, le=500),
+                       session: Session = Depends(get_session, scope="function")):
+    from awf.notify.config import NotifyConfig
+
+    config = NotifyConfig.from_env()
+    rows = session.scalars(select(Notification).order_by(Notification.created_at.desc()).limit(limit))
+    return {"channels": config.channels, "events": list(config.kinds), "public_url": config.public_url or None,
+            "telegram_approvals": bool(config.telegram and config.telegram.approvers),
+            "items": [ser.notification(n) for n in rows]}
+
+
+@router.post("/notifications/test", status_code=202)
+def test_notification(session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
+    """Queue a test message to every configured channel; watch its state in GET /notifications."""
+    from awf.notify.config import NotifyConfig
+
+    config = NotifyConfig.from_env()
+    if not config.enabled:
+        raise HTTPException(409, "no notification channel configured on the control plane "
+                                 "(AWF_TELEGRAM_BOT_TOKEN, AWF_WHATSAPP_TOKEN or AWF_ZALO_APP_ID in .env)")
+    note = Notification(kind="test", event_type="TEST", title="🧪 Tin thử từ AI Work Factory",
+                        body=f"Gửi bởi {actor}. Nếu bạn đọc được tin này, kênh đã hoạt động.",
+                        link=f"{config.public_url}/#/notifications" if config.public_url else None, deliveries={})
+    session.add(note)
+    session.flush()
+    return ser.notification(note)
 
 
 # ---------------------------------------------------------------------------- observability

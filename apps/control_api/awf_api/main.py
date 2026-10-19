@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -35,7 +36,13 @@ def create_app(platform: Platform | None = None, orchestrator: Orchestrator | No
         if not platform.settings.api_token:
             logger.warning("AWF_API_TOKEN is not set: admin API is open (development only, bind to localhost)")
         thread = None
+        notifier = None
         if embedded:
+            from awf.notify.service import NotificationService
+
+            notifier = NotificationService(platform, orchestrator)
+            notifier.start()
+
             def loop() -> None:
                 while not stop.wait(platform.settings.tick_interval_seconds):
                     try:
@@ -47,6 +54,8 @@ def create_app(platform: Platform | None = None, orchestrator: Orchestrator | No
             thread.start()
         yield
         stop.set()
+        if notifier:
+            notifier.stop()
         if thread:
             thread.join(timeout=10)
 
@@ -65,8 +74,15 @@ def create_app(platform: Platform | None = None, orchestrator: Orchestrator | No
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+    # Fingerprint app.js/style.css in the page so browsers (phones especially) never keep an old copy after an
+    # update; the page itself is never cached.
+    digest = hashlib.sha256(b"".join((STATIC_DIR / n).read_bytes() for n in ("app.js", "style.css"))).hexdigest()[:12]
+    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8") \
+        .replace('/static/app.js"', f'/static/app.js?v={digest}"') \
+        .replace('/static/style.css"', f'/static/style.css?v={digest}"')
+
     @app.get("/", include_in_schema=False)
-    def dashboard() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+    def dashboard() -> HTMLResponse:
+        return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
 
     return app

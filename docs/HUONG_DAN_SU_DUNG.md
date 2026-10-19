@@ -295,6 +295,76 @@ vượt quyền) → dừng run và chờ người.
 **Retry thủ công:** `POST /api/v1/tasks/{id}/retry` (task `FAILED` → `READY`, run tiếp tục).
 **Huỷ:** `POST /api/v1/workflow-runs/{id}/cancel`.
 
+### Thông báo và duyệt từ điện thoại (Telegram, WhatsApp, Zalo)
+
+Máy trung tâm gửi tin khi có việc cần bạn. Mỗi tin có link mở thẳng trang duyệt trên dashboard (giao diện cho
+điện thoại):
+
+| Sự kiện (`AWF_NOTIFY_EVENTS`) | Khi nào |
+|---|---|
+| `approval` | Có yêu cầu cần duyệt (kiến trúc, merge, …) |
+| `approval_resolved` | Yêu cầu đã được duyệt/từ chối (ở bất kỳ đâu) |
+| `failed`, `completed` | Run thất bại / hoàn tất |
+| `worker_offline` | Một máy mất kết nối |
+| `run_moved` | Run được tự động chuyển khỏi máy hỏng |
+
+Tin được ghi vào bảng outbox cùng transaction với sự kiện, rồi gửi lại khi lỗi mạng (tối đa 8 lần, giãn dần),
+riêng từng người nhận: người đã nhận không bị gửi trùng. Trang **Notifications** trên dashboard cho thấy kênh
+nào đang bật, tin nào đã gửi/lỗi, và có nút **Send a test message**. Đặt `AWF_PUBLIC_URL` (URL máy trung tâm
+mà điện thoại mở được, ví dụ qua Tailscale) để tin có link. Mọi biến dưới đây đặt trong `.env` của **máy
+trung tâm**, rồi khởi động lại `awf`.
+
+**Telegram (khuyến nghị: miễn phí, không cần duyệt, duyệt được ngay trong chat).**
+
+1. Trong Telegram, nhắn `@BotFather` → `/newbot` → lấy token.
+2. Đặt `AWF_TELEGRAM_BOT_TOKEN=<token>`, khởi động lại `awf`, rồi nhắn `/start` cho bot: bot trả lời
+   **Chat ID** và **User ID** của bạn (thêm bot vào một group thì `/start` trong group cho Chat ID của group).
+3. Đặt `AWF_TELEGRAM_CHAT_IDS=<chat id,...>` (nơi nhận tin) và `AWF_TELEGRAM_APPROVERS=<user id,...>`
+   (người được bấm duyệt), khởi động lại `awf`.
+
+Duyệt trong chat: bấm **✅ Duyệt** hoặc **❌ Từ chối**, rồi bấm nút **xác nhận** (hai lần bấm, tránh bấm nhầm).
+Chỉ người trong `AWF_TELEGRAM_APPROVERS`, trong chat thuộc `AWF_TELEGRAM_CHAT_IDS`, mới duyệt được; người khác
+bấm chỉ nhận thông báo "không có quyền". Người duyệt được ghi là `telegram:<username>` trong audit. Duyệt xong
+(ở Telegram hay dashboard), nút biến mất ở mọi bản tin. Lệnh `/pending` liệt kê các yêu cầu đang chờ.
+Không đặt `AWF_TELEGRAM_APPROVERS` thì tin chỉ có link, duyệt trên dashboard (cần đăng nhập).
+
+Telegram nhận nút bấm bằng long-polling từ máy trung tâm, **không cần** mở cổng hay webhook. Chỉ một tiến
+trình được đọc một bot: đừng dùng cùng token cho hai máy trung tâm.
+
+**WhatsApp (WhatsApp Business Cloud API của Meta).** Cần tài khoản Meta Business, một số điện thoại dành cho
+API và token hệ thống (System User, không hết hạn).
+
+```text
+AWF_WHATSAPP_TOKEN=<system user token>
+AWF_WHATSAPP_PHONE_NUMBER_ID=<phone number id trong WhatsApp → API Setup>
+AWF_WHATSAPP_TO=84901234567            # số nhận, dạng quốc tế, nhiều số cách nhau bằng dấu phẩy
+AWF_WHATSAPP_TEMPLATE=awf_alert        # nên đặt: template đã được Meta duyệt, body có đúng một biến {{1}}
+```
+
+WhatsApp chỉ cho gửi tin tự do trong 24 giờ sau lần cuối người nhận nhắn cho số business. Ngoài khoảng đó phải
+dùng template đã duyệt (Meta duyệt mất 1–2 ngày); toàn bộ nội dung tin được đưa vào biến `{{1}}`. Thiếu template
+mà ngoài 24 giờ, trang Notifications báo lỗi kèm gợi ý. Duyệt: mở link trong tin.
+
+**Zalo (Zalo Official Account).** Cần một OA đã xác thực và một ứng dụng Zalo for Developers được cấp quyền
+OA (lấy `app_id`, `app_secret`, và refresh token qua bước cấp quyền OA). Người nhận phải **quan tâm** OA và đã
+nhắn cho OA gần đây (tin tư vấn chỉ gửi được trong khoảng thời gian Zalo cho phép sau lần tương tác cuối).
+
+```text
+AWF_ZALO_APP_ID=<app id>
+AWF_ZALO_APP_SECRET=<app secret>
+AWF_ZALO_REFRESH_TOKEN=<refresh token của OA>
+AWF_ZALO_USER_IDS=<user id theo OA của người nhận, cách nhau bằng dấu phẩy>
+```
+
+Access token của OA chỉ sống khoảng một ngày; factory tự làm mới bằng refresh token và lưu cặp token mới vào
+database (refresh token chỉ dùng được một lần, nên giá trị trong `.env` chỉ dùng cho lần đầu). Duyệt: mở link.
+
+Đã kiểm thử với API giả lập (không có tài khoản thật): Telegram (gửi, nút duyệt hai bước, quyền, `/start`,
+`/pending`, gửi lại khi lỗi), WhatsApp (text, template, lỗi ngoài 24 giờ), Zalo (làm mới token, token bị từ chối).
+Endpoint gửi tin tư vấn Zalo `https://openapi.zalo.me/v3.0/oa/message/cs` lấy từ SDK chính thức; URL làm mới
+token và phiên bản Graph API của WhatsApp chưa đối chiếu được với tài khoản thật, nên chỉnh được bằng
+`AWF_ZALO_OAUTH_URL`, `AWF_ZALO_API_BASE`, `AWF_WHATSAPP_API_VERSION` nếu nhà cung cấp đổi.
+
 ## 9. Lấy kết quả: nhánh git, patch, PR
 
 ```powershell
@@ -525,7 +595,10 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 | GET | `/projects/{id}/artifacts?run_id=&type=` | artifact |
 | GET | `/artifacts/{id}`, `/content`, `/relations`, `/impact` | metadata, nội dung, trace, impact |
 | GET | `/approvals?state=pending` | hàng đợi |
+| GET | `/approvals/{id}` | một yêu cầu duyệt + project, run, artifact cần xem |
 | POST | `/approvals/{id}/approve`, `/reject` | `{comment}` |
+| GET | `/notifications` | kênh đang bật + các tin gần đây và trạng thái gửi |
+| POST | `/notifications/test` | xếp hàng một tin thử tới mọi kênh |
 | GET | `/workers`, `/overview`, `/stats/agents`, `/audit` | quan sát |
 | POST | `/workers/register`, `/workers/{id}/heartbeat`, `/workers/{id}/claim` | giao thức worker |
 | POST | `/jobs/{id}/progress`, `/log`, `/complete`, `/fail` | giao thức worker |
@@ -533,7 +606,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (132 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (148 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop

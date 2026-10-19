@@ -132,3 +132,11 @@ class EventType(StrEnum):
     WORKER_REVOKED = "WORKER_REVOKED"
     JOB_LEASE_EXPIRED = "JOB_LEASE_EXPIRED"
     JOB_REQUEUED = "JOB_REQUEUED"
+
+
+class NotificationState(StrEnum):
+    PENDING = "PENDING"
+    SENT = "SENT"
+    PARTIAL = "PARTIAL"   # some channels failed for good
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"   # no channel configured
