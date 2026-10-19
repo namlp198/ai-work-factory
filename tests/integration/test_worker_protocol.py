@@ -37,7 +37,7 @@ def _script(tmp_path, monkeypatch, roles: dict) -> None:
 
 
 def _start(client, repository_config, workflow_id="dev-only", **project):
-    p = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config, **project}).json()
+    p = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config, "labels": {"platform": "linux"}, **project}).json()
     resp = client.post(f"/api/v1/projects/{p['id']}/workflow-runs",
                        json={"workflow_id": workflow_id, "inputs": {"objective": "Add a health check"}})
     assert resp.status_code == 201, resp.text

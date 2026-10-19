@@ -40,7 +40,7 @@ def _daemon(client, tmp_path, name, platform_name="linux-amd64", capabilities=("
 
 
 def _project(client, repository_config, **extra):
-    return client.post("/api/v1/projects", json={"name": "P", "repository": repository_config, **extra}).json()
+    return client.post("/api/v1/projects", json={"name": "P", "repository": repository_config, "labels": {"platform": "linux"}, **extra}).json()
 
 
 def _start(client, project, workflow_id="three-step", worker=None):
@@ -126,7 +126,7 @@ def test_preferred_for_label_breaks_ties(client, platform, orchestrator, reposit
     _use(platform, THREE_STEP)
     _daemon(client, tmp_path, "pc-a")
     _daemon(client, tmp_path, "pc-b", labels={"preferred_for": "robo-station, other"})
-    project = client.post("/api/v1/projects", json={"name": "Robo", "slug": "robo-station",
+    project = client.post("/api/v1/projects", json={"name": "Robo", "slug": "robo-station", "labels": {"platform": "linux"},
                                                     "repository": repository_config}).json()
     run_id = _start(client, project).json()["id"]
     orchestrator.run_until_idle()
@@ -158,7 +158,7 @@ def test_windows_dotnet_project_is_refused_when_only_ubuntu_is_registered(client
     resp = _start(client, project)
     assert resp.status_code == 422
     assert "no registered worker meets platform windows" in resp.json()["detail"]
-    assert "ubuntu-01 (linux-amd64" in resp.json()["detail"]
+    assert "ubuntu-01: platform is linux-amd64, needs windows" in resp.json()["detail"]
     with platform.db.session() as s:
         assert s.scalars(select(WorkflowRun)).all() == []
 

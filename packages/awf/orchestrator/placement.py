@@ -76,6 +76,10 @@ def merge_platform(a: str | None, b: str | None) -> str | None:
 def run_requirements(spec: WorkflowSpec, project: Project, repository: dict[str, Any] | None,
                      default_platform: str) -> dict[str, Any]:
     """What the one machine of a run must offer: the union over the project and every stage."""
+    if not (project.labels or {}).get("platform"):
+        raise PlacementError(f"project '{project.slug}' does not say which platform it runs on; set labels.platform "
+                             f"(windows, linux, linux-arm64, ... or 'any') with PATCH /api/v1/projects/{project.id} "
+                             f"or on the project page")
     platform: str | None = None
     sources = [("project", (project.labels or {}).get("platform"))]
     sources += [(f"stage '{s.id}'", s.worker.platform) for s in spec.stages if s.worker and s.worker.platform]
@@ -97,6 +101,12 @@ def run_requirements(spec: WorkflowSpec, project: Project, repository: dict[str,
         if stage.worker:
             caps.update(stage.worker.capabilities)
     return {"platform": platform or default_platform, "capabilities": sorted(caps)}
+
+
+def project_requirements(project: Project) -> dict[str, Any]:
+    """What any machine running this project needs, before a workflow adds its stage requirements."""
+    caps = {"git"} | set((project.repository or {}).get("required_capabilities") or [])
+    return {"platform": (project.labels or {}).get("platform"), "capabilities": sorted(caps)}
 
 
 def describe(requirements: dict[str, Any]) -> str:

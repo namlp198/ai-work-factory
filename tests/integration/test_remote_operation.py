@@ -45,8 +45,8 @@ def test_login_once_then_cookie_session(secured, platform, orchestrator):
     assert c.get("/api/v1/projects").status_code == 200
 
     # Cookie-authenticated writes need the dashboard header (CSRF protection); scripts use Bearer.
-    assert c.post("/api/v1/projects", json={"name": "x"}).status_code == 403
-    assert c.post("/api/v1/projects", json={"name": "x"}, headers={"X-AWF-Client": "dashboard"}).status_code == 201
+    assert c.post("/api/v1/projects", json={"name": "x", "labels": {"platform": "linux"}}).status_code == 403
+    assert c.post("/api/v1/projects", json={"name": "x", "labels": {"platform": "linux"}}, headers={"X-AWF-Client": "dashboard"}).status_code == 201
 
     # Still signed in after a control-plane restart (signing key derives from the stable admin token).
     from fastapi.testclient import TestClient
@@ -136,7 +136,7 @@ def test_client_errors_are_not_retried():
 def _start_dev_run(client, platform, repository_config) -> str:
     loaded = parse_workflow(DEV_ONLY, platform.agents.roles())
     platform.workflows._workflows[loaded.spec.id] = loaded
-    p = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config}).json()
+    p = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config, "labels": {"platform": "linux"}}).json()
     return client.post(f"/api/v1/projects/{p['id']}/workflow-runs",
                        json={"workflow_id": "dev-only", "inputs": {"objective": "x"}}).json()["id"]
 

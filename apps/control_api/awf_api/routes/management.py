@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -24,6 +25,7 @@ from awf.domain.models import (
     WorkflowRun,
 )
 from awf.orchestrator import jobs as job_service
+from awf.orchestrator import placement
 from awf.orchestrator.orchestrator import OrchestratorError
 from awf_api import serializers as ser
 from awf_api.deps import AppState, get_session, get_state, require_admin
@@ -48,6 +50,20 @@ class RepositoryIn(BaseModel):
     required_capabilities: list[str] = Field(default_factory=list)
 
 
+PLATFORM_PATTERN = re.compile(r"^(any|[a-z][a-z0-9]*(-[a-z0-9_]+)?)$")
+
+
+def _check_labels(labels: dict[str, Any]) -> dict[str, Any]:
+    """Every project says where it runs, so no run lands on a machine by accident (an Ubuntu box must never
+    get a Windows-only .NET project). 'any' is an explicit choice, never a default."""
+    value = labels.get("platform")
+    if not value:
+        raise ValueError("labels.platform is required: windows, linux, linux-arm64, ... or 'any'")
+    if not isinstance(value, str) or not PLATFORM_PATTERN.match(value):
+        raise ValueError(f"labels.platform '{value}' is not a platform like windows, linux, linux-arm64 or any")
+    return labels
+
+
 class ProjectIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     slug: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{0,99}$")
@@ -55,7 +71,27 @@ class ProjectIn(BaseModel):
     repository: RepositoryIn | None = None
     confidentiality: Literal["public", "internal", "restricted"] = "internal"
     budget_usd: float | None = Field(default=None, ge=0)
-    labels: dict[str, Any] = Field(default_factory=dict)
+    labels: dict[str, Any]
+
+    @field_validator("labels")
+    @classmethod
+    def _labels(cls, v):
+        return _check_labels(v)
+
+
+class ProjectPatch(BaseModel):
+    """Only the fields sent change; `repository` and `labels` are replaced as a whole."""
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    repository: RepositoryIn | None = None
+    confidentiality: Literal["public", "internal", "restricted"] | None = None
+    budget_usd: float | None = Field(default=None, ge=0)
+    labels: dict[str, Any] | None = None
+
+    @field_validator("labels")
+    @classmethod
+    def _labels(cls, v):
+        return None if v is None else _check_labels(v)
 
 
 @router.post("/projects", status_code=201)
@@ -85,7 +121,32 @@ def get_project(project_id: str, session: Session = Depends(get_session, scope="
                            .join(Task, Task.id == AgentRun.task_id)
                            .join(WorkflowRun, WorkflowRun.id == Task.workflow_run_id)
                            .where(WorkflowRun.project_id == project_id))
-    return {**ser.project(project), "spend_usd": float(spend or 0)}
+    return {**ser.project(project), "spend_usd": float(spend or 0), **_machines(session, project)}
+
+
+def _machines(session: Session, project: Project) -> dict[str, Any]:
+    """Which registered machines can run this project, and what the others lack (workflow stages may add more)."""
+    requirements = placement.project_requirements(project)
+    rows = []
+    for w in session.scalars(select(Worker).where(Worker.status != WorkerStatus.REVOKED).order_by(Worker.name)):
+        reasons = job_service.mismatch_reasons(w, requirements) if requirements["platform"] else ["project has no platform"]
+        rows.append({"id": w.id, "name": w.name, "status": w.status, "platform": w.platform,
+                     "matches": not reasons, "reasons": reasons})
+    return {"requirements": requirements, "machines": rows}
+
+
+@router.patch("/projects/{project_id}")
+def update_project(project_id: str, body: ProjectPatch, state: AppState = Depends(get_state),
+                   session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
+    project = _get(session, Project, project_id)
+    changes = body.model_dump(exclude_unset=True)
+    for key in ("name", "confidentiality", "repository", "labels"):
+        if key in changes and changes[key] is None:
+            raise HTTPException(422, f"{key} cannot be null")
+    if "repository" in changes:
+        changes["repository"] = body.repository.model_dump()
+    state.orchestrator.update_project(session, project, changes, actor=actor)
+    return {**ser.project(project), **_machines(session, project)}
 
 
 # ---------------------------------------------------------------------------- workflows

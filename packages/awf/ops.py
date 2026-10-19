@@ -236,11 +236,12 @@ def _check_control_plane_reachable() -> Check:
 
 
 def _check_worker_identity() -> Check:
-    from awf.worker_sdk import detect_capabilities, detect_platform
+    from awf.worker_sdk import detect_platform, resolve_capabilities
 
     name = os.environ.get("AWF_WORKER_NAME") or socket.gethostname()
     platform = os.environ.get("AWF_WORKER_PLATFORM") or detect_platform()
-    caps = os.environ.get("AWF_WORKER_CAPABILITIES") or ",".join(detect_capabilities())
+    caps = ",".join(resolve_capabilities(os.environ.get("AWF_WORKER_CAPABILITIES"),
+                                         os.environ.get("AWF_WORKER_EXTRA_CAPABILITIES")))
     detail = f"name={name} platform={platform} capabilities={caps}"
     if not os.environ.get("AWF_WORKER_REGISTRATION_TOKEN"):
         return Check("worker", "WARN", detail + " (AWF_WORKER_REGISTRATION_TOKEN empty: only a development control plane accepts it)")

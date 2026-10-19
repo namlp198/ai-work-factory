@@ -147,10 +147,10 @@ def cmd_orchestrator(args: argparse.Namespace) -> int:
 
 
 def build_worker(args: argparse.Namespace):
-    from awf.worker_sdk import ControlPlaneClient, Worker
+    from awf.worker_sdk import ControlPlaneClient, Worker, resolve_capabilities
 
     settings = _settings()
-    caps = [c.strip() for c in args.capabilities.split(",") if c.strip()] if args.capabilities else None
+    caps = resolve_capabilities(args.capabilities, getattr(args, "extra_capabilities", None))
     labels = dict(item.split("=", 1) for item in (args.label or []))
     root = Path(args.workspace_root)
     root = root if root.is_absolute() else settings.home / root
@@ -215,6 +215,7 @@ def _worker_namespace() -> argparse.Namespace:
         workspace_root=os.environ.get("AWF_WORKSPACE_ROOT", "var/workspaces"),
         platform=os.environ.get("AWF_WORKER_PLATFORM"),
         capabilities=os.environ.get("AWF_WORKER_CAPABILITIES"),
+        extra_capabilities=os.environ.get("AWF_WORKER_EXTRA_CAPABILITIES"),
         label=None,
         poll_interval=float(os.environ.get("AWF_WORKER_POLL_INTERVAL", "3")),
     )
@@ -442,6 +443,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     py = sys.executable
     project = api.post("/api/v1/projects", json={
         "name": f"perception-service demo {time.strftime('%H%M%S')}",
+        "labels": {"platform": "linux"},  # the demo worker registers as linux-amd64
         "repository": {"url": str(repo), "base_branch": "main",
                        "build_command": [py, "-m", "compileall", "-q", "perception_service"],
                        "test_command": [py, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
@@ -540,7 +542,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--platform", default=os.environ.get("AWF_WORKER_PLATFORM"),
                    help="override detected platform, e.g. linux-amd64, windows-amd64, linux-arm64")
     p.add_argument("--capabilities", default=os.environ.get("AWF_WORKER_CAPABILITIES"),
-                   help="comma separated; detected from installed tools when omitted")
+                   help="comma separated; replaces detection (git, python, dotnet, dotnet-sdk-8, msbuild, ...)")
+    p.add_argument("--extra-capabilities", default=os.environ.get("AWF_WORKER_EXTRA_CAPABILITIES"),
+                   help="comma separated; added to the detected ones, e.g. realsense,robo-station-sdk")
     p.add_argument("--label", action="append", help="key=value label (repeatable)")
     p.add_argument("--poll-interval", type=float, default=float(os.environ.get("AWF_WORKER_POLL_INTERVAL", "3")))
     p.set_defaults(func=cmd_worker)

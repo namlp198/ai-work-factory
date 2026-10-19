@@ -30,9 +30,18 @@ def platform_matches(worker_platform: str, required: str | None) -> bool:
 
 
 def requirements_met(worker: Worker, requirements: dict[str, Any]) -> bool:
+    return not mismatch_reasons(worker, requirements)
+
+
+def mismatch_reasons(worker: Worker, requirements: dict[str, Any]) -> list[str]:
+    """Why this worker cannot take work with these requirements ([] when it can)."""
+    reasons = []
     if not platform_matches(worker.platform, requirements.get("platform")):
-        return False
-    return set(requirements.get("capabilities") or []) <= set(worker.capabilities or [])
+        reasons.append(f"platform is {worker.platform}, needs {requirements.get('platform')}")
+    missing = sorted(set(requirements.get("capabilities") or []) - set(worker.capabilities or []))
+    if missing:
+        reasons.append("missing " + ", ".join(missing))
+    return reasons
 
 
 class WorkerRejected(Exception):

@@ -42,7 +42,7 @@ def drive(client, orchestrator, worker, run_id: str, approve: bool = True, max_r
 
 def test_full_software_workflow(client, orchestrator, worker, repository_config, demo_repo):
     project = client.post("/api/v1/projects", json={
-        "name": "Perception Service", "repository": repository_config}).json()
+        "name": "Perception Service", "repository": repository_config, "labels": {"platform": "linux"}}).json()
     run = client.post(f"/api/v1/projects/{project['id']}/workflow-runs", json={
         "workflow_id": "software-development",
         "inputs": {"objective": "Add a camera pipeline health-check API with tests and documentation."},
@@ -117,7 +117,7 @@ def test_whole_software_run_executes_on_one_machine(client, platform, orchestrat
                    policy_path=ROOT / "config" / "policies.yaml", capabilities=["git", "python"],
                    platform_name="linux-amd64")
     other.register("")
-    project = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config}).json()
+    project = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config, "labels": {"platform": "linux"}}).json()
     run_id = client.post(f"/api/v1/projects/{project['id']}/workflow-runs", json={
         "inputs": {"objective": "Add a camera pipeline health-check API with tests and documentation."}}).json()["id"]
 
@@ -130,7 +130,7 @@ def test_whole_software_run_executes_on_one_machine(client, platform, orchestrat
 
 
 def test_architecture_rejection_reruns_architect_then_fails(client, orchestrator, worker, repository_config):
-    project = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config}).json()
+    project = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config, "labels": {"platform": "linux"}}).json()
     run_id = client.post(f"/api/v1/projects/{project['id']}/workflow-runs", json={
         "inputs": {"objective": "Add a health check."}}).json()["id"]
 

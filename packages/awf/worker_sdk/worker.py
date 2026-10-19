@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
+import re
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -30,9 +33,73 @@ def detect_platform() -> str:
     return f"{system}-{arch}"
 
 
+def _probe(argv: list[str], timeout: float = 15) -> str:
+    """stdout of a quick tool query, "" when the tool is missing, slow or fails."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout if done.returncode == 0 else ""
+
+
+def dotnet_capabilities(list_sdks: str, list_runtimes: str) -> set[str]:
+    """`dotnet --list-sdks` / `--list-runtimes` -> dotnet-sdk-<major>, dotnet-windowsdesktop.
+
+    A Linux machine can have the .NET SDK too, so `dotnet` alone does not say a WPF/WinForms project builds
+    there; the Windows Desktop runtime only exists on Windows."""
+    caps: set[str] = set()
+    for line in list_sdks.splitlines():
+        m = re.match(r"\s*(\d+)\.\d+", line)
+        if m:
+            caps.add(f"dotnet-sdk-{m.group(1)}")
+    if any(line.strip().startswith("Microsoft.WindowsDesktop.App ") for line in list_runtimes.splitlines()):
+        caps.add("dotnet-windowsdesktop")
+    return caps
+
+
+def visual_studio_capabilities(vswhere_json: str) -> set[str]:
+    """vswhere output -> msbuild, vs-<major> (classic .NET Framework / C++ builds need Visual Studio's MSBuild)."""
+    try:
+        installs = json.loads(vswhere_json or "[]")
+    except ValueError:
+        return set()
+    caps: set[str] = set()
+    for item in installs if isinstance(installs, list) else []:
+        major = str(item.get("installationVersion", "")).split(".")[0]
+        if major.isdigit():
+            caps.update({"msbuild", f"vs-{({'16': '2019', '17': '2022', '18': '2026'}).get(major, major)}"})
+    return caps
+
+
+def _vswhere() -> str | None:
+    root = os.environ.get("ProgramFiles(x86)") or os.environ.get("ProgramFiles")
+    path = Path(root) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe" if root else None
+    return str(path) if path and path.is_file() else None
+
+
 def detect_capabilities() -> list[str]:
     caps = {cap for exe, cap in PROBED_CAPABILITIES.items() if shutil.which(exe)}
+    if "dotnet" in caps:
+        caps |= dotnet_capabilities(_probe(["dotnet", "--list-sdks"]), _probe(["dotnet", "--list-runtimes"]))
+    if shutil.which("msbuild"):
+        caps.add("msbuild")
+    vswhere = _vswhere()
+    if vswhere:
+        caps |= visual_studio_capabilities(
+            _probe([vswhere, "-products", "*", "-requires", "Microsoft.Component.MSBuild", "-format", "json"]))
     return sorted(caps)
+
+
+def split_list(raw: str | None) -> list[str]:
+    return [item.strip() for item in (raw or "").split(",") if item.strip()]
+
+
+def resolve_capabilities(override: str | None = None, extra: str | None = None) -> list[str]:
+    """AWF_WORKER_CAPABILITIES replaces detection entirely; AWF_WORKER_EXTRA_CAPABILITIES adds to it
+    (hardware or SDKs no probe can see, e.g. realsense, robo-station-sdk)."""
+    caps = set(split_list(override)) if split_list(override) else set(detect_capabilities())
+    return sorted(caps | set(split_list(extra)))
 
 
 def system_load() -> dict[str, Any]:

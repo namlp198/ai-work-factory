@@ -54,7 +54,7 @@ from awf.domain.state_machine import can_transition_task, check_task_transition
 from awf.logging import get_logger
 from awf.orchestrator import audit
 from awf.orchestrator import placement
-from awf.orchestrator.jobs import expire_leases, requeue_or_fail, requirements_met
+from awf.orchestrator.jobs import expire_leases, mismatch_reasons, requeue_or_fail, requirements_met
 from awf.orchestrator.context import ContextBuilder, task_meta
 from awf.orchestrator.critic import CHANGES_REQUIRED, Critic, CriticResult
 from awf.orchestrator.task_router import TaskRouter, slug
@@ -100,6 +100,15 @@ class Orchestrator:
                                       platform.settings.context_max_chars_per_artifact)
 
     # ================================================================== commands
+    def update_project(self, session: Session, project: Project, changes: dict[str, Any], actor: str = "admin") -> Project:
+        """Partial update; runs already started keep the requirements they were created with."""
+        for key, value in changes.items():
+            setattr(project, key, value)
+        audit.record(session, EventType.PROJECT_UPDATED, actor_type="human", actor_id=actor, project_id=project.id,
+                     payload={"fields": sorted(changes), "labels": project.labels,
+                              "required_capabilities": (project.repository or {}).get("required_capabilities")})
+        return project
+
     def create_project(self, session: Session, *, name: str, slug_value: str | None = None, description: str = "",
                        repository: dict[str, Any] | None = None, confidentiality: str = "internal",
                        budget_usd: float | None = None, labels: dict[str, Any] | None = None,
@@ -171,15 +180,16 @@ class Orchestrator:
                 raise OrchestratorError(f"worker '{worker_name}' is not registered")
             if worker.status == WorkerStatus.REVOKED:
                 raise OrchestratorError(f"worker '{worker_name}' is revoked")
-            if not requirements_met(worker, requirements):
-                raise OrchestratorError(f"worker '{worker_name}' ({worker.platform}, capabilities "
-                                        f"{worker.capabilities}) does not meet {placement.describe(requirements)}")
+            reasons = mismatch_reasons(worker, requirements)
+            if reasons:
+                raise OrchestratorError(f"worker '{worker_name}' does not meet {placement.describe(requirements)}: "
+                                        + "; ".join(reasons))
             return
         workers = session.scalars(select(Worker).where(Worker.status != WorkerStatus.REVOKED)).all()
         if workers and not any(requirements_met(w, requirements) for w in workers):
-            registered = ", ".join(f"{w.name} ({w.platform}, {w.capabilities})" for w in workers)
-            raise OrchestratorError(f"no registered worker meets {placement.describe(requirements)}; "
-                                    f"registered: {registered}")
+            registered = "; ".join(f"{w.name}: {', '.join(mismatch_reasons(w, requirements))}" for w in workers)
+            raise OrchestratorError(f"no registered worker meets {placement.describe(requirements)} "
+                                    f"({registered})")
 
     def reassign_run(self, session: Session, run: WorkflowRun, worker_name: str | None,
                      actor: str = "admin") -> WorkflowRun:

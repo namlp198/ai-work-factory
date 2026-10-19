@@ -35,7 +35,7 @@ def test_post_then_get_sees_committed_data(platform, orchestrator, repository_co
                 time.sleep(0.05)
         with httpx.Client(base_url=base, timeout=10) as api:
             for i in range(20):
-                project = api.post("/projects", json={"name": f"p{i}", "repository": repository_config}).json()
+                project = api.post("/projects", json={"name": f"p{i}", "repository": repository_config, "labels": {"platform": "linux"}}).json()
                 assert api.get(f"/projects/{project['id']}").status_code == 200
                 run = api.post(f"/projects/{project['id']}/workflow-runs",
                                json={"inputs": {"objective": "x"}}).json()
