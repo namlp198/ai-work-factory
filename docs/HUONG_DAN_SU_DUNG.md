@@ -533,11 +533,21 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (131 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (132 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
 ```
+
+Chạy cả bộ test trên PostgreSQL (database **dùng để thử, sẽ bị xoá sạch** ở mỗi test):
+
+```bash
+AWF_TEST_DATABASE_URL=postgresql+psycopg://awf:<mật khẩu>@127.0.0.1:5432/awf_test \
+  .venv/bin/python -m pytest -q -p no:logging --ignore=tests/unit/test_db_migrations.py
+```
+
+`tests/integration/test_postgres_ops.py` (migration, import SQLite, `pg_dump`/`pg_restore`) chỉ chạy khi có biến
+này. CI chạy cả bộ trên service `postgres:16`.
 
 Các kịch bản lỗi được kiểm (Design §20): worker offline, model timeout, output sai cấu trúc, build fail,
 test fail, critic block, approval reject, duplicate event, cancel, retry thủ công, project restricted.
@@ -713,6 +723,47 @@ của bạn. Nếu dùng tunnel/proxy ở máy khác, đặt `AWF_TRUSTED_PROXIE
 - Nhãn để định tuyến theo địa điểm: `AWF_WORKER_LABELS=site=hanoi,gpu=rtx4090`. Ưu tiên một máy cho một
   project: `AWF_WORKER_LABELS=preferred_for=robo-station`.
 
+### Máy trung tâm Ubuntu 24.04 với PostgreSQL (khuyến nghị cho máy chạy 24/7)
+
+Mọi máy trong factory dùng chung một database, nằm trên máy trung tâm. Worker **không** kết nối database: mọi
+thứ đi qua API của máy trung tâm. SQLite đủ để bắt đầu. Máy trung tâm chạy 24/7 cho nhiều máy thì nên dùng
+PostgreSQL: chịu ghi đồng thời tốt hơn, sao lưu bằng `pg_dump` khi đang chạy, công cụ quản trị chuẩn.
+
+Trên máy trung tâm, theo thứ tự:
+
+```bash
+git clone <repo-url> ai-work-factory && cd ai-work-factory
+scripts/bootstrap.sh --role control-plane --public-url <url>   # như mục "Mô hình" ở trên
+sudo scripts/install-postgres.sh --import-sqlite                 # PostgreSQL + chép dữ liệu SQLite cũ (nếu có)
+sudo scripts/install-systemd.sh                                  # chạy 24/7, tự bật khi khởi động, backup hằng đêm
+```
+
+`install-postgres.sh` (chạy lại nhiều lần vẫn an toàn):
+
+1. Cài `postgresql` (bản 16 trên Ubuntu 24.04), bật cùng máy. Chỉ nghe ở `localhost`.
+2. Tạo role `awf` với mật khẩu ngẫu nhiên và database `awf`.
+3. Ghi `DATABASE_URL` vào `.env` (bản cũ giữ ở `.env.bak-<thời điểm>`), chạy `awf db upgrade`.
+4. Với `--import-sqlite`: dừng `awf` nếu đang chạy, chép toàn bộ dữ liệu từ `var/awf.db` sang PostgreSQL trong
+   một transaction (lỗi giữa chừng thì không ghi gì), rồi chạy lại `awf`. File SQLite được giữ nguyên; xoá khi
+   bạn đã yên tâm.
+
+`awf.service` khởi động sau `postgresql.service`. `awf-backup.timer` sao lưu lúc 02:30 mỗi đêm bằng `pg_dump`
+(định dạng custom, nén) vào `var/backups/awf-*.dump`, giữ 14 bản.
+
+| Việc | Lệnh |
+|---|---|
+| Sao lưu ngay | `.venv/bin/awf db backup` |
+| Khôi phục từ bản sao lưu | `sudo systemctl stop awf && .venv/bin/awf db restore var/backups/<file>.dump --yes && sudo systemctl start awf` |
+| Chép dữ liệu SQLite vào PostgreSQL (database mới, trống) | `.venv/bin/awf db import-sqlite var/awf.db` |
+| Mở psql | `sudo -u postgres psql awf` |
+| Kiểm tra | `.venv/bin/awf doctor` (dòng `database` và `backups`) |
+
+`awf db restore` thay **toàn bộ** nội dung database bằng bản sao lưu, nên đòi `--yes` và phải dừng `awf` trước.
+Nếu bản sao lưu cũ hơn code hiện tại, `awf start` tự chạy migration khi khởi động.
+
+Nên chép `var/backups/` và `var/artifacts/` sang máy khác (rsync, ổ mạng) định kỳ: bản sao lưu nằm cùng ổ đĩa
+với database không cứu được khi hỏng ổ.
+
 ### Chạy như dịch vụ (tự bật khi khởi động máy)
 
 **Linux (Ubuntu/Debian/Jetson) — systemd.** Sau khi đã chạy bootstrap:
@@ -724,8 +775,9 @@ sudo scripts/install-systemd.sh          # cài, bật khi khởi động, chạ
 - `awf.service` chạy `awf start` bằng user sở hữu thư mục repo (không chạy bằng root). Vai trò vẫn lấy từ
   `.env`, nên cùng một lệnh dùng được cho máy trung tâm và máy worker Linux.
 - Tự chạy lại sau 5 giây nếu tiến trình chết. Dừng nhẹ nhàng khi tắt máy.
-- Máy có database SQLite (`control-plane`/`all`) được cài thêm `awf-backup.timer`: sao lưu lúc 02:30 mỗi đêm vào
-  `var/backups/`, giữ 14 bản. Nếu máy tắt lúc 02:30 thì timer chạy bù khi bật lại.
+- Máy có database (`control-plane`/`all`) được cài thêm `awf-backup.timer`: sao lưu lúc 02:30 mỗi đêm vào
+  `var/backups/` (SQLite: bản sao `.db`; PostgreSQL: `pg_dump` `.dump`), giữ 14 bản. Nếu máy tắt lúc 02:30 thì
+  timer chạy bù khi bật lại.
 - Lệnh thường dùng:
 
   | Việc | Lệnh |
@@ -791,12 +843,13 @@ Riêng trigger "khi đăng nhập" chưa thử bằng một lần đăng xuất/
 ### Sao lưu (chỉ máy trung tâm)
 
 ```powershell
-.\.venv\Scripts\awf db backup --keep 14     # SQLite: bản sao nhất quán khi đang chạy -> var\backups\
+.\.venv\Scripts\awf db backup --keep 14     # SQLite: bản sao nhất quán; PostgreSQL: pg_dump -> var\backups\
 ```
 
-Lên lịch chạy hằng ngày (Task Scheduler/cron). Sao lưu cả thư mục artifact (`var\artifacts`). PostgreSQL thì
-dùng `pg_dump`. Khi đổi máy trung tâm, chép `.env`, `var\` (hoặc dump PostgreSQL) sang máy mới và trỏ
-DNS/Tailscale name sang. Worker không phải cài lại.
+Linux: `install-systemd.sh` đã lên lịch hằng đêm. Windows: lên lịch bằng Task Scheduler. Sao lưu cả thư mục
+artifact (`var\artifacts`). Khôi phục PostgreSQL: `awf db restore <file>.dump --yes` (xem mục PostgreSQL ở trên).
+Khi đổi máy trung tâm, chép `.env`, `var\` (và bản `.dump` mới nhất, khôi phục bằng `awf db restore`) sang máy
+mới và trỏ DNS/Tailscale name sang. Worker không phải cài lại.
 
 ### Cập nhật mọi máy
 
@@ -817,8 +870,9 @@ Nên cập nhật máy trung tâm trước, rồi đến các worker.
   từng worker.
 - **Lệnh build/test của project** chạy bằng PATH của worker. Giới hạn worker bằng `labels.platform` và
   `required_capabilities` của project.
-- **Database:** một máy trung tâm có một database. SQLite đủ cho một máy trung tâm. Dùng PostgreSQL khi cần
-  sao lưu/HA chuyên nghiệp.
+- **Database:** một máy trung tâm có một database; worker không bao giờ kết nối database. SQLite đủ để bắt
+  đầu; máy trung tâm 24/7 nên dùng PostgreSQL (`sudo scripts/install-postgres.sh --import-sqlite`, xem mục
+  PostgreSQL ở trên).
 
 ### Cách đã kiểm chứng
 

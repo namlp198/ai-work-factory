@@ -54,7 +54,11 @@ render() {
 
 render awf.service
 backup=0
-if [[ "$role" != "worker" && "$database_url" == sqlite* ]]; then
+if [[ "$role" != "worker" ]]; then
+  if [[ "$database_url" == postgresql* ]] && ! command -v pg_dump >/dev/null; then
+    echo "PostgreSQL backups need pg_dump: installing postgresql-client"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql-client
+  fi
   render awf-backup.service
   render awf-backup.timer
   backup=1
@@ -73,8 +77,7 @@ fi
 
 echo
 echo "Installed awf.service (role=$role, user=$user, repo=$repo)."
-(( backup )) && echo "Installed awf-backup.timer: nightly backup to $repo/var/backups (newest 14 kept)."
-[[ "$role" != "worker" && "$database_url" != sqlite* ]] && echo "PostgreSQL detected: schedule pg_dump yourself."
+(( backup )) && echo "Installed awf-backup.timer: nightly backup ($([[ "$database_url" == postgresql* ]] && echo pg_dump || echo SQLite copy)) to $repo/var/backups (newest 14 kept)."
 cat <<EOF
 
 Useful commands:

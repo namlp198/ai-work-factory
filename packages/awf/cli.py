@@ -53,25 +53,62 @@ def _adopt_unversioned_schema(cfg, url: str) -> None:
 
 
 def _backup(settings, keep: int) -> int:
-    """Consistent online copy of the SQLite database (safe while the control plane runs)."""
-    import sqlite3
+    """SQLite: online copy to var/backups/awf-*.db. PostgreSQL: pg_dump to var/backups/awf-*.dump."""
+    from awf import dbops
 
-    url = settings.database_url
-    if not url.startswith("sqlite:///"):
-        print("PostgreSQL: use pg_dump, e.g.  pg_dump --format=custom --file=awf-$(date +%F).dump \"$DATABASE_URL\"")
-        return 2
-    source = Path(url[len("sqlite:///"):])
     target_dir = settings.home / "var" / "backups"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"awf-{time.strftime('%Y%m%d-%H%M%S')}.db"
-    with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
-        src.backup(dst)
-    backups = sorted(target_dir.glob("awf-*.db"))
-    for old in backups[:-keep] if keep > 0 else []:
-        old.unlink()
-    print(f"backup written to {target} (keeping {min(len(backups), keep)})")
+    try:
+        if dbops.is_postgres(settings.database_url):
+            target = dbops.backup_postgres(settings.database_url, target_dir, keep)
+        else:
+            target = dbops.backup_sqlite(settings.database_url, target_dir, keep)
+    except (RuntimeError, OSError) as exc:
+        print(f"backup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"backup written to {target} (keeping the newest {keep})")
     print(f"artifacts live in {settings.artifact_root}; back that directory up as well")
     return 0
+
+
+def _restore(settings, args: argparse.Namespace) -> int:
+    from awf import dbops
+
+    if not dbops.is_postgres(settings.database_url):
+        print("SQLite: stop awf, copy the backup over the database file (see DATABASE_URL), start awf again.")
+        return 2
+    if not args.yes:
+        print(f"this REPLACES everything in {_redacted(settings.database_url)} with {args.file}; "
+              f"stop awf first, then rerun with --yes", file=sys.stderr)
+        return 2
+    try:
+        dbops.restore_postgres(settings.database_url, Path(args.file))
+    except (RuntimeError, ValueError) as exc:
+        print(f"restore failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"restored {args.file}; run `awf db upgrade` if the backup is older than this code, then start awf")
+    return 0
+
+
+def _import_sqlite(settings, args: argparse.Namespace) -> int:
+    from awf import dbops
+
+    path = Path(args.file or "var/awf.db")
+    path = path if path.is_absolute() else settings.home / path
+    source = f"sqlite:///{path.as_posix()}"
+    print(f"copying {path} -> {_redacted(settings.database_url)}")
+    try:
+        copied = dbops.import_sqlite(source, settings.database_url)
+    except ValueError as exc:
+        print(f"import failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"imported {sum(copied.values())} rows from {len(copied)} tables; the SQLite file is unchanged")
+    return 0
+
+
+def _redacted(url: str) -> str:
+    from sqlalchemy.engine import make_url
+
+    return make_url(url).render_as_string(hide_password=True)
 
 
 def cmd_db(args: argparse.Namespace) -> int:
@@ -81,6 +118,10 @@ def cmd_db(args: argparse.Namespace) -> int:
     settings = _settings()
     if args.action == "backup":
         return _backup(settings, getattr(args, "keep", 14))
+    if args.action == "restore":
+        return _restore(settings, args)
+    if args.action == "import-sqlite":
+        return _import_sqlite(settings, args)
     cfg = Config(str(settings.home / "alembic.ini"))
     cfg.set_main_option("script_location", str(settings.home / "infrastructure" / "migrations"))
     cfg.set_main_option("sqlalchemy.url", settings.database_url)
@@ -89,14 +130,14 @@ def cmd_db(args: argparse.Namespace) -> int:
 
         Database(settings.database_url).create_all()
         command.stamp(cfg, "head")  # keep later `db upgrade` runs consistent
-        print(f"schema created on {settings.database_url}")
+        print(f"schema created on {_redacted(settings.database_url)}")
         return 0
     if args.action == "upgrade":
         _adopt_unversioned_schema(cfg, settings.database_url)
         command.upgrade(cfg, "head")
     elif args.action == "downgrade":
         command.downgrade(cfg, "base")
-    print(f"database {args.action} done ({settings.database_url})")
+    print(f"database {args.action} done ({_redacted(settings.database_url)})")
     return 0
 
 
@@ -497,8 +538,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("db", help="database schema management")
-    p.add_argument("action", choices=["upgrade", "downgrade", "create", "backup"])
+    p.add_argument("action", choices=["upgrade", "downgrade", "create", "backup", "restore", "import-sqlite"])
+    p.add_argument("file", nargs="?", help="restore: backup file (.dump); import-sqlite: SQLite file "
+                                          "(default var/awf.db)")
     p.add_argument("--keep", type=int, default=14, help="backup: number of backups to keep")
+    p.add_argument("--yes", action="store_true", help="restore: confirm replacing the database contents")
     p.set_defaults(func=cmd_db)
 
     p = sub.add_parser("start", help="start this machine according to AWF_ROLE in .env")

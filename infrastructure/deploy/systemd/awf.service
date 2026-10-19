@@ -7,7 +7,8 @@
 Description=AI Work Factory (awf start)
 Documentation=file://@REPO@/docs/HUONG_DAN_SU_DUNG.md
 Wants=network-online.target
-After=network-online.target
+# Control plane on a local PostgreSQL (scripts/install-postgres.sh): start after it. Harmless without it.
+After=network-online.target postgresql.service
 # Give up only if it crash-loops: 10 failures within 5 minutes.
 StartLimitIntervalSec=300
 StartLimitBurst=10

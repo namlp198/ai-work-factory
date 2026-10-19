@@ -189,6 +189,22 @@ def _check_database() -> Check:
         return Check("database", "FAIL", f"{type(exc).__name__}: {exc}")
 
 
+def _check_backups(role: str) -> Check:
+    """A control plane that other machines depend on should be on PostgreSQL with pg_dump available."""
+    from awf import dbops
+    from awf.settings import get_settings
+
+    url = get_settings().database_url
+    if dbops.is_postgres(url):
+        if not dbops.pg_tool("pg_dump"):
+            return Check("backups", "WARN", "pg_dump not found: `awf db backup` cannot run (sudo apt install postgresql-client)")
+        return Check("backups", "OK", "PostgreSQL; `awf db backup` uses pg_dump")
+    if role == "control-plane":
+        return Check("backups", "WARN", "SQLite on a shared control plane: fine to start, but for a 24/7 server use "
+                     "PostgreSQL (sudo scripts/install-postgres.sh --import-sqlite)")
+    return Check("backups", "OK", "SQLite; `awf db backup` makes an online copy")
+
+
 def _safe_url(url: str) -> str:
     return re.sub(r"//([^:/@]+):[^@]+@", r"//\1:***@", url)
 
@@ -265,7 +281,7 @@ def doctor(home: Path) -> int:
     checks.append(Check(".env", "OK" if (home / ".env").is_file() else "WARN",
                         f"role={role}" if (home / ".env").is_file() else "missing: run `awf env init`"))
     if role in ("all", "control-plane"):
-        checks += [_check_database(), _check_api_exposure(), _check_public_url()]
+        checks += [_check_database(), _check_backups(role), _check_api_exposure(), _check_public_url()]
     if role in ("all", "worker"):
         checks += [_check_worker_identity(), _check_model_credentials()]
     if role == "worker":

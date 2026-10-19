@@ -1,6 +1,8 @@
-# One consistent copy of the control-plane database into @REPO@/var/backups (keeps the newest 14).
+# One consistent copy of the control-plane database into @REPO@/var/backups (keeps the newest 14):
+# SQLite online copy (awf-*.db) or pg_dump custom format (awf-*.dump) when DATABASE_URL is PostgreSQL.
 [Unit]
 Description=AI Work Factory database backup
+After=postgresql.service
 
 [Service]
 Type=oneshot

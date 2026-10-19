@@ -18,7 +18,12 @@ class Database:
         if url.startswith("sqlite"):
             connect_args = {"check_same_thread": False, "timeout": 30}
         self.url = url
-        self.engine: Engine = create_engine(url, echo=echo, future=True, connect_args=connect_args)
+        options = {}
+        if url.startswith("postgresql"):
+            # A 24/7 control plane outlives server restarts and idle-connection drops: test connections before use.
+            # API threads + orchestrator + one connection per concurrent worker request need some headroom.
+            options = {"pool_pre_ping": True, "pool_size": 10, "max_overflow": 20, "pool_recycle": 1800}
+        self.engine: Engine = create_engine(url, echo=echo, future=True, connect_args=connect_args, **options)
         if url.startswith("sqlite"):
             event.listen(self.engine, "connect", _sqlite_pragmas)
         self._factory = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)

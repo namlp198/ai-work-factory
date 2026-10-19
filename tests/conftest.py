@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import shutil
 import subprocess
 import sys
@@ -18,15 +19,33 @@ def _git(cwd: Path, *args: str) -> str:
                           capture_output=True, text=True).stdout
 
 
+# Run the suite against PostgreSQL (what a shared control plane uses) instead of a SQLite file per test:
+#   AWF_TEST_DATABASE_URL=postgresql+psycopg://awf:<password>@127.0.0.1:5432/awf_test pytest
+# Every test starts from an empty schema. Never point this at a database whose data you want to keep.
+TEST_DATABASE_URL = os.environ.get("AWF_TEST_DATABASE_URL", "")
+
+
+def _fresh_postgres(url: str) -> None:
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    engine.dispose()
+
+
 @pytest.fixture
 def platform(tmp_path, monkeypatch):
     from awf.platform import Platform
     from awf.settings import build_settings
 
     monkeypatch.setenv("AWF_SCRIPTED_RESPONSES", str(DEMO_SCRIPT))
+    if TEST_DATABASE_URL:
+        _fresh_postgres(TEST_DATABASE_URL)
     settings = dataclasses.replace(
         build_settings(ROOT),
-        database_url=f"sqlite:///{(tmp_path / 'awf.db').as_posix()}",
+        database_url=TEST_DATABASE_URL or f"sqlite:///{(tmp_path / 'awf.db').as_posix()}",
         artifact_root=tmp_path / "artifacts",
         model_provider_override="scripted",
         environment="development",

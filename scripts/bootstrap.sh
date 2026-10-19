@@ -76,3 +76,6 @@ env_args=(env init --role "$role")
 .venv/bin/awf doctor || true
 echo
 echo "Start this machine with:  .venv/bin/awf start"
+if [[ "$role" != "worker" ]] && grep -qE '^DATABASE_URL=sqlite' .env 2>/dev/null; then
+  echo "Central server running 24/7 for several machines? Move it to PostgreSQL:  sudo scripts/install-postgres.sh"
+fi
