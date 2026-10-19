@@ -242,7 +242,8 @@ def _check_worker_identity() -> Check:
     platform = os.environ.get("AWF_WORKER_PLATFORM") or detect_platform()
     caps = ",".join(resolve_capabilities(os.environ.get("AWF_WORKER_CAPABILITIES"),
                                          os.environ.get("AWF_WORKER_EXTRA_CAPABILITIES")))
-    detail = f"name={name} platform={platform} capabilities={caps}"
+    slots = os.environ.get("AWF_WORKER_MAX_JOBS") or "1"
+    detail = f"name={name} platform={platform} max_jobs={slots} capabilities={caps}"
     if not os.environ.get("AWF_WORKER_REGISTRATION_TOKEN"):
         return Check("worker", "WARN", detail + " (AWF_WORKER_REGISTRATION_TOKEN empty: only a development control plane accepts it)")
     return Check("worker", "OK", detail)

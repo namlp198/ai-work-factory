@@ -33,7 +33,7 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
 - Sau `git pull`: chạy lại bootstrap rồi `awf start`.
 - Dashboard: đăng nhập bằng `AWF_API_TOKEN` một lần (giữ 30 ngày), hoặc `awf open` để vào thẳng.
 - Máy trung tâm + worker ở nhiều địa điểm qua internet (Tailscale hoặc HTTPS/Caddy): xem §21 của hướng dẫn.
-- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (125 test).
+- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (131 test).
 - Claude thật: đặt `ANTHROPIC_API_KEY` trong `.env` của máy worker.
 
 ## Tài liệu

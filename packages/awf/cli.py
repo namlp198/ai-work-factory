@@ -158,7 +158,8 @@ def build_worker(args: argparse.Namespace):
     worker = Worker(ControlPlaneClient(args.url), name=args.name, machine_id=_machine_id(settings.home),
                     workspace_root=root.resolve(),
                     policy_path=settings.config_dir / "policies.yaml", capabilities=caps, labels=labels,
-                    platform_name=args.platform, poll_interval=args.poll_interval)
+                    platform_name=args.platform, poll_interval=args.poll_interval,
+                    max_jobs=getattr(args, "max_jobs", None) or 1)
     worker.register(os.environ.get("AWF_WORKER_REGISTRATION_TOKEN", ""))
     return worker
 
@@ -216,6 +217,7 @@ def _worker_namespace() -> argparse.Namespace:
         platform=os.environ.get("AWF_WORKER_PLATFORM"),
         capabilities=os.environ.get("AWF_WORKER_CAPABILITIES"),
         extra_capabilities=os.environ.get("AWF_WORKER_EXTRA_CAPABILITIES"),
+        max_jobs=int(os.environ.get("AWF_WORKER_MAX_JOBS") or 1),
         label=None,
         poll_interval=float(os.environ.get("AWF_WORKER_POLL_INTERVAL", "3")),
     )
@@ -546,6 +548,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--extra-capabilities", default=os.environ.get("AWF_WORKER_EXTRA_CAPABILITIES"),
                    help="comma separated; added to the detected ones, e.g. realsense,robo-station-sdk")
     p.add_argument("--label", action="append", help="key=value label (repeatable)")
+    p.add_argument("--max-jobs", type=int, default=os.environ.get("AWF_WORKER_MAX_JOBS") or "1",
+                   help="jobs executed at the same time on this machine (default 1)")
     p.add_argument("--poll-interval", type=float, default=float(os.environ.get("AWF_WORKER_POLL_INTERVAL", "3")))
     p.set_defaults(func=cmd_worker)
 

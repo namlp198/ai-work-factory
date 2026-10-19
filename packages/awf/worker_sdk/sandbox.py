@@ -12,9 +12,11 @@ Branch model per workflow run:
 from __future__ import annotations
 
 import os
+import random
 import shutil
 import stat
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -109,8 +111,12 @@ class Workspace:
             info.integrated = True
         return info
 
-    def _integrate(self, message: str, attempts: int = 3) -> None:
+    def _integrate(self, message: str, attempts: int = 5) -> None:
+        """Merge into the integration branch and push; a rejected push (another job of the run pushed first,
+        common when one machine runs a run's parallel tasks at once) is retried on the new tip."""
         for attempt in range(1, attempts + 1):
+            if attempt > 1:
+                time.sleep(random.uniform(0.2, 1.0) * attempt)
             git(["fetch", "--quiet", "origin"], self.repo)
             start = (f"origin/{self.integration_branch}" if self._remote_branch_exists(self.integration_branch)
                      else self.start_sha)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from awf.domain.enums import ACTIVE_JOB_STATES, AgentRunStatus, EventType, JobState, TaskState, WorkerStatus
@@ -133,6 +133,10 @@ def claim_job(session: Session, worker: Worker) -> Job | None:
         allowed = or_(mine, Job.pinned.is_(False))
     else:
         return None
+    busy = session.scalar(select(func.count(Job.id)).where(
+        Job.worker_id == worker.id, Job.state.in_(list(ACTIVE_JOB_STATES)))) or 0
+    if busy >= max(1, worker.max_jobs or 1):
+        return None  # never more jobs than the slots the machine declared
     candidates = session.scalars(select(Job).where(Job.state == JobState.QUEUED, allowed)
                                  .order_by(Job.created_at)).all()
     for job in candidates:

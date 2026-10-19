@@ -41,7 +41,9 @@ do (an Ubuntu box with a .NET SDK still cannot build a Windows-only robo-station
 
 ## Consequences
 - Stages that used to run in parallel on several machines (planned development tasks, parallel verification)
-  run one after the other on a worker with one job slot. `workers.max_jobs` is in place for workers that
-  execute several jobs concurrently.
+  run in parallel on the run's machine when it has several job slots (`AWF_WORKER_MAX_JOBS`, one thread and
+  one workspace per job), one after the other with a single slot. The control plane never hands a machine
+  more active jobs than its `max_jobs`, and placement load is jobs per slot. Concurrent jobs of one run pushing
+  the integration branch retry on the new tip (up to 5 times, with jittered backoff).
 - Runs created before this ADR (no `placement` in their context) keep per-job routing until they finish.
 - Runs for workflows that need two operating systems must use `placement: stage`.

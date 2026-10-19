@@ -315,6 +315,7 @@ người thực hiện (policy level 2).
 
 ```text
 awf worker --url <control-api> --name <tên duy nhất> [--platform linux-arm64] [--capabilities git,python,cmake,cuda,realsense]
+           [--extra-capabilities realsense] [--max-jobs 3]
            [--label device=jetson-orin --label location=lab] [--workspace-root <dir>]
 ```
 
@@ -362,8 +363,25 @@ máy được giao.
 - Workflow cần nhiều máy (ví dụ build Linux rồi test Windows): đặt `placement: stage` ở đầu workflow để
   từng job được giao cho bất kỳ máy nào khớp, như trước đây.
 
-Lưu ý: các phần song song trong một run (nhiều task development, verification song song) chạy tuần tự trên
-máy được giao, vì worker hiện chạy một job mỗi lần.
+Các phần song song trong một run (nhiều task development, verification song song) chạy cùng lúc trên máy
+được giao nếu máy có nhiều slot (`AWF_WORKER_MAX_JOBS`, xem bên dưới); với 1 slot chúng chạy lần lượt.
+
+### Nhiều job cùng lúc trên một máy
+
+`AWF_WORKER_MAX_JOBS=3` trong `.env` của worker (hoặc `awf worker --max-jobs 3`): máy chạy tối đa 3 job cùng
+lúc, mỗi job một thread và một thư mục làm việc riêng. Máy chỉ xin việc khi còn slot trống, và máy trung tâm
+cũng không bao giờ giao quá số slot máy đã khai báo. Số slot được dùng khi chọn máy cho run: máy 4 slot đang có
+3 job (tải 0.75) được coi là rảnh hơn máy 1 slot đang có 1 job (tải 1.0).
+
+Chọn số slot:
+
+- Job agent chủ yếu chờ API của model, tốn ít CPU; job build/test (`dotnet build`, `pytest`, CMake) tốn CPU,
+  RAM và đĩa (mỗi job clone repo riêng).
+- Gợi ý: máy văn phòng 16 GB RAM: 2; máy dev 32 GB: 3–4; Jetson: 1. Tăng dần và theo dõi tải ở trang Workers.
+- Mặc định là 1 (hành vi cũ). Đổi giá trị rồi khởi động lại worker; worker đăng ký lại với số slot mới.
+
+Dừng worker khi đang chạy nhiều job: các job dở được giao lại khi máy đăng ký lại (hoặc khi hết lease), giống
+như khi máy mất điện lúc đang chạy một job.
 
 ## 11. Cấu hình
 
@@ -515,7 +533,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (125 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (131 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop

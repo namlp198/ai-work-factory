@@ -1,4 +1,7 @@
-"""Worker daemon: register -> heartbeat -> claim -> execute -> submit result -> cleanup."""
+"""Worker daemon: register -> heartbeat -> claim -> execute -> submit result -> cleanup.
+
+With max_jobs > 1 the daemon executes up to that many jobs at once, each on its own thread in its own
+workspace; it only asks for work while a slot is free, and the control plane never hands it more."""
 
 from __future__ import annotations
 
@@ -140,7 +143,7 @@ class Worker:
     def __init__(self, client: ControlPlaneClient, name: str, workspace_root: Path, policy_path: Path,
                  capabilities: list[str] | None = None, labels: dict[str, Any] | None = None,
                  platform_name: str | None = None, poll_interval: float = 3.0, heartbeat_interval: float = 15.0,
-                 executor: JobExecutor | None = None, machine_id: str | None = None):
+                 executor: JobExecutor | None = None, machine_id: str | None = None, max_jobs: int = 1):
         self.client = client
         self.name = name
         self.machine_id = machine_id
@@ -150,7 +153,11 @@ class Worker:
         self.poll_interval = poll_interval
         self.heartbeat_interval = heartbeat_interval
         self.executor = executor or JobExecutor(workspace_root, PolicyEngine(PolicyConfig.load(policy_path)))
+        self.max_jobs = max(1, int(max_jobs))
         self.running_jobs = 0
+        self._slots = threading.Semaphore(self.max_jobs)
+        self._count_lock = threading.Lock()
+        self._threads: set[threading.Thread] = set()
         self._stop = threading.Event()
 
     def register(self, registration_token: str) -> dict[str, Any]:
@@ -161,6 +168,7 @@ class Worker:
             "capabilities": self.capabilities,
             "labels": self.labels,
             "machine_id": self.machine_id,
+            "max_jobs": self.max_jobs,
         }, registration_token)
         log_event(logger, "WORKER_REGISTERED", f"registered as {data['id']}", worker_id=data["id"],
                   platform=self.platform, capabilities=self.capabilities)
@@ -179,7 +187,8 @@ class Worker:
 
     def run_job(self, job: dict[str, Any]) -> None:
         job_id = job["id"]
-        self.running_jobs += 1
+        with self._count_lock:
+            self.running_jobs += 1
         buffer = _LogBuffer(self.client, job_id)
         log_event(logger, "JOB_STARTED", f"executing {job['job_type']} job", job_id=job_id, worker_id=self.client.worker_id)
 
@@ -198,7 +207,8 @@ class Worker:
             buffer.flush()
             self._submit(job_id, result)
         finally:
-            self.running_jobs -= 1
+            with self._count_lock:
+                self.running_jobs -= 1
 
     def _submit(self, job_id: str, result: dict[str, Any]) -> None:
         """Deliver the result, retrying through network outages (see ControlPlaneClient.result_retry_seconds).
@@ -226,12 +236,42 @@ class Worker:
         self.heartbeat()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
         while not self._stop.is_set():
+            # Ask for work only with a free slot; wake up as soon as one frees (or to notice stop()).
+            if not self._slots.acquire(timeout=self.poll_interval):
+                continue
             try:
-                if not self.run_once():
-                    self._stop.wait(self.poll_interval)
+                job = self.client.claim()
             except Exception as exc:
+                self._slots.release()
                 logger.warning("worker loop error: %s", exc)
                 self._stop.wait(self.poll_interval)
+                continue
+            if not job:
+                self._slots.release()
+                self._stop.wait(self.poll_interval)
+                continue
+            self._start(job)
+
+    def _start(self, job: dict[str, Any]) -> None:
+        def run() -> None:
+            try:
+                self.run_job(job)
+            finally:
+                self._threads.discard(threading.current_thread())
+                self._slots.release()
+
+        # Daemon threads: stopping the process abandons running jobs, which the control plane requeues when
+        # this machine registers again (or their lease expires) - the same as a crash with one job.
+        thread = threading.Thread(target=run, name=f"job-{job['id'][:8]}", daemon=True)
+        self._threads.add(thread)
+        thread.start()
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        """Wait until no job is executing (tests, graceful shutdown). True when idle."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for thread in list(self._threads):
+            thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        return not any(t.is_alive() for t in list(self._threads))
 
     def stop(self) -> None:
         self._stop.set()
