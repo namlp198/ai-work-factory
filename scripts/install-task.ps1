@@ -1,6 +1,9 @@
-# Run AI Work Factory automatically on Windows with Task Scheduler (no admin rights needed).
+# Run AI Work Factory automatically on Windows with Task Scheduler.
 #
-#   scripts\install-task.ps1               register, start at every logon of this user, start now
+#   scripts\install-task.ps1               register, start at every logon of this user, start now (no admin)
+#   scripts\install-task.ps1 -AtStartup    start when Windows boots, nobody needs to log on (elevated PowerShell;
+#                                          Windows asks for this account's password once and stores it itself)
+#   scripts\install-task.ps1 -AtStartup -S4U   same, without storing a password (git over SSH keys only)
 #   scripts\install-task.ps1 -NoStart      register only
 #   scripts\install-task.ps1 -Status       show task state and the last log lines
 #   scripts\install-task.ps1 -Restart      after editing .env or after git pull + bootstrap
@@ -13,6 +16,11 @@
 # "worker" on this PC). Output goes to var\logs\awf.log (rotated at 10 MB).
 # Task Scheduler does not restart a task whose process dies, so a second trigger re-launches it every
 # 5 minutes; while it is running those launches are ignored (MultipleInstances IgnoreNew).
+# -AtStartup runs the same thing as this account "whether the user is logged on or not": after a power cut
+# the PC works again as soon as Windows is up. The password goes from the Windows credential prompt straight
+# to Task Scheduler (which keeps it encrypted); this script never writes or prints it. With -S4U nothing is
+# stored, but Windows then gives the task no access to saved credentials (Git Credential Manager, network
+# shares): use it only when every repository is cloned over SSH.
 # Run scripts\bootstrap.ps1 first.
 param(
     [switch]$Uninstall,
@@ -21,6 +29,8 @@ param(
     [switch]$Status,
     [switch]$Stop,
     [switch]$Start,
+    [switch]$AtStartup,
+    [switch]$S4U,
     [string]$TaskName = "AI Work Factory",
     [ValidateRange(1, 60)][int]$WatchdogMinutes = 5
 )
@@ -50,7 +60,9 @@ function Show-AwfStatus {
     if (-not $task) { Write-Host "Task '$TaskName' is not installed."; return }
     $info = Get-ScheduledTaskInfo -TaskName $TaskName
     $procs = @(Get-AwfProcesses)
-    Write-Host "Task      : $TaskName ($($task.State))"
+    $mode = if ($task.Principal.LogonType -eq "Interactive") { "at logon of $($task.Principal.UserId)" } `
+        else { "at Windows startup as $($task.Principal.UserId) ($($task.Principal.LogonType))" }
+    Write-Host "Task      : $TaskName ($($task.State)), starts $mode"
     Write-Host ("Last run  : {0}  result 0x{1:X}" -f $info.LastRunTime, $info.LastTaskResult)
     Write-Host "Processes : $($procs.Count) (pid $($procs.ProcessId -join ', '))"
     Write-Host "Log       : $log"
@@ -94,9 +106,24 @@ if (-not (Test-Path (Join-Path $root ".env"))) { throw "Missing $root\.env - run
 $role = (Select-String -Path (Join-Path $root ".env") -Pattern "^AWF_ROLE=(.*)$" | Select-Object -Last 1).Matches.Groups[1].Value
 if (-not $role) { $role = "all" }
 
+if ($S4U -and -not $AtStartup) { throw "-S4U only applies together with -AtStartup." }
+if ($AtStartup) {
+    $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $elevated) {
+        throw "-AtStartup needs an elevated PowerShell (right-click > Run as administrator), opened by the account " +
+              "that should run the worker ($user)."
+    }
+}
+
 $action = New-ScheduledTaskAction -Execute $pythonw `
     -Argument "-m awf.cli start --supervise --log-file `"$log`"" -WorkingDirectory $root
-$atLogon = New-ScheduledTaskTrigger -AtLogOn -User $user
+if ($AtStartup) {
+    $first = New-ScheduledTaskTrigger -AtStartup
+    $first.Delay = "PT1M"  # give the network and Tailscale a minute after boot
+} else {
+    $first = New-ScheduledTaskTrigger -AtLogOn -User $user
+}
 # Watchdog: relaunch within $WatchdogMinutes minutes if the process died (ignored while it is running).
 $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes($WatchdogMinutes) `
     -RepetitionInterval (New-TimeSpan -Minutes $WatchdogMinutes)
@@ -106,13 +133,29 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -MultipleInstances IgnoreNew -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd
-$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+$description = "AI Work Factory (awf start, role=$role) from $root. Log: $log"
 
 Stop-AwfTask
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atLogon, $watchdog) -Settings $settings `
-    -Principal $principal -Force `
-    -Description "AI Work Factory (awf start, role=$role) from $root. Log: $log" | Out-Null
-Write-Host "Registered task '$TaskName' (role=$role, user=$user): starts at logon, hidden, relaunched within $WatchdogMinutes min if it dies."
+if ($AtStartup -and -not $S4U) {
+    # "Run whether user is logged on or not": Task Scheduler needs the account password to log on by itself.
+    $cred = Get-Credential -UserName $user -Message ("Password of $user (the Windows password, not the PIN). " +
+        "Task Scheduler stores it encrypted to start the worker when Windows boots.")
+    if (-not $cred) { throw "No password entered; nothing was changed." }
+    $settings.RunOnlyIfNetworkAvailable = $true
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($first, $watchdog) -Settings $settings `
+        -User $user -Password $cred.GetNetworkCredential().Password -RunLevel Limited -Force `
+        -Description $description | Out-Null
+    $cred = $null
+    $when = "when Windows starts (no logon needed)"
+} else {
+    $logonType = if ($S4U) { "S4U" } else { "Interactive" }
+    if ($S4U) { $settings.RunOnlyIfNetworkAvailable = $true }
+    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType $logonType -RunLevel Limited
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($first, $watchdog) -Settings $settings `
+        -Principal $principal -Force -Description $description | Out-Null
+    $when = if ($S4U) { "when Windows starts (no logon needed, no stored password)" } else { "at logon" }
+}
+Write-Host "Registered task '$TaskName' (role=$role, user=$user): starts $when, hidden, relaunched within $WatchdogMinutes min if it dies."
 
 if (-not $NoStart) {
     Start-ScheduledTask -TaskName $TaskName
@@ -127,5 +170,12 @@ Write-Host "  Get-Content var\logs\awf.log -Wait      # live log"
 Write-Host "  .\scripts\install-task.ps1 -Stop        # stop and keep it off (-Start to resume)"
 Write-Host "  .\scripts\install-task.ps1 -Uninstall   # remove"
 Write-Host ""
-Write-Host "Note: the task runs while you are logged on. Set Windows sleep to 'Never' (Settings > System >"
-Write-Host "Power) if this PC should keep working while you are away; locking the screen is fine."
+if ($AtStartup) {
+    Write-Host "Note: the worker now runs from boot, logged on or not. Windows still sleeps per its power plan: set"
+    Write-Host "sleep to 'Never' (Settings > System > Power) and, in the BIOS, 'Restore on AC power loss' = On so the"
+    Write-Host "PC comes back by itself after a power cut. Changed your Windows password? Run -AtStartup again."
+} else {
+    Write-Host "Note: the task runs while you are logged on. Set Windows sleep to 'Never' (Settings > System >"
+    Write-Host "Power) if this PC should keep working while you are away; locking the screen is fine."
+    Write-Host "To run from boot without anyone logging on: .\scripts\install-task.ps1 -AtStartup (elevated)."
+}

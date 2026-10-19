@@ -683,7 +683,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (165 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (171 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -853,7 +853,7 @@ cùng máy), đăng nhập cùng tài khoản. Rồi:
 
 ```powershell
 .\scripts\bootstrap.ps1 -Role worker -ControlUrl https://factory.<tailnet>.ts.net -RegistrationToken <token>
-.\scripts\install-task.ps1          # tự chạy worker, ẩn, có watchdog (mục "Chạy như dịch vụ" bên dưới)
+.\scripts\install-task.ps1 -AtStartup   # PowerShell "Run as administrator": chạy từ lúc bật máy, không cần đăng nhập
 ```
 
 Bước 4 — Mỗi máy Linux/Jetson làm worker:
@@ -1002,7 +1002,8 @@ gì):
 |---|---|---|---|
 | Máy chủ Ubuntu (control-plane) | systemd `awf.service` + `awf-backup.timer` | `sudo scripts/install-systemd.sh` | ngay khi bật máy, không cần đăng nhập |
 | Worker Linux / Jetson | systemd `awf.service` | `sudo scripts/install-systemd.sh` | ngay khi bật máy, không cần đăng nhập |
-| Worker Windows | Task Scheduler (ẩn, watchdog 5 phút) | `.\scripts\install-task.ps1` | khi bạn **đăng nhập** Windows |
+| Worker Windows (máy bạn dùng hằng ngày) | Task Scheduler (ẩn, watchdog 5 phút) | `.\scripts\install-task.ps1` | khi bạn **đăng nhập** Windows |
+| Worker Windows chạy 24/7, không ai đăng nhập | Task Scheduler, chạy khi Windows khởi động | `.\scripts\install-task.ps1 -AtStartup` (PowerShell **Run as administrator**) | ngay khi Windows khởi động (sau 1 phút), không cần đăng nhập |
 | Tailscale (mọi máy) | dịch vụ của chính Tailscale | cài là xong | ngay khi bật máy |
 
 **Linux (Ubuntu/Debian/Jetson) — systemd.** Sau khi đã chạy bootstrap:
@@ -1063,8 +1064,29 @@ bootstrap:
   | Xem log trực tiếp | `Get-Content var\logs\awf.log -Wait` |
   | Tạm tắt, kể cả watchdog (bật lại bằng `-Start`) | `.\scripts\install-task.ps1 -Stop` |
   | Gỡ | `.\scripts\install-task.ps1 -Uninstall` |
-- Tác vụ chỉ chạy khi bạn **đã đăng nhập** Windows; khoá màn hình thì không sao. Nếu muốn PC làm việc lúc
-  bạn vắng mặt, đặt chế độ sleep thành *Never* (Settings → System → Power).
+- Mặc định tác vụ chỉ chạy khi bạn **đã đăng nhập** Windows; khoá màn hình thì không sao. Nếu muốn PC làm việc
+  lúc bạn vắng mặt, đặt chế độ sleep thành *Never* (Settings → System → Power).
+
+**PC Windows làm worker 24/7 (chạy từ lúc bật máy, không cần ai đăng nhập).** Mở PowerShell bằng **Run as
+administrator** (bằng chính tài khoản Windows sẽ chạy worker, tài khoản đó phải là admin), rồi:
+
+```powershell
+cd D:\src\ai-work-factory
+.\scripts\install-task.ps1 -AtStartup
+```
+
+- Windows hiện hộp thoại hỏi **mật khẩu** của tài khoản (mật khẩu Windows/Microsoft account, **không phải PIN**).
+  Mật khẩu đi thẳng từ hộp thoại vào Task Scheduler (Windows tự mã hoá và lưu); script không ghi hay in ra.
+- Worker chạy với tài khoản của bạn nên vẫn dùng được `.env`, SSH key và Git Credential Manager như khi bạn
+  đăng nhập. Chạy ở chế độ nền (không có cửa sổ), chờ mạng sẵn sàng và khởi động sau Windows 1 phút để
+  Tailscale kịp kết nối; mất mạng lúc khởi động thì `--supervise` thử lại.
+- Đổi mật khẩu Windows → chạy lại `.\scripts\install-task.ps1 -AtStartup`, nếu không tác vụ không chạy được.
+- Không muốn lưu mật khẩu: `.\scripts\install-task.ps1 -AtStartup -S4U`. Khi đó Windows không cho tác vụ dùng
+  các credential đã lưu (Git Credential Manager, ổ mạng): chỉ dùng được khi mọi repository clone bằng **SSH key**.
+- Để PC tự hoạt động lại sau mất điện: BIOS/UEFI → *Restore on AC power loss* = **On** (tên tùy hãng), và sleep =
+  *Never*.
+- `-Status`, `-Restart`, `-Stop`, `-Start`, `-Uninstall` dùng như trên (với tác vụ `-AtStartup`, chạy chúng trong
+  PowerShell admin). Quay về chế độ "khi đăng nhập": `.\scripts\install-task.ps1` (không có `-AtStartup`).
 
 Đã thử trên Windows 10:
 
@@ -1077,7 +1099,10 @@ bootstrap:
 - `-Start`;
 - `-Uninstall` không để sót tiến trình.
 
-Riêng trigger "khi đăng nhập" chưa thử bằng một lần đăng xuất/đăng nhập thật.
+Riêng trigger "khi đăng nhập" chưa thử bằng một lần đăng xuất/đăng nhập thật. Chế độ `-AtStartup` chưa đăng ký
+thật trên máy nào (cần mật khẩu và quyền admin của bạn): đã kiểm tra cú pháp script, các đối tượng Task
+Scheduler nó tạo, và việc từ chối khi chưa chạy bằng admin; hãy chạy thử một lần rồi khởi động lại máy để xác
+nhận (`-Status` phải báo `starts at Windows startup ... (Password)` và log có dòng mới).
 
 ### Sao lưu (chỉ máy trung tâm)
 

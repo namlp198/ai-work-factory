@@ -101,3 +101,25 @@ def test_tailscale_self_parses_status_json(monkeypatch):
     assert ops.tailscale_self(run=lambda *a, **k: fake) == {"dns": "pc.tail1234.ts.net", "ips": ["100.1.2.3"],
                                                             "state": "Running"}
 
+
+@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell only")
+@pytest.mark.parametrize("script", ["install-task.ps1", "bootstrap.ps1"])
+def test_powershell_scripts_parse(script):
+    import subprocess
+
+    path = ROOT / "scripts" / script
+    check = ("$e = $null; $t = $null; [System.Management.Automation.Language.Parser]::ParseFile("
+             f"'{path}', [ref]$t, [ref]$e) | Out-Null; $e.Count")
+    out = subprocess.run(["powershell", "-NoProfile", "-Command", check], capture_output=True, text=True, timeout=60)
+    assert out.stdout.strip() == "0", out.stdout + out.stderr
+
+
+@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell only")
+def test_install_task_refuses_s4u_without_startup():
+    import subprocess
+
+    out = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                          str(ROOT / "scripts" / "install-task.ps1"), "-S4U", "-TaskName", "awf-test-never-created"],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode != 0 and "only applies together with -AtStartup" in out.stdout + out.stderr
+
