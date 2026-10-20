@@ -141,7 +141,7 @@ Chạy trong thư mục repo, theo thứ tự:
 | # | Thao tác | Đúng khi |
 |---|---|---|
 | 2.1 | (Tailscale) `sudo tailscale up --hostname=factory` rồi `sudo tailscale serve --bg 8000` | `tailscale serve status` in ra `https://factory.<tailnet>.ts.net` |
-| 2.2 | Linux: `scripts/bootstrap.sh --role control-plane --public-url <URL>`<br>Windows: `.\scripts\bootstrap.ps1 -Role control-plane -PublicUrl <URL>` | in ra `wrote .env (role=control-plane)` và **hai dòng lệnh cho worker** |
+| 2.2 | Linux: `scripts/bootstrap.sh --role control-plane --public-url <URL>`<br>Windows: `.\scripts\bootstrap.ps1 -Role control-plane -PublicUrl <URL>` | in ra `wrote .env (role=control-plane)` và **hai dòng lệnh cho worker**. Nếu in `.env already exists ... keeping it` thì `.env` cũ được giữ nguyên, kể cả URL cũ: xem lưu ý bên dưới |
 | 2.3 | **Chép lại lệnh cho worker** vừa in ra (có `-RegistrationToken`). Giữ bí mật | — |
 | 2.4 | (Ubuntu 24/7, khuyến nghị) `sudo scripts/install-postgres.sh --import-sqlite` | `awf doctor`: dòng `database` là PostgreSQL |
 | 2.5 | Chạy thử bằng tay: `.venv/bin/awf start` (Windows: `.\.venv\Scripts\awf start`) | in `awf start: role=control-plane` và `Dashboard: <URL>/` |
@@ -154,8 +154,12 @@ Lưu ý:
   lửa của máy trung tâm (Windows: `New-NetFirewallRule -DisplayName awf -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Profile Private`
   trong PowerShell admin; Ubuntu có ufw: `sudo ufw allow from 192.168.0.0/16 to any port 8000 proto tcp`).
 - Mất lệnh cho worker: token nằm ở dòng `AWF_WORKER_REGISTRATION_TOKEN=` trong `.env` của máy trung tâm.
-- Lỡ chạy bootstrap với sai vai trò (ví dụ mặc định `all`): bootstrap **không bao giờ ghi đè** `.env`. Tạo lại bằng
-  `awf env init --role control-plane --public-url <URL> --force` rồi `awf db upgrade`. `--force` sinh token mới.
+- `.env` đã có từ lần cài trước (log có `.env already exists ... keeping it`): bootstrap **không bao giờ ghi đè**
+  `.env`, nên mọi tham số (`--role`, `--public-url`) bị bỏ qua và **không in lệnh cho worker**. Xem dòng
+  `public url` trong kết quả `awf doctor`: nếu chưa phải `<URL>` thì tạo lại `.env`:
+  `cp .env .env.old && .venv/bin/awf env init --role control-plane --public-url <URL> --force`.
+  `--force` sinh **token mới**: worker đã cài bằng token cũ phải cài lại (Bước 3). Chép lại vào `.env` mới những
+  dòng bạn đã tự thêm (key Telegram, `DATABASE_URL` PostgreSQL...).
 - Để 2.5 chạy tiếp ở cửa sổ đó. Chỉ cài chạy tự động (Bước 5) khi mọi thứ đã chạy đúng bằng tay.
 
 ### Bước 3 — Mỗi worker
