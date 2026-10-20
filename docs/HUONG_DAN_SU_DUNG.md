@@ -8,6 +8,7 @@ Mục lục
 1. [Factory làm gì](#1-factory-làm-gì)
 2. [Khái niệm cốt lõi](#2-khái-niệm-cốt-lõi)
 3. [Cài đặt](#3-cài-đặt)
+   - 3b. [Lần đầu: dựng máy trung tâm và worker (từng thao tác)](#3b-lần-đầu-dựng-máy-trung-tâm-và-worker-từng-thao-tác)
 4. [Chạy demo trong 1 phút](#4-chạy-demo-trong-1-phút)
 5. [Đưa một repo thật vào factory (từng bước)](#5-đưa-một-repo-thật-vào-factory-từng-bước)
 6. [Bật Claude (model thật)](#6-bật-claude-model-thật)
@@ -96,7 +97,122 @@ Sau đó chạy máy bằng:
 ```
 
 Lệnh `awf` có các subcommand: `start`, `env init`, `doctor`, `db`, `api`, `orchestrator`, `worker`, `demo`.
-Chạy nhiều máy: xem [mục 21](#21-chạy-trên-nhiều-máy-cùng-source-cùng-lệnh).
+Chạy nhiều máy: làm theo [mục 3b](#3b-lần-đầu-dựng-máy-trung-tâm-và-worker-từng-thao-tác); chi tiết ở
+[mục 21](#21-chạy-trên-nhiều-máy-cùng-source-cùng-lệnh).
+
+## 3b. Lần đầu: dựng máy trung tâm và worker (từng thao tác)
+
+Danh sách việc cần làm theo đúng thứ tự, từ máy trống tới run đầu tiên. Làm xong bước nào thì kiểm tra ngay ở
+cột "Đúng khi" rồi mới sang bước sau. Phần giải thích nằm ở mục 21.
+
+**Quy ước:** *máy trung tâm* = máy chạy `control-plane` (API, dashboard, orchestrator, database). *Worker* = máy
+chạy job (build/test, gọi model). Có thể có một hoặc nhiều worker. Máy trung tâm **luôn làm trước**, và phải đang
+chạy khi bạn cài worker.
+
+`awf` trong bảng là lệnh trong virtualenv: Windows `.\.venv\Scripts\awf`, Linux `.venv/bin/awf`.
+
+### Bước 0 — Chọn cách các máy nhìn thấy nhau
+
+| Trường hợp | Chọn | URL máy trung tâm (gọi là `<URL>` bên dưới) |
+|---|---|---|
+| Các máy ở nhiều địa điểm, hoặc muốn xem dashboard trên điện thoại | **Tailscale** (khuyến nghị) | `https://factory.<tailnet>.ts.net` |
+| Mọi máy cùng một mạng LAN, chỉ để thử | LAN | `http://<tên-máy-hoặc-IP-LAN>:8000` |
+| Worker không cài được VPN (CI, máy đối tác) | Domain + HTTPS | `https://factory.example.com` (mục 21, Cách B) |
+
+Với Tailscale: tạo tailnet và bật **MagicDNS** + **HTTPS Certificates** trước (mục 21, Cách A, Bước 1).
+
+### Bước 1 — Chuẩn bị mọi máy (máy trung tâm và từng worker)
+
+| Việc | Windows | Ubuntu / Jetson |
+|---|---|---|
+| Git | `winget install Git.Git` | `sudo apt install -y git` |
+| Python 3.12 | `winget install Python.Python.3.12` | `sudo apt install -y python3.12 python3.12-venv` |
+| Tailscale (nếu chọn) | cài từ tailscale.com/download, đăng nhập | `curl -fsSL https://tailscale.com/install.sh \| sh && sudo tailscale up` |
+| Lấy source | `git clone <repo-url> D:\src\ai-work-factory` | `git clone <repo-url> ~/ai-work-factory` |
+
+Chỉ trên worker: cài toolchain của các repo sẽ chạy (dotnet, cmake, node...) và cấu hình credential git để
+worker clone/push được repo (SSH key hoặc Git Credential Manager). Thử `git clone <repo của project>` một lần
+bằng tay trên worker.
+
+### Bước 2 — Máy trung tâm
+
+Chạy trong thư mục repo, theo thứ tự:
+
+| # | Thao tác | Đúng khi |
+|---|---|---|
+| 2.1 | (Tailscale) `sudo tailscale up --hostname=factory` rồi `sudo tailscale serve --bg 8000` | `tailscale serve status` in ra `https://factory.<tailnet>.ts.net` |
+| 2.2 | Linux: `scripts/bootstrap.sh --role control-plane --public-url <URL>`<br>Windows: `.\scripts\bootstrap.ps1 -Role control-plane -PublicUrl <URL>` | in ra `wrote .env (role=control-plane)` và **hai dòng lệnh cho worker** |
+| 2.3 | **Chép lại lệnh cho worker** vừa in ra (có `-RegistrationToken`). Giữ bí mật | — |
+| 2.4 | (Ubuntu 24/7, khuyến nghị) `sudo scripts/install-postgres.sh --import-sqlite` | `awf doctor`: dòng `database` là PostgreSQL |
+| 2.5 | Chạy thử bằng tay: `.venv/bin/awf start` (Windows: `.\.venv\Scripts\awf start`) | in `awf start: role=control-plane` và `Dashboard: <URL>/` |
+| 2.6 | Mở dashboard: `awf open` trên máy này, hoặc mở `<URL>` ở trình duyệt khác và nhập `AWF_API_TOKEN` (trong `.env`) | thấy dashboard; trang **Workers** đang trống |
+
+Lưu ý:
+
+- Mạng LAN không có Tailscale: bỏ 2.1, bỏ `--public-url`. API nghe `0.0.0.0:8000`; lệnh cho worker in ra dùng
+  `http://<hostname>:8000`. Nếu worker không phân giải được hostname, thay bằng IP LAN. Mở cổng 8000 trên tường
+  lửa của máy trung tâm (Windows: `New-NetFirewallRule -DisplayName awf -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Profile Private`
+  trong PowerShell admin; Ubuntu có ufw: `sudo ufw allow from 192.168.0.0/16 to any port 8000 proto tcp`).
+- Mất lệnh cho worker: token nằm ở dòng `AWF_WORKER_REGISTRATION_TOKEN=` trong `.env` của máy trung tâm.
+- Lỡ chạy bootstrap với sai vai trò (ví dụ mặc định `all`): bootstrap **không bao giờ ghi đè** `.env`. Tạo lại bằng
+  `awf env init --role control-plane --public-url <URL> --force` rồi `awf db upgrade`. `--force` sinh token mới.
+- Để 2.5 chạy tiếp ở cửa sổ đó. Chỉ cài chạy tự động (Bước 5) khi mọi thứ đã chạy đúng bằng tay.
+
+### Bước 3 — Mỗi worker
+
+Máy trung tâm phải **đang chạy** (2.5). Trên từng worker, trong thư mục repo:
+
+| # | Thao tác | Đúng khi |
+|---|---|---|
+| 3.1 | (Tailscale) `tailscale ping factory` | `pong from factory (100.x.y.z)` |
+| 3.2 | Dán lệnh đã chép ở 2.3:<br>Windows: `.\scripts\bootstrap.ps1 -Role worker -ControlUrl <URL> -RegistrationToken <token>`<br>Linux: `scripts/bootstrap.sh --role worker --control-url <URL> --registration-token <token>` | `wrote .env (role=worker)`; doctor có `[OK] control plane <URL> -> ok` |
+| 3.3 | Mở `.env` của worker, thêm key model: `ANTHROPIC_API_KEY=...` (và/hoặc `GEMINI_API_KEY=...`). Bỏ qua nếu chỉ chạy demo offline | — |
+| 3.4 | (Tùy chọn) đặt trong `.env`: `AWF_WORKER_NAME` (mặc định = hostname, phải khác nhau giữa các máy), `AWF_WORKER_MAX_JOBS`, `AWF_WORKER_LABELS`, `AWF_WORKER_EXTRA_CAPABILITIES` (mục 10) | — |
+| 3.5 | `awf doctor` | `result: OK`; dòng capability liệt kê đúng toolchain đã cài (dotnet, cmake...) |
+| 3.6 | Chạy thử bằng tay: `awf start` | in `awf start: role=worker`, không có `registration refused` |
+| 3.7 | Trên dashboard của máy trung tâm → **Workers** | máy này **online**, đúng platform (`windows-amd64`, `linux-arm64`...) và capability |
+
+Lỗi hay gặp ở bước này:
+
+| Thông báo | Xử lý |
+|---|---|
+| `role 'worker' needs --control-url and --registration-token` | Thiếu tham số ở 3.2. |
+| `control plane ... not reachable` | Máy trung tâm chưa chạy, sai URL, tường lửa, hoặc Tailscale chưa `up`. |
+| `worker registration refused` (401/403) | Sai token, hoặc máy đã bị Revoke. Sửa `AWF_WORKER_REGISTRATION_TOKEN` trong `.env` của worker. |
+| `worker name ... is in use` (409) | Trùng tên với máy khác: đặt `AWF_WORKER_NAME`. |
+| `... is a public address over plain HTTP` | Dùng `https://`, Tailscale hoặc IP LAN. |
+
+Sửa `.env` của worker thì chỉ cần dừng (`Ctrl+C`) và `awf start` lại, không phải chạy lại bootstrap.
+
+### Bước 4 — Run đầu tiên
+
+| # | Thao tác | Đúng khi |
+|---|---|---|
+| 4.1 | Dashboard → **Projects → New project**: URL repo (git remote mà **worker** truy cập được), lệnh build/test, **Where it runs** (`windows`, `linux`... khớp với worker) | trang project liệt kê worker của bạn ở nhóm chạy được |
+| 4.2 | Trên trang project → bắt đầu run `software-development` với objective cụ thể | run chuyển sang RUNNING, trang run ghi *Machine* = worker của bạn |
+| 4.3 | **Approvals**: duyệt `approve_architecture`, sau đó `approve_merge` | run `COMPLETED`; nhánh `awf/run-<id>` có trên origin (mục 9) |
+
+Chi tiết từng trường của project: mục 5, Bước 1–6. Muốn kiểm tra đường ống trước khi tốn tiền model: chạy
+`awf demo --auto-approve` ở một máy riêng (vai trò `all`). Không có repo: dùng workflow `content-production`
+(mục 9b).
+
+### Bước 5 — Cho các máy tự chạy khi bật máy
+
+Chỉ làm sau khi Bước 2–4 đã chạy đúng bằng tay. Dừng `awf start` đang chạy ở cửa sổ terminal trước.
+
+| Máy | Lệnh | Kiểm tra |
+|---|---|---|
+| Máy trung tâm / worker Linux, Jetson | `sudo scripts/install-systemd.sh` | `systemctl status awf` |
+| Worker Windows dùng hằng ngày | `.\scripts\install-task.ps1` | `.\scripts\install-task.ps1 -Status` |
+| Worker Windows 24/7, không ai đăng nhập | `.\scripts\install-task.ps1 -AtStartup` (PowerShell admin) | `-Status` báo `starts at Windows startup` |
+
+Khởi động lại một máy để xác nhận: worker phải tự **online** lại trên trang **Workers** trong vòng 1–2 phút.
+
+### Thêm worker sau này / cập nhật
+
+- Thêm worker: lặp lại Bước 1 và Bước 3 trên máy mới với cùng lệnh ở 2.3.
+- Cập nhật: `git pull` → bootstrap (không cần tham số; `.env` được giữ) → khởi động lại `awf`. Máy trung tâm
+  trước, worker sau (mục 21, "Cập nhật mọi máy").
 
 ## 4. Chạy demo trong 1 phút
 
@@ -151,7 +267,8 @@ Mẹo: nếu repo có nhiều project (.csproj), luôn chỉ rõ file; nếu rep
 
 ### Bước 3 — Khởi động control plane và worker
 
-Hai cửa sổ terminal (PowerShell):
+Máy trung tâm và worker là hai máy khác nhau: làm theo [mục 3b](#3b-lần-đầu-dựng-máy-trung-tâm-và-worker-từng-thao-tác)
+(Bước 2–3). Thử trên **một máy**, hai cửa sổ terminal (PowerShell):
 
 ```powershell
 # Terminal 1: API + dashboard + orchestrator nhúng

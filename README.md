@@ -28,6 +28,7 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
 ```
 
 - Demo offline (không cần API key): `awf demo` (duyệt gate trên UI) hoặc `awf demo --auto-approve`.
+- **Lần đầu với máy trung tâm + worker: làm theo checklist từng thao tác ở §3b của hướng dẫn.**
 - Nhiều máy: `bootstrap -Role control-plane -PublicUrl <url>` trên máy trung tâm (in sẵn lệnh cho worker),
   `bootstrap -Role worker -ControlUrl ... -RegistrationToken ...` trên mỗi worker, rồi `awf start` ở mọi máy.
 - Sau `git pull`: chạy lại bootstrap rồi `awf start`.
