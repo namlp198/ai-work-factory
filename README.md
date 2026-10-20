@@ -38,6 +38,8 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
   ("Cách A"). Tự chạy khi bật máy: `sudo scripts/install-systemd.sh` (Ubuntu/Linux/Jetson),
   `.\scripts\install-task.ps1` (Windows, khi đăng nhập) hoặc `.\scripts\install-task.ps1 -AtStartup` (Windows 24/7,
   không cần đăng nhập; PowerShell admin).
+- Câu hỏi thường gặp (khác gì Claude Code local, repo local hay GitHub, project/run/task, API key, cập nhật
+  máy): §22 của hướng dẫn.
 - Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (176 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
 - Claude thật: đặt `ANTHROPIC_API_KEY` trong `.env` của máy worker.
 

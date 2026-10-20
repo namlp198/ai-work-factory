@@ -27,6 +27,7 @@ Mục lục
 19. [Xử lý sự cố](#19-xử-lý-sự-cố)
 20. [Giới hạn hiện tại và lộ trình](#20-giới-hạn-hiện-tại-và-lộ-trình)
 21. [Chạy trên nhiều máy: cùng source, cùng lệnh](#21-chạy-trên-nhiều-máy-cùng-source-cùng-lệnh)
+22. [Câu hỏi thường gặp](#22-câu-hỏi-thường-gặp)
 
 ---
 
@@ -187,6 +188,9 @@ Lỗi hay gặp ở bước này:
 | `... is a public address over plain HTTP` | Dùng `https://`, Tailscale hoặc IP LAN. |
 
 Sửa `.env` của worker thì chỉ cần dừng (`Ctrl+C`) và `awf start` lại, không phải chạy lại bootstrap.
+
+`.env` của worker **không có** `AWF_API_TOKEN`, đó là đúng thiết kế. Đăng nhập dashboard từ bất kỳ máy nào cũng
+dùng `AWF_API_TOKEN` của **máy trung tâm** (mục 22).
 
 ### Bước 4 — Run đầu tiên
 
@@ -1274,7 +1278,8 @@ scripts/bootstrap.sh          # Windows: .\scripts\bootstrap.ps1 — cài đúng
 .venv/bin/awf start           # máy trung tâm tự chạy migration mới (dữ liệu được giữ)
 ```
 
-Nên cập nhật máy trung tâm trước, rồi đến các worker.
+Nên cập nhật máy trung tâm trước, rồi đến các worker. Thay đổi nào chỉ cần cập nhật máy trung tâm, thay đổi nào
+cần cả worker, và restart worker lúc nào để không phải chạy lại job: mục 22.
 
 ### Những thứ phải "chung" giữa các máy
 
@@ -1316,3 +1321,136 @@ pip install -e ".[dev,postgres]" && pip freeze --exclude-editable > requirements
 
 Giữ dòng `colorama ... ; sys_platform == "win32"`, rồi commit. `awf doctor` báo `FAIL` nếu máy nào còn lệch
 lock.
+
+## 22. Câu hỏi thường gặp
+
+### Factory có giống Claude Code, Codex, Antigravity chạy local không?
+
+Không. Factory **giao việc rồi chờ kết quả**, không có session chat với agent:
+
+- Bạn đưa một objective. Các agent tự chạy hết pipeline, không cần ai ngồi xem.
+- Agent **không hỏi bạn giữa chừng.** Chỗ chưa rõ được ghi vào tài liệu agent sinh ra (requirement,
+  architecture; với content là mục *Open questions*), và bạn đọc chúng khi tới gate. Vì vậy objective cần cụ thể,
+  có phạm vi và tiêu chí kiểm chứng được (mục 5, Bước 5).
+- Bạn can thiệp ở các gate (mục 8):
+  - `approve_architecture`: **Approve**, hoặc **Reject kèm comment**. Architect làm lại với comment của bạn làm
+    phản hồi. Đây là cách duy nhất để "nói" với agent trong một run.
+  - `approve_merge`: Approve, hoặc Reject. Reject ở gate này kết thúc run (`FAILED`).
+- Kênh duyệt:
+
+  | Kênh | Làm được gì |
+  |---|---|
+  | Dashboard (cả trên điện thoại, mục 7) | Duyệt, Reject kèm comment, xem log, artifact, chi phí |
+  | Telegram | Thông báo + nút Duyệt/Từ chối. Từ chối từ Telegram không kèm được ý kiến của bạn: muốn Architect sửa theo ý mình thì Reject trên dashboard |
+  | Zalo, WhatsApp | Chỉ thông báo, có link mở trang duyệt trên dashboard |
+
+Việc cần hỏi đáp qua lại liên tục thì vẫn nên dùng Claude Code/Codex local. Factory hợp với việc giao được bằng
+một objective rõ ràng, chạy không cần người theo dõi, có quy trình và bằng chứng build/test.
+
+### Project, run, task khác nhau thế nào? Mỗi project là một repo mới?
+
+- **Project = một repository có sẵn** + lệnh build/test/lint, platform, ngân sách. Tạo **một lần** cho mỗi repo,
+  không tạo repo mới. Ngoại lệ: workflow `content-production` không cần repository (mục 9b).
+- **Mỗi objective (prompt) = một run**, chạy trọn quy trình từ requirement tới duyệt merge, trên nhánh
+  `awf/run-<id>`. Một project có nhiều run.
+- **Một run có nhiều task.** Planner chia objective thành các task phát triển, có thể chạy song song. Review, QA
+  và verification có thể đẩy run quay lại sửa (fix loop). Objective nên cỡ một tính năng hoặc một thay đổi trọn
+  vẹn, không vụn như "sửa dòng 42".
+- **Run mới luôn bắt đầu từ `base_branch`.** Chưa merge `awf/run-<id>` của run trước vào `main` thì run sau
+  **không thấy** các thay đổi đó. Không có kiểu "chat tiếp trên run cũ": muốn sửa thêm thì merge, rồi tạo run mới.
+  Hai run song song trên cùng repo có thể xung đột khi bạn merge.
+
+### Chỉ làm việc được với GitHub, không dùng được repo local?
+
+Không phải. `repository.url` nhận mọi thứ `git clone` nhận: đường dẫn local, bare repo, ổ mạng, SSH, Gitea/GitLab
+tự host, GitHub. Điều kiện duy nhất: **worker chạy job phải clone và push được URL đó** (worker clone mới cho mỗi
+job, rồi đẩy nhánh `awf/run-*`, `awf/tasks/*` về đó).
+
+| Tình huống | Dùng gì |
+|---|---|
+| Worker và repo trên cùng một máy | Đường dẫn local, ví dụ `D:/factory/repos/X.git`. Nên dùng bare mirror (mục 5, Bước 1) |
+| Nhiều máy | Git remote, vì `D:/...` chỉ đúng trên một máy: GitHub/GitLab, hoặc không cần GitHub: bare repo trên máy trung tâm, truy cập qua SSH trong tailnet |
+
+Ví dụ bare repo trên máy trung tâm, không dùng GitHub:
+
+```bash
+# máy trung tâm (Ubuntu): tạo bare repo từ repo có sẵn
+git clone --bare <repo hiện có> ~/repos/X.git
+# trên từng worker: kiểm tra clone được bằng SSH key (bật SSH trên máy trung tâm, hoặc `sudo tailscale up --ssh`)
+git clone ssh://<user>@factory/home/<user>/repos/X.git
+```
+
+Rồi đặt `repository.url = ssh://<user>@factory/home/<user>/repos/X.git` cho project.
+
+Factory **không gọi API của GitHub**: không tự mở PR, không tự merge, không bao giờ ghi vào base branch. Kết quả là
+nhánh `awf/run-<id>`, file patch và `pull_request.md`; merge là việc của bạn (mục 9).
+
+### Vừa chạy factory, vừa dùng app Claude/Codex/Antigravity local được không?
+
+Được, chạy song song không ảnh hưởng nhau. Thường hai bên **không dùng chung một túi token**.
+
+Factory gọi API bằng `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trong `.env` của worker, tính tiền theo lượng dùng:
+
+| Bên | Trả tiền bằng | Có ăn vào quota của app local không? |
+|---|---|---|
+| Factory, Claude | Credit của API key (Anthropic Console) | Không, nếu app Claude/Claude Code đăng nhập bằng gói Pro/Max: gói thuê bao và API là hai nguồn riêng |
+| Factory, Gemini | Key từ AI Studio / Google Cloud | Antigravity dùng quota tài khoản Google riêng; chỉ chung khi dùng cùng key hoặc cùng project Google Cloud |
+| Codex | — | Factory không hỗ trợ OpenAI/Codex (chỉ Claude, Gemini, `scripted`) |
+
+- App local dùng **cùng API key / cùng tổ chức** trên Console thì hai bên chung credit và chung rate limit. Dùng
+  nặng cùng lúc có thể bị giới hạn tốc độ. Factory tự thử lại (SDK Claude thử 4 lần, Gemini thử lại khi gặp
+  429/5xx, job lỗi tạm thời được chạy lại); app local thì có thể chậm hoặc báo lỗi.
+- **Hết hẳn credit API:** provider từ chối, factory coi là lỗi không thử lại được, nên job **fail ngay**, không
+  đứng chờ. Nạp credit rồi chạy lại. Đặt `budget_usd` cho project để giới hạn chi phí mỗi run.
+- Worker clone repo vào `var/workspaces/<job_id>` và xoá sau khi xong. Nó **không động vào thư mục repo** bạn
+  đang mở trong app local, chỉ đẩy các nhánh `awf/*`.
+- Worker chạy trên chính PC bạn đang dùng thì job build/test chiếm CPU/RAM; giữ `AWF_WORKER_MAX_JOBS=1` nếu máy
+  chậm.
+
+### Máy worker không có `AWF_API_TOKEN`, dashboard lại đòi token?
+
+Đúng thiết kế. `AWF_API_TOKEN` là token quản trị dashboard, **chỉ máy trung tâm có**. Worker chỉ cần
+`AWF_WORKER_REGISTRATION_TOKEN` để đăng ký; sau đó máy trung tâm cấp token riêng cho worker (lưu trong `var/`).
+Worker bị lộ cũng không vào được dashboard.
+
+Dashboard chỉ có một, chạy trên máy trung tâm: mở `<URL>` từ trình duyệt nào (máy worker, laptop, điện thoại)
+cũng là vào máy trung tâm. Lấy token **trên máy trung tâm**:
+
+```bash
+grep ^AWF_API_TOKEN= .env                # dán vào ô đăng nhập một lần, giữ 30 ngày
+.venv/bin/awf open --print-only          # hoặc: link đăng nhập sẵn, mở trong vòng 2 phút
+```
+
+### Cập nhật source awf có bắt buộc pull và restart mọi máy không?
+
+Không phải lúc nào cũng bắt buộc. Tùy thay đổi nằm ở đâu:
+
+| Phần thay đổi | Ai đọc | Cập nhật máy nào |
+|---|---|---|
+| `workflows/`, `agents/` (contract, profile, prompt), `knowledge/`, `config/model-routing.yaml`, dashboard, API, orchestrator, migration | Máy trung tâm. Prompt và contract được gửi kèm từng job | Chỉ máy trung tâm |
+| `config/policies.yaml` (command allowlist, timeout), `packages/awf/worker_sdk`, `tool_sdk`, `agent_runtime` (adapter Claude/Gemini) | Worker, đọc từ source của chính nó | Các worker |
+| `requirements.lock` | Mọi máy | Mọi máy, chạy lại bootstrap (`awf doctor` báo FAIL nếu lệch) |
+| Giao thức giữa API và worker | Cả hai | Tất cả, máy trung tâm trước |
+
+Ví dụ: sửa prompt hoặc thêm workflow thì chỉ cập nhật máy trung tâm; thêm lệnh vào allowlist thì cập nhật worker.
+
+Hai điều cần nhớ:
+
+1. **Máy được cập nhật phải restart**: tiến trình Python không tự nạp lại code.
+2. **Không có kiểm tra phiên bản giữa máy trung tâm và worker**: worker chạy code cũ vẫn đăng ký và nhận job, không
+   có cảnh báo. Khi không chắc, **cập nhật tất cả, máy trung tâm trước** (mục 21, "Cập nhật mọi máy"):
+
+```bash
+git pull && scripts/bootstrap.sh && sudo systemctl restart awf               # Linux (systemd)
+```
+
+```powershell
+git pull; .\scripts\bootstrap.ps1; .\scripts\install-task.ps1 -Restart       # Windows (Task Scheduler)
+```
+
+Restart lúc nào thì không mất việc:
+
+- **Máy trung tâm:** lúc nào cũng được. Worker chạy tiếp job đang dở và nộp lại kết quả khi máy trung tâm lên lại
+  (mục 21); migration tự chạy khi khởi động.
+- **Worker:** nên restart **khi rảnh** (trang **Workers**). Job đang dở bị giao lại và **chạy lại từ đầu**, tốn
+  thêm token.
