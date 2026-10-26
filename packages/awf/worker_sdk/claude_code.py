@@ -131,8 +131,9 @@ class EngineResult:
 class StreamParser:
     """Folds `--output-format stream-json` events into an EngineResult and a readable job log."""
 
-    def __init__(self, log: Callable[[str, str], None]):
+    def __init__(self, log: Callable[[str, str], None], name: str = ENGINE):
         self.log = log
+        self.name = name
         self.result = EngineResult()
         self.final: dict[str, Any] | None = None
 
@@ -152,11 +153,11 @@ class StreamParser:
                     name = block.get("name", "?")
                     self.result.tool_calls.append({"tool": f"claude.{name}", "status": "ok",
                                                    "target": _target(block.get("input") or {})})
-                    self.log(redact(f"[claude-code] {name} {_target(block.get('input') or {})}".rstrip()), "stdout")
+                    self.log(redact(f"[{self.name}] {name} {_target(block.get('input') or {})}".rstrip()), "stdout")
                 elif block.get("type") == "text" and block.get("text", "").strip():
-                    self.log(redact("[claude-code] " + block["text"].strip().splitlines()[0][:300]), "stdout")
+                    self.log(redact(f"[{self.name}] " + block["text"].strip().splitlines()[0][:300]), "stdout")
         elif kind == "system" and event.get("subtype") == "api_retry":
-            self.log(f"[claude-code] API retry {event.get('attempt')}/{event.get('max_retries')} "
+            self.log(f"[{self.name}] API retry {event.get('attempt')}/{event.get('max_retries')} "
                      f"({event.get('error')})", "stderr")
         elif kind == "result":
             self.final = event
@@ -164,7 +165,7 @@ class StreamParser:
     def finish(self, exit_code: int, stderr_tail: str) -> EngineResult:
         res, final = self.result, self.final
         if final is None:
-            res.error = f"claude exited with code {exit_code} without a result" + (
+            res.error = f"{self.name} exited with code {exit_code} without a result" + (
                 f": {stderr_tail.strip()[-1500:]}" if stderr_tail.strip() else "")
             res.retryable = exit_code not in (1, 2) or "rate" in stderr_tail.lower()
             return res
@@ -179,11 +180,11 @@ class StreamParser:
         for denial in res.denials:
             res.tool_calls.append({"tool": f"claude.{denial.get('tool_name')}", "status": "engine_denied",
                                    "target": _target(denial.get("tool_input") or {})})
-        if final.get("subtype") == "success" and not final.get("is_error"):
+        if final.get("subtype", "success") == "success" and not final.get("is_error"):  # Qwen Code omits subtype
             res.status, res.text = "succeeded", final.get("result") or ""
             return res
         errors = "; ".join(final.get("errors") or []) or (final.get("result") or "")
-        res.error = f"claude-code {final.get('subtype')}: {errors}".strip().rstrip(":")[:2000]
+        res.error = f"{self.name} {final.get('subtype', 'error')}: {errors}".strip().rstrip(":")[:2000]
         status = final.get("api_error_status")
         res.retryable = status not in (400, 401, 403, 404)
         return res

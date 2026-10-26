@@ -325,7 +325,7 @@ def _check_model_credentials() -> Check:
     caps = sorted(llm_capabilities())
     if caps:
         return Check("model", "OK", "model keys present: " + ", ".join(caps) + " (runs on other providers go elsewhere)")
-    return Check("model", "WARN", "no ANTHROPIC_API_KEY, GEMINI_API_KEY or OPENAI_API_KEY on this worker: it only takes runs that "
+    return Check("model", "WARN", "no model API key (ANTHROPIC_, GEMINI_, OPENAI_, DASHSCOPE_, MOONSHOT_, DEEPSEEK_, MINIMAX_API_KEY) on this worker: it only takes runs that "
                  "use no hosted model (scripted)")
 
 

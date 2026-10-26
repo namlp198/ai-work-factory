@@ -15,7 +15,6 @@ window.AWF_I18N = {
   "offline.banner": "Connection to the server lost: showing the last data, retrying…",
   "offline.title": "Cannot reach the server",
   "offline.text": "Check the network, turn Tailscale on (on a phone), or wait while the server restarts. The page retries every few seconds.",
-
   "common.loading": "Loading…",
   "common.close": "Close",
   "common.none": "none",
@@ -28,22 +27,18 @@ window.AWF_I18N = {
   "common.run": "Run",
   "common.default_value": "Default — {value}",
   "common.project_default": "Project default — {value}",
-
   "time.just_now": "just now",
   "time.minutes_ago": "{n} min ago",
   "time.hours_ago": "{n} h ago",
   "time.days_ago": "{n} d ago",
-
   "login.title": "Sign in",
   "login.help": "Paste <code>AWF_API_TOKEN</code> from the control plane's <code>.env</code>. This browser stays signed in for 30 days. Tip: run <code>awf open</code> on the control-plane machine to sign in without typing.",
   "login.placeholder": "admin token",
   "login.submit": "Sign in",
   "login.invalid": "Invalid token.",
-
   "pwa.install_text": "Install the dashboard as an app on this device.",
   "pwa.install_button": "Install app",
   "pwa.ios": "iPhone/iPad: tap <b>Share</b> → <b>Add to Home Screen</b> to use it as an app.",
-
   "overview.title": "Overview",
   "overview.updated": "updated {time}",
   "overview.active_runs": "Active runs",
@@ -77,7 +72,6 @@ window.AWF_I18N = {
   "overview.running_title": "Running",
   "overview.nothing_running": "Nothing running right now.",
   "overview.recent_title": "Recently finished",
-
   "platform.windows": "Windows",
   "platform.linux": "Linux (any)",
   "platform.linux-amd64": "Linux x64",
@@ -89,7 +83,6 @@ window.AWF_I18N = {
   "confidentiality.internal": "internal",
   "confidentiality.public": "public",
   "confidentiality.restricted": "restricted",
-
   "field.name": "Name",
   "field.slug": "Slug",
   "field.platform": "Platform",
@@ -110,7 +103,6 @@ window.AWF_I18N = {
   "field.model": "Model",
   "field.coding_engine": "Coding engine",
   "field.objective": "Objective",
-
   "projects.title": "Projects",
   "projects.not_set": "not set",
   "projects.none": "No projects yet",
@@ -119,7 +111,6 @@ window.AWF_I18N = {
   "projects.new": "New project",
   "projects.url_placeholder": "optional for content: https://… or D:/src/repo",
   "projects.create": "Create project",
-
   "project.run_count.one": "{n} run",
   "project.run_count.other": "{n} runs",
   "project.archived_banner": "<b>Archived.</b> Runs and artifacts stay readable; no new run can start.",
@@ -129,12 +120,10 @@ window.AWF_I18N = {
   "project.spend_budget": "Spend / budget",
   "project.runs": "Runs",
   "project.no_runs": "No runs",
-
   "settings.title": "Settings",
   "settings.budget": "Budget (USD, empty = no limit)",
   "settings.save": "Save settings",
   "settings.note": "Runs already started keep the settings they started with.",
-
   "danger.title": "Danger zone",
   "danger.delete_title": "Delete project",
   "danger.delete_text": "This project has no runs. Deleting removes it for good (the audit trail keeps a record).",
@@ -144,14 +133,7 @@ window.AWF_I18N = {
   "danger.archive_text": "The project has {n} run(s), so it cannot be deleted without losing their history. Archiving hides it from the project list and blocks new runs; runs, artifacts and audit stay readable, and you can restore it at any time.",
   "danger.archive_button": "Archive project",
   "danger.archive_confirm": "Archive this project? New runs are blocked until you restore it.",
-
-  "hint.llm_anthropic": "No machine has a Claude API key. Put <code>ANTHROPIC_API_KEY</code> in the worker machine's <code>.env</code> and restart the worker. Get a key at platform.claude.com (guide §6).",
-  "hint.llm_google": "No machine has a Gemini API key. Put <code>GEMINI_API_KEY</code> in the worker machine's <code>.env</code> and restart the worker. Get a key at aistudio.google.com (guide §6).",
-  "hint.llm_openai": "No machine has an OpenAI (ChatGPT) API key. Put <code>OPENAI_API_KEY</code> in the worker machine's <code>.env</code> and restart the worker. Get a key at platform.openai.com (guide §6).",
-  "hint.codex": "The Codex engine needs the <code>codex</code> command on the worker machine (<code>npm i -g @openai/codex</code>, guide §6), or choose Coding engine = Native runtime.",
-  "hint.claude_code": "The Claude Code engine needs the <code>claude</code> command on the worker machine (guide §6), or choose Coding engine = Native runtime.",
   "hint.platform": "The project's platform matches no machine: change it under <b>Where it runs</b>, or start a machine with the right operating system.",
-
   "where.title": "Where it runs",
   "where.no_platform": "This project has no platform yet: runs are refused until you choose one below.",
   "where.no_machine": "No registered machine can run this project.",
@@ -159,7 +141,6 @@ window.AWF_I18N = {
   "where.default_engine": "Default coding engine",
   "where.note": "Projects with a repository also need <code>git</code>; workflow stages and the model may add more.",
   "where.can_run": "Can run it",
-
   "run.start_title": "Start a workflow run",
   "run.start": "Start",
   "run.machine_auto": "Automatic (least loaded matching machine)",
@@ -187,7 +168,6 @@ window.AWF_I18N = {
   "run.chosen_by_hand": "(chosen by hand)",
   "run.requirements": "Requirements",
   "run.capabilities": "Capabilities",
-
   "artifact.type": "Type",
   "artifact.version": "Ver",
   "artifact.checksum": "Checksum",
@@ -198,7 +178,6 @@ window.AWF_I18N = {
   "artifact.impact": "Impact ({n} downstream artifacts)",
   "artifact.depth": "depth {n}",
   "artifact.content": "Content",
-
   "task.agent_run": "Agent run",
   "task.route_reason": "Route reason",
   "task.tokens": "Tokens",
@@ -215,7 +194,6 @@ window.AWF_I18N = {
   "task.summary": "Summary",
   "task.jobs": "Jobs",
   "task.no_logs": "(no log lines)",
-
   "approval.comment": "comment",
   "approval.comment_optional": "Comment (optional)",
   "approval.approve": "Approve",
@@ -229,7 +207,6 @@ window.AWF_I18N = {
   "approval.artifacts_to_review": "Artifacts to review",
   "approvals.title": "Approval queue",
   "approvals.history": "History",
-
   "notify.title": "Notifications",
   "notify.none_configured": "none configured",
   "notify.sent": "{n} sent",
@@ -247,7 +224,6 @@ window.AWF_I18N = {
   "notify.message": "Message",
   "notify.delivery": "Delivery",
   "notify.nothing": "Nothing sent yet",
-
   "workers.title": "Workers",
   "workers.none": "No workers registered",
   "workers.delete": "Delete",
@@ -262,7 +238,6 @@ window.AWF_I18N = {
   "workers.runs": "Runs",
   "workers.load": "Load",
   "workers.heartbeat": "Last heartbeat",
-
   "agents.title": "Agents",
   "agents.model_class": "Model class",
   "agents.success": "Success",
@@ -271,13 +246,11 @@ window.AWF_I18N = {
   "agents.avg_ms": "Avg ms",
   "agents.avg_cost": "Avg cost",
   "agents.tools": "Tools",
-
   "audit.title": "Audit trail",
   "audit.time": "Time",
   "audit.event": "Event",
   "audit.actor": "Actor",
   "audit.payload": "Payload",
-
   "status.PENDING": "PENDING",
   "status.RUNNING": "RUNNING",
   "status.COMPLETED": "COMPLETED",
@@ -311,7 +284,14 @@ window.AWF_I18N = {
   "status.pending": "pending",
   "status.active": "active",
   "status.done": "done",
-  "status.failed": "failed"
+  "status.failed": "failed",
+  "engine.antigravity": "Antigravity (Gemini)",
+  "engine.qwen-code": "Qwen Code",
+  "engine.kimi-code": "Kimi Code",
+  "hint.llm_missing": "No machine has a {provider} API key. Put <code>{env}</code> in the worker machine's <code>.env</code> and restart the worker. Get a key at {console} (guide §6).",
+  "hint.engine_missing": "The {engine} engine needs the <code>{cmd}</code> command on the worker machine ({install}, guide §6), or choose Coding engine = Native runtime.",
+  "engine.deepseek-harness": "DeepSeek Harness",
+  "engine.minimax-code": "MiniMax Code"
 },
 "vi": {
   "nav.overview": "Tổng quan",
@@ -327,7 +307,6 @@ window.AWF_I18N = {
   "offline.banner": "Mất kết nối tới máy chủ: đang hiện dữ liệu lần trước, tự thử lại…",
   "offline.title": "Không kết nối được máy chủ",
   "offline.text": "Kiểm tra mạng, bật Tailscale (trên điện thoại), hoặc chờ máy chủ khởi động lại. Trang tự thử lại mỗi vài giây.",
-
   "common.loading": "Đang tải…",
   "common.close": "Đóng",
   "common.none": "không có",
@@ -340,22 +319,18 @@ window.AWF_I18N = {
   "common.run": "Run",
   "common.default_value": "Mặc định — {value}",
   "common.project_default": "Mặc định của project — {value}",
-
   "time.just_now": "vừa xong",
   "time.minutes_ago": "{n} phút trước",
   "time.hours_ago": "{n} giờ trước",
   "time.days_ago": "{n} ngày trước",
-
   "login.title": "Đăng nhập",
   "login.help": "Dán <code>AWF_API_TOKEN</code> trong file <code>.env</code> của máy trung tâm. Trình duyệt này giữ đăng nhập 30 ngày. Mẹo: chạy <code>awf open</code> trên máy trung tâm để vào thẳng, không phải nhập.",
   "login.placeholder": "token quản trị",
   "login.submit": "Đăng nhập",
   "login.invalid": "Token không đúng.",
-
   "pwa.install_text": "Cài dashboard thành ứng dụng trên máy này.",
   "pwa.install_button": "Cài ứng dụng",
   "pwa.ios": "iPhone/iPad: bấm <b>Chia sẻ</b> → <b>Thêm vào MH chính</b> để dùng như một ứng dụng.",
-
   "overview.title": "Tổng quan",
   "overview.updated": "cập nhật lúc {time}",
   "overview.active_runs": "Run đang chạy",
@@ -389,7 +364,6 @@ window.AWF_I18N = {
   "overview.running_title": "Đang chạy",
   "overview.nothing_running": "Hiện không có run nào đang chạy.",
   "overview.recent_title": "Vừa kết thúc",
-
   "platform.windows": "Windows",
   "platform.linux": "Linux (mọi loại)",
   "platform.linux-amd64": "Linux x64",
@@ -401,7 +375,6 @@ window.AWF_I18N = {
   "confidentiality.internal": "nội bộ",
   "confidentiality.public": "công khai",
   "confidentiality.restricted": "hạn chế",
-
   "field.name": "Tên",
   "field.slug": "Slug",
   "field.platform": "Platform",
@@ -422,7 +395,6 @@ window.AWF_I18N = {
   "field.model": "Model",
   "field.coding_engine": "Engine viết code",
   "field.objective": "Objective",
-
   "projects.title": "Project",
   "projects.not_set": "chưa đặt",
   "projects.none": "Chưa có project nào",
@@ -431,7 +403,6 @@ window.AWF_I18N = {
   "projects.new": "Project mới",
   "projects.url_placeholder": "không bắt buộc với content: https://… hoặc D:/src/repo",
   "projects.create": "Tạo project",
-
   "project.run_count.one": "{n} run",
   "project.run_count.other": "{n} run",
   "project.archived_banner": "<b>Đã lưu trữ.</b> Run và artifact vẫn xem được; không tạo được run mới.",
@@ -441,12 +412,10 @@ window.AWF_I18N = {
   "project.spend_budget": "Đã chi / ngân sách",
   "project.runs": "Các run",
   "project.no_runs": "Chưa có run",
-
   "settings.title": "Cài đặt",
   "settings.budget": "Ngân sách (USD, để trống = không giới hạn)",
   "settings.save": "Lưu cài đặt",
   "settings.note": "Run đã bắt đầu giữ cấu hình lúc nó bắt đầu.",
-
   "danger.title": "Vùng nguy hiểm",
   "danger.delete_title": "Xoá project",
   "danger.delete_text": "Project này chưa có run nào. Xoá là mất hẳn (nhật ký audit vẫn ghi lại).",
@@ -456,14 +425,7 @@ window.AWF_I18N = {
   "danger.archive_text": "Project đã có {n} run, nên không xoá được mà không mất lịch sử của chúng. Lưu trữ sẽ ẩn project khỏi danh sách và chặn run mới; run, artifact và audit vẫn xem được, và bạn khôi phục lại được bất cứ lúc nào.",
   "danger.archive_button": "Lưu trữ project",
   "danger.archive_confirm": "Lưu trữ project này? Run mới bị chặn cho tới khi bạn khôi phục.",
-
-  "hint.llm_anthropic": "Không máy nào có API key của Claude. Đặt <code>ANTHROPIC_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở platform.claude.com (hướng dẫn §6).",
-  "hint.llm_google": "Không máy nào có API key của Gemini. Đặt <code>GEMINI_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở aistudio.google.com (hướng dẫn §6).",
-  "hint.llm_openai": "Không máy nào có API key của OpenAI (ChatGPT). Đặt <code>OPENAI_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở platform.openai.com (hướng dẫn §6).",
-  "hint.codex": "Engine Codex cần lệnh <code>codex</code> trên máy worker (<code>npm i -g @openai/codex</code>, hướng dẫn §6), hoặc chọn Engine viết code = Runtime native.",
-  "hint.claude_code": "Engine Claude Code cần lệnh <code>claude</code> trên máy worker (hướng dẫn §6), hoặc chọn Engine viết code = Runtime native.",
   "hint.platform": "Platform của project không khớp máy nào: sửa ở <b>Nơi chạy</b>, hoặc bật một máy đúng hệ điều hành.",
-
   "where.title": "Nơi chạy",
   "where.no_platform": "Project chưa có platform: run bị từ chối cho tới khi bạn chọn bên dưới.",
   "where.no_machine": "Không máy nào đã đăng ký chạy được project này.",
@@ -471,7 +433,6 @@ window.AWF_I18N = {
   "where.default_engine": "Engine viết code mặc định",
   "where.note": "Project có repository cần thêm <code>git</code>; các stage của workflow và model có thể đòi thêm.",
   "where.can_run": "Chạy được",
-
   "run.start_title": "Bắt đầu một run",
   "run.start": "Bắt đầu",
   "run.machine_auto": "Tự động (máy phù hợp đang rảnh nhất)",
@@ -499,7 +460,6 @@ window.AWF_I18N = {
   "run.chosen_by_hand": "(chọn tay)",
   "run.requirements": "Yêu cầu",
   "run.capabilities": "Capability",
-
   "artifact.type": "Loại",
   "artifact.version": "Bản",
   "artifact.checksum": "Checksum",
@@ -510,7 +470,6 @@ window.AWF_I18N = {
   "artifact.impact": "Ảnh hưởng ({n} artifact phía sau)",
   "artifact.depth": "độ sâu {n}",
   "artifact.content": "Nội dung",
-
   "task.agent_run": "Agent run",
   "task.route_reason": "Lý do định tuyến",
   "task.tokens": "Token",
@@ -527,7 +486,6 @@ window.AWF_I18N = {
   "task.summary": "Tóm tắt",
   "task.jobs": "Job",
   "task.no_logs": "(không có dòng log)",
-
   "approval.comment": "nhận xét",
   "approval.comment_optional": "Nhận xét (không bắt buộc)",
   "approval.approve": "Duyệt",
@@ -541,7 +499,6 @@ window.AWF_I18N = {
   "approval.artifacts_to_review": "Artifact cần xem",
   "approvals.title": "Hàng đợi phê duyệt",
   "approvals.history": "Lịch sử",
-
   "notify.title": "Thông báo",
   "notify.none_configured": "chưa cấu hình kênh nào",
   "notify.sent": "đã gửi {n}",
@@ -559,7 +516,6 @@ window.AWF_I18N = {
   "notify.message": "Tin nhắn",
   "notify.delivery": "Gửi tới",
   "notify.nothing": "Chưa gửi tin nào",
-
   "workers.title": "Worker",
   "workers.none": "Chưa có worker nào đăng ký",
   "workers.delete": "Xoá",
@@ -574,7 +530,6 @@ window.AWF_I18N = {
   "workers.runs": "Run",
   "workers.load": "Tải",
   "workers.heartbeat": "Heartbeat cuối",
-
   "agents.title": "Agent",
   "agents.model_class": "Class model",
   "agents.success": "Thành công",
@@ -583,13 +538,11 @@ window.AWF_I18N = {
   "agents.avg_ms": "TB ms",
   "agents.avg_cost": "Chi phí TB",
   "agents.tools": "Tool",
-
   "audit.title": "Nhật ký audit",
   "audit.time": "Thời gian",
   "audit.event": "Sự kiện",
   "audit.actor": "Người/đối tượng",
   "audit.payload": "Dữ liệu",
-
   "status.PENDING": "CHỜ",
   "status.RUNNING": "ĐANG CHẠY",
   "status.COMPLETED": "HOÀN TẤT",
@@ -623,6 +576,13 @@ window.AWF_I18N = {
   "status.pending": "chờ",
   "status.active": "đang chạy",
   "status.done": "xong",
-  "status.failed": "lỗi"
+  "status.failed": "lỗi",
+  "engine.antigravity": "Antigravity (Gemini)",
+  "engine.qwen-code": "Qwen Code",
+  "engine.kimi-code": "Kimi Code",
+  "hint.llm_missing": "Không máy nào có API key của {provider}. Đặt <code>{env}</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở {console} (hướng dẫn §6).",
+  "hint.engine_missing": "Engine {engine} cần lệnh <code>{cmd}</code> trên máy worker ({install}, hướng dẫn §6), hoặc chọn Engine viết code = Runtime native.",
+  "engine.deepseek-harness": "DeepSeek Harness",
+  "engine.minimax-code": "MiniMax Code"
 }
 };

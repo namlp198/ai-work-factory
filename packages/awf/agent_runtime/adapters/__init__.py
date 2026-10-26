@@ -30,6 +30,12 @@ def get_adapter(provider: str) -> ModelAdapter:
         from awf.agent_runtime.adapters.openai_adapter import OpenAIAdapter
 
         return OpenAIAdapter()
+    from awf.agent_runtime.providers import PROVIDERS
+
+    if provider in PROVIDERS and PROVIDERS[provider].api == "chat_completions":
+        from awf.agent_runtime.adapters.chat_completions_adapter import ChatCompletionsAdapter
+
+        return ChatCompletionsAdapter(provider)
     raise ModelError(f"model provider '{provider}' is not available on this worker", retryable=False)
 
 

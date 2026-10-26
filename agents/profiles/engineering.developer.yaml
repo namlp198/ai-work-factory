@@ -8,4 +8,4 @@ context:
   include: [objective, task, acceptance_criteria, "upstream:architecture", "upstream:planning", feedback, workspace]
   knowledge: [engineering/coding-standard.md]
 # Runs on Claude Code or Codex instead of the native runtime when the run or project chooses that coding_engine.
-engines: [claude-code, codex]
+engines: [claude-code, codex, antigravity, qwen-code, kimi-code, deepseek-harness, minimax-code]

@@ -224,12 +224,12 @@ const PLATFORMS = ["windows", "linux", "linux-amd64", "linux-arm64", "any"];
 const platformOptions = (selected = "") => `<option value="" ${selected ? "" : "selected"} disabled>${t("common.choose")}</option>` +
   PLATFORMS.map((v) => `<option value="${v}" ${v === selected ? "selected" : ""}>${t(`platform.${v}`)} — ${v}</option>`).join("") +
   (selected && !PLATFORMS.includes(selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : "");
-const LLM_NAMES = { anthropic: "Claude", google: "Gemini", openai: "ChatGPT" };
+const LLM_NAMES = { anthropic: "Claude", google: "Gemini", openai: "ChatGPT", qwen: "Qwen", kimi: "Kimi", deepseek: "DeepSeek", minimax: "MiniMax" };
 const llmName = (p) => (LLM_NAMES[p] ? `${LLM_NAMES[p]} (${p})` : p);
 const llmOptions = (models, selected = "", auto = "") =>
   `<option value="">${auto || t("common.default_value", { value: llmName(models.default_provider) })}</option>` +
   models.providers.map((p) => `<option value="${esc(p)}" ${p === selected ? "selected" : ""}>${esc(llmName(p))}</option>`).join("");
-const ENGINES = ["native", "claude-code", "codex"];
+const ENGINES = ["native", "claude-code", "codex", "antigravity", "qwen-code", "kimi-code", "deepseek-harness", "minimax-code"];
 const engineName = (v) => (ENGINES.includes(v) ? t(`engine.${v}`) : esc(v));
 const engineOptions = (selected = "", auto = "") => `<option value="">${auto || t("common.default_value", { value: t("engine.native") })}</option>` +
   ENGINES.map((v) => `<option value="${v}" ${v === selected ? "selected" : ""}>${engineName(v)}</option>`).join("");
@@ -347,15 +347,30 @@ function projectDangerZone(p) {
 }
 
 // Explains why a run was refused when the fix is on a worker machine.
+// What a worker needs for each provider key / engine CLI (same table as awf/agent_runtime/providers.py).
+const KEY_HELP = { anthropic: ["ANTHROPIC_API_KEY", "platform.claude.com"], google: ["GEMINI_API_KEY", "aistudio.google.com"],
+  openai: ["OPENAI_API_KEY", "platform.openai.com"], qwen: ["DASHSCOPE_API_KEY", "modelstudio.console.alibabacloud.com"],
+  kimi: ["MOONSHOT_API_KEY", "platform.kimi.ai"], deepseek: ["DEEPSEEK_API_KEY", "platform.deepseek.com"],
+  minimax: ["MINIMAX_API_KEY", "platform.minimax.io"] };
+const ENGINE_HELP = { "claude-code": ["claude", "code.claude.com"], codex: ["codex", "npm i -g @openai/codex"],
+  antigravity: ["agy", "antigravity.google/docs/getting-started"], "qwen-code": ["qwen", "npm i -g @qwen-code/qwen-code"],
+  "kimi-code": ["kimi", "code.kimi.com"], "deepseek-harness": ["dsh", "npm i -g @deepseek-ai/dsh"],
+  "minimax-code": ["mcode", "npm i -g @minimax-ai/code"] };
+
+// Explains why a run was refused when the fix is on a worker machine.
 function runErrorHint(message) {
   const hints = [];
-  if (/missing (.*, )?llm-anthropic/.test(message)) hints.push(t("hint.llm_anthropic"));
-  if (/missing (.*, )?llm-google/.test(message)) hints.push(t("hint.llm_google"));
-  if (/missing (.*, )?llm-openai/.test(message)) hints.push(t("hint.llm_openai"));
-  if (/missing claude-code/.test(message)) hints.push(t("hint.claude_code"));
-  if (/missing (.*, )?codex/.test(message)) hints.push(t("hint.codex"));
+  const missing = new Set([...message.matchAll(/missing ([^;)]+)/g)].flatMap((m) => m[1].split(",").map((x) => x.trim())));
+  for (const cap of missing) {
+    const provider = cap.startsWith("llm-") ? cap.slice(4) : null;
+    if (provider && KEY_HELP[provider]) {
+      hints.push(t("hint.llm_missing", { provider: LLM_NAMES[provider] || provider, env: KEY_HELP[provider][0], console: KEY_HELP[provider][1] }));
+    } else if (ENGINE_HELP[cap]) {
+      hints.push(t("hint.engine_missing", { engine: t(`engine.${cap}`), cmd: ENGINE_HELP[cap][0], install: ENGINE_HELP[cap][1] }));
+    }
+  }
   if (/platform is /.test(message)) hints.push(t("hint.platform"));
-  return `<span class="error">${esc(message)}</span>${hints.map((h) => `<span class="hint-fix">${h}</span>`).join("")}`;
+  return `<span class="error">${esc(message)}</span>${[...new Set(hints)].map((h) => `<span class="hint-fix">${h}</span>`).join("")}`;
 }
 
 function projectMachines(p, models) {

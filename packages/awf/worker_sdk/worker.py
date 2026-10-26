@@ -16,11 +16,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from awf.agent_runtime.providers import key_capabilities
 from awf.logging import get_logger, log_event
 from awf.policy import PolicyConfig, PolicyEngine
 from awf.worker_sdk.claude_code import CAPABILITY as CLAUDE_CODE_CAPABILITY
 from awf.worker_sdk.claude_code import claude_code_bin
 from awf.worker_sdk.codex import CAPABILITY as CODEX_CAPABILITY
+from awf.worker_sdk.cli_engines import ENGINES as CLI_ENGINES
+from awf.worker_sdk.cli_engines import engine_bin as cli_engine_bin
 from awf.worker_sdk.codex import codex_bin
 from awf.worker_sdk.client import ControlPlaneClient, ControlPlaneError
 from awf.worker_sdk.executor import JobExecutor
@@ -95,6 +98,7 @@ def detect_capabilities() -> list[str]:
         caps.add(CLAUDE_CODE_CAPABILITY)
     if codex_bin():
         caps.add(CODEX_CAPABILITY)
+    caps |= {engine for engine in CLI_ENGINES if cli_engine_bin(engine)}  # antigravity, qwen-code, kimi-code
     vswhere = _vswhere()
     if vswhere:
         caps |= visual_studio_capabilities(
@@ -104,13 +108,8 @@ def detect_capabilities() -> list[str]:
 
 # Model API keys on this machine -> llm-<provider> capabilities. Agent jobs run on the worker, so a run routed
 # to a provider only goes to machines that hold its key.
-LLM_KEYS = {"llm-anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
-            "llm-google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-            "llm-openai": ("OPENAI_API_KEY",)}
-
-
 def llm_capabilities() -> set[str]:
-    return {cap for cap, names in LLM_KEYS.items() if any(os.environ.get(n) for n in names)}
+    return key_capabilities()  # awf.agent_runtime.providers: one table for every provider
 
 
 def split_list(raw: str | None) -> list[str]:

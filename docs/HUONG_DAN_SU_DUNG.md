@@ -11,7 +11,7 @@ Mục lục
    - 3b. [Lần đầu: dựng máy trung tâm và worker (từng thao tác)](#3b-lần-đầu-dựng-máy-trung-tâm-và-worker-từng-thao-tác)
 4. [Chạy demo trong 1 phút](#4-chạy-demo-trong-1-phút)
 5. [Đưa một repo thật vào factory (từng bước)](#5-đưa-một-repo-thật-vào-factory-từng-bước)
-6. [Bật Claude, Gemini hoặc ChatGPT (model thật)](#6-bật-claude-gemini-hoặc-chatgpt-model-thật)
+6. [Model thật: Claude, Gemini, ChatGPT, Qwen, Kimi, DeepSeek, MiniMax](#6-model-thật-claude-gemini-chatgpt-qwen-kimi-deepseek-minimax)
 7. [Dashboard](#7-dashboard)
 8. [Duyệt (human approval) và fix loop](#8-duyệt-human-approval-và-fix-loop)
 9. [Lấy kết quả: nhánh git, patch, PR](#9-lấy-kết-quả-nhánh-git-patch-pr)
@@ -350,13 +350,45 @@ $r.id
   làm lại với comment của bạn).
 - Sau `approve_merge`: lấy nhánh `awf/run-<id>`, patch và `pull_request.md` (mục 9).
 
-## 6. Bật Claude, Gemini hoặc ChatGPT (model thật)
+## 6. Model thật: Claude, Gemini, ChatGPT, Qwen, Kimi, DeepSeek, MiniMax
 
-Factory hỗ trợ ba nhà cung cấp model: **Claude** (Anthropic, mặc định), **Gemini** (Google) và **ChatGPT**
-(OpenAI). Mỗi run dùng một nhà cung cấp cho **mọi** agent của nó, không riêng coding: analyst, architect, planner,
-developer, test engineer, reviewer, QA, và các role của workflow content (researcher, strategist, copywriter,
-reviewer, editor, SEO). Riêng stage development có thể giao thêm cho một **engine viết code** (Claude Code hoặc
-Codex, cuối mục này).
+Factory dùng model theo **hai tầng**:
+
+1. **API của nhà cung cấp, cho mọi agent.** Mỗi run chọn một nhà cung cấp, và **mọi** agent của run đó gọi API
+   của nhà cung cấp ấy, không riêng coding: analyst, architect, planner, developer, test engineer, reviewer, QA,
+   cùng các role của workflow content (researcher, strategist, copywriter, reviewer, editor, SEO). Tầng này **luôn
+   cần API key** của nhà cung cấp, đặt trên máy worker.
+2. **Engine viết code, chỉ cho stage development (tuỳ chọn).** Một CLI coding agent chạy headless trên worker
+   (Claude Code, Codex, Antigravity...) sửa code thay cho runtime native. Platform vẫn tự chạy build/test, Critic
+   chấm trên kết quả đó, và platform tự commit.
+
+### Bảng tổng hợp (tháng 10/2026)
+
+| Nhà cung cấp | `llm` | API key trên worker | Lấy key ở | Engine viết code | Engine dùng gói thuê bao? |
+|---|---|---|---|---|---|
+| Claude (Anthropic) | `anthropic` (mặc định) | `ANTHROPIC_API_KEY` | platform.claude.com | **Claude Code** (`claude-code`) | Không: chỉ API key |
+| Gemini (Google) | `google` | `GEMINI_API_KEY` | aistudio.google.com | **Antigravity CLI** (`antigravity`) | **Có**: đăng nhập Google một lần, dùng quota gói Google AI Pro/Ultra; hoặc API key |
+| ChatGPT (OpenAI) | `openai` | `OPENAI_API_KEY` | platform.openai.com | **Codex** (`codex`) | Không: chỉ API key |
+| Qwen (Alibaba) | `qwen` | `DASHSCOPE_API_KEY` | modelstudio.console.alibabacloud.com | **Qwen Code** (`qwen-code`) | Không: chỉ API key |
+| Kimi (Moonshot AI) | `kimi` | `MOONSHOT_API_KEY` | platform.kimi.ai | **Kimi Code** (`kimi-code`) | Đăng nhập Kimi Code bằng API key (`/login`) một lần |
+| DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | platform.deepseek.com | **DeepSeek Harness** (`deepseek-harness`) | Không: chỉ API key |
+| MiniMax | `minimax` | `MINIMAX_API_KEY` | platform.minimax.io | **MiniMax Code** (`minimax-code`) | Đăng nhập tài khoản MiniMax (`mcode login`) hoặc API key đã lưu, làm một lần |
+
+Cả bảy nhà cung cấp đều có engine viết code của chính hãng. Không bật engine thì Developer dùng runtime native của
+factory (tool có kiểu `fs.read`, `fs.replace`, `build.run`...), với mọi nhà cung cấp.
+
+**Về Gemini và gói Google AI Pro.** Gemini **có** engine viết code. Engine đó là **Antigravity CLI** (`agy`),
+không phải Gemini CLI: theo trang quota chính thức của Gemini CLI, "Gemini CLI was replaced by Antigravity CLI on
+June 18th, 2026", và Gemini CLI không được tối ưu cho Gemini 4 Argon (Google hướng dẫn dùng Antigravity cho model
+này; qua API thì Gemini 4 Argon vẫn dùng bình thường). Antigravity (IDE và CLI) là công cụ của Google cho
+coding agent. Factory chạy bản **CLI** headless của nó: `agy -p`. Gói **Google AI Pro**:
+
+- dùng được cho **engine Antigravity**: đăng nhập tài khoản Google trên máy worker một lần, engine dùng quota của gói;
+- **không** dùng được cho **tầng API** (các role khác chạy trên Gemini): tầng này cần `GEMINI_API_KEY` từ AI Studio,
+  tính tiền riêng (hoặc gói miễn phí giới hạn, chỉ model Flash).
+
+Cách phối hợp hợp lý khi có gói Google AI Pro: chạy run với `llm` là nhà cung cấp bạn có API key (ví dụ Claude),
+và đặt **Coding engine = Antigravity**. Stage development khi đó dùng quota Gemini Pro; các role khác dùng API key.
 
 Mặc định `config/model-routing.yaml` định tuyến theo model class:
 
@@ -371,8 +403,10 @@ Mặc định `config/model-routing.yaml` định tuyến theo model class:
 ### Lấy API key và đặt vào worker
 
 Agent chạy **trên worker**, nên API key đặt trong `.env` của **máy worker**, không đặt trên máy trung tâm. Một máy
-chỉ nhận run của nhà cung cấp mà nó có key: worker có `ANTHROPIC_API_KEY` thì báo capability `llm-anthropic`, có
-`GEMINI_API_KEY` thì báo `llm-google`, có `OPENAI_API_KEY` thì báo `llm-openai`. Không máy nào có key cần thiết thì run bị từ chối ngay khi bấm **Start**,
+chỉ nhận run của nhà cung cấp mà nó có key: mỗi key trong bảng tổng hợp ở trên làm worker báo capability
+`llm-<nhà cung cấp>` (`ANTHROPIC_API_KEY` → `llm-anthropic`, `GEMINI_API_KEY` → `llm-google`, `OPENAI_API_KEY` →
+`llm-openai`, `DASHSCOPE_API_KEY` → `llm-qwen`, `MOONSHOT_API_KEY` → `llm-kimi`, `DEEPSEEK_API_KEY` → `llm-deepseek`,
+`MINIMAX_API_KEY` → `llm-minimax`). Không máy nào có key cần thiết thì run bị từ chối ngay khi bấm **Start**,
 với lỗi như sau:
 
 ```text
@@ -406,6 +440,33 @@ gói Claude Pro/Max: gói thuê bao không dùng được cho factory.
    `sk-proj-...`). Key chỉ hiện **một lần**.
 4. Có thể đặt giới hạn chi tiêu trong **Settings → Limits** của project.
 
+**Qwen (Alibaba Cloud Model Studio):**
+
+1. Mở **modelstudio.console.alibabacloud.com** (bản quốc tế), đăng nhập tài khoản Alibaba Cloud, kích hoạt Model
+   Studio, chọn vùng Singapore.
+2. **API Key → Create API Key**, chép key (dạng `sk-...`). Nạp tiền hoặc gắn phương thức thanh toán cho tài khoản.
+3. Factory gọi endpoint quốc tế `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`. Tài khoản vùng Trung Quốc
+   (Bắc Kinh) đặt thêm `AWF_QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1`.
+
+**Kimi (Moonshot AI):**
+
+1. Mở **platform.kimi.ai** (trước là platform.moonshot.ai), đăng nhập, nạp tiền.
+2. **API Keys → Create**, chép key (dạng `sk-...`).
+3. Endpoint mặc định `https://api.moonshot.ai/v1`. Tài khoản Trung Quốc đặt `AWF_KIMI_BASE_URL=https://api.moonshot.cn/v1`.
+
+**DeepSeek:**
+
+1. Mở **platform.deepseek.com**, đăng nhập, **Top up** (nạp tiền trước; hết số dư thì request bị từ chối).
+2. **API keys → Create new API key**, chép key (dạng `sk-...`).
+3. Endpoint `https://api.deepseek.com`. Giá giờ thấp điểm (off-peak) bằng một nửa giờ cao điểm.
+
+**MiniMax:**
+
+1. Mở **platform.minimax.io**, đăng nhập, nạp tiền.
+2. **API Keys → Create new secret key**, chép key.
+3. Endpoint quốc tế `https://api.minimax.io/v1`. Tài khoản Trung Quốc (minimaxi.com) đặt
+   `AWF_MINIMAX_BASE_URL=https://api.minimaxi.com/v1`.
+
 **Đặt key vào worker** (mỗi máy worker):
 
 1. Mở file `.env` trong thư mục repo của máy worker, thêm các dòng của nhà cung cấp bạn dùng (bỏ dấu `#` nếu dòng
@@ -414,12 +475,16 @@ gói Claude Pro/Max: gói thuê bao không dùng được cho factory.
    ANTHROPIC_API_KEY=sk-ant-...
    GEMINI_API_KEY=AIza...
    OPENAI_API_KEY=sk-proj-...
+   DASHSCOPE_API_KEY=sk-...
+   MOONSHOT_API_KEY=sk-...
+   DEEPSEEK_API_KEY=sk-...
+   MINIMAX_API_KEY=...
    ```
 2. Kiểm tra `.env` **không** có dòng `AWF_MODEL_PROVIDER=scripted` (chế độ offline, ghi đè mọi model). Máy trung
    tâm cũng không được đặt dòng này.
 3. Khởi động lại worker: dừng `awf start` (`Ctrl+C`) rồi chạy lại. Nếu đã cài dịch vụ, chạy
    `.\scripts\install-task.ps1 -Restart` (Windows) hoặc `sudo systemctl restart awf` (Linux).
-4. Kiểm tra: `awf doctor` trên worker liệt kê `llm-anthropic`, `llm-google` hoặc `llm-openai` trong capability. Trên dashboard,
+4. Kiểm tra: `awf doctor` trên worker liệt kê `llm-<nhà cung cấp>` tương ứng trong capability. Trên dashboard,
    trang **Workers** cũng phải thấy capability đó. Sau đó **Start** lại run.
 
 Key chỉ nằm trong `.env` của máy, file này không commit vào git. Factory không gửi key sang máy trung tâm, không
@@ -434,8 +499,9 @@ project: khi ngân sách còn dưới `budget_downgrade_threshold_usd`, router t
 
 ### Gemini
 
-Mỗi run dùng **một** nhà cung cấp cho mọi agent của nó: Claude (`anthropic`, mặc định), Gemini (`google`) hoặc
-ChatGPT (`openai`, xem mục ChatGPT bên dưới).
+Mỗi run dùng **một** nhà cung cấp cho mọi agent của nó: Claude (`anthropic`, mặc định), Gemini (`google`),
+ChatGPT (`openai`), Qwen (`qwen`), Kimi (`kimi`), DeepSeek (`deepseek`) hoặc MiniMax (`minimax`), xem bảng tổng hợp
+ở đầu mục 6.
 Bảng `providers.google` trong `config/model-routing.yaml` ánh xạ cùng các class sang model Gemini:
 
 | Class | Gemini |
@@ -490,15 +556,65 @@ sách item được gửi lại mỗi lượt, kể cả reasoning đã mã hoá
 tính vào output. 429/5xx thử lại 3 lần; `insufficient_quota` (hết credit), 400/401/403/404 và từ chối an toàn thì
 không retry.
 
+### Qwen, Kimi, DeepSeek, MiniMax
+
+Bốn nhà cung cấp này dùng chung một adapter: **Chat Completions tương thích OpenAI**
+(`awf/agent_runtime/adapters/chat_completions_adapter.py`, ADR-013). Chọn cho một run: dashboard → **Model**, hoặc API
+`{"llm": "qwen"}` (`kimi`, `deepseek`, `minimax`). Mặc định cho project: **Default model**.
+
+| Class | Qwen | Kimi | DeepSeek | MiniMax |
+|---|---|---|---|---|
+| FAST | `qwen3.8-flash` | `kimi-k3` | `deepseek-flash` | `MiniMax-M3` |
+| BALANCED | `qwen3.7-plus` | `kimi-k3` | `deepseek-flash` (thinking) | `MiniMax-M3` |
+| REASONING, CODE_SPECIALIST | `qwen3.8-max` | `kimi-k3.1-pro` | `deepseek-v4-pro` (thinking, effort high) | `MiniMax-M3` |
+| MULTIMODAL | `qwen3.7-plus` | `kimi-k3` | `deepseek-flash` | `MiniMax-M3` |
+
+Giá trong bảng `pricing` (USD mỗi 1M token vào/ra, tháng 10/2026, nên kiểm tra lại trên trang của từng hãng):
+`qwen3.8-max` 2 / 6, `qwen3.7-plus` 0.40 / 1.60 (tới 256K token đầu vào), `qwen3.8-flash` 0.15 / 0.47;
+`deepseek-v4-pro` 1.32 / 3.96 và `deepseek-flash` 0.30 / 1.20 (giờ cao điểm; thấp điểm bằng một nửa); `MiniMax-M3`
+0.30 / 1.20 (tới 512K). **Giá Kimi K3 chưa có trong bảng**: chi phí run Kimi hiện là $0 cho tới khi bạn thêm giá vào
+`pricing`.
+
+Chi tiết kỹ thuật:
+
+- Function calling thủ công qua Policy Engine như các nhà cung cấp khác.
+- Message trả lời của model được gửi lại **nguyên vẹn**, kể cả `reasoning_content`: DeepSeek và Kimi trả lỗi 400
+  nếu phần suy nghĩ của lượt trước bị bỏ đi trong một chuỗi tool call.
+- Trường riêng của từng hãng (bật thinking, `reasoning_effort`...) khai báo trong `extra` của
+  `config/model-routing.yaml` và được gửi nguyên vào request. Đổi model hoặc bật tính năng mới không cần sửa code.
+- Không retry khi hết số dư (`insufficient_balance`, HTTP 402) hoặc sai key (400/401/403/404). 429 và 5xx thử lại 3 lần.
+- Tool call bị cắt vì giới hạn output, hoặc arguments không phải JSON, được trả lời bằng lỗi chứ không chạy.
+- Khu vực Trung Quốc: đặt `AWF_<NHÀ CUNG CẤP>_BASE_URL` trên worker (xem cách lấy key ở trên).
+
 **Chế độ scripted** (`AWF_MODEL_PROVIDER=scripted` + `AWF_SCRIPTED_RESPONSES=<file.yaml>`): agent không gọi
 model mà phát lại kịch bản; role không có trong kịch bản dùng hành vi tự động từ contract. Phần nền tảng
 (git, sandbox, build/test thật, critic, gate) vẫn chạy thật — dùng để kiểm thử tích hợp repo trước khi tốn
 tiền model. Xem `examples/*/scripted-responses.yaml`.
 
-### Engine viết code cho Developer: Claude Code hoặc Codex (`coding_engine`)
+### Engine viết code cho Developer (`coding_engine`)
 
-Có hai engine: `claude-code` (Claude Code của Anthropic) và `codex` (Codex của OpenAI). Phần dưới mô tả Claude
-Code. Codex dùng cùng cách bật và cùng nguyên tắc evidence, khác nhau ở cách giới hạn engine (mục Codex ngay sau).
+Có bảy engine, mỗi nhà cung cấp một engine:
+
+| Engine | Nhà cung cấp | Lệnh trên worker | Cài đặt | Xác thực | Giới hạn engine |
+|---|---|---|---|---|---|
+| `claude-code` | Claude | `claude` | code.claude.com | `ANTHROPIC_API_KEY` | Chặt nhất: Bash chỉ chạy đúng lệnh build/test/lint đã cấu hình, không web |
+| `codex` | ChatGPT | `codex` | `npm i -g @openai/codex` | `OPENAI_API_KEY` | Sandbox hệ điều hành: ghi trong workspace, không mạng |
+| `antigravity` | Gemini | `agy` | antigravity.google/docs/getting-started | Đăng nhập Google (gói AI Pro/Ultra) hoặc API key | Lỏng: tự duyệt mọi tool call |
+| `qwen-code` | Qwen | `qwen` | `npm i -g @qwen-code/qwen-code` | `DASHSCOPE_API_KEY` | Lỏng: tự duyệt mọi tool call; tuỳ chọn sandbox Docker |
+| `kimi-code` | Kimi | `kimi` | code.kimi.com | `/login` một lần bằng API key Kimi | Lỏng: tự duyệt mọi tool call |
+| `deepseek-harness` | DeepSeek | `dsh` | `npm i -g @deepseek-ai/dsh` | `DEEPSEEK_API_KEY` | Trung bình: chế độ auto, mỗi tool call được bộ review tự động duyệt hoặc từ chối |
+| `minimax-code` | MiniMax | `mcode` | `npm i -g @minimax-ai/code` | `mcode login`, hoặc API key lưu bằng `mcode provider set-minimax-key` | Lỏng: `--permission full` |
+
+Bật engine giống nhau cho mọi engine: dashboard → **Coding engine**, API `"coding_engine": "<engine>"`, hoặc
+`labels.coding_engine` cho project. Engine chỉ áp cho stage development, và luôn đi kèm model của nhà cung cấp
+của nó (một run Claude bật engine Antigravity vẫn develop bằng Gemini). Project `restricted` và chế độ `scripted`
+luôn dùng runtime native.
+
+Điểm chung của mọi engine: worker clone repo; engine sửa code; **worker tự chạy lại build/test/lint**; Critic chấm
+trên kết quả đó; worker tự commit. Engine tự commit thì job fail (`ENGINE_TOUCHED_GIT`). Lệnh chỉ thấy môi trường
+đã gỡ token của máy (`AWF_*`...), chỉ còn key của chính engine.
+
+#### Claude Code (`coding_engine: claude-code`)
 
 #### Claude Code (`coding_engine: claude-code`)
 
@@ -585,6 +701,109 @@ Khác Claude Code: Codex **không giới hạn lệnh nào được chạy** bê
 các lệnh build/test/lint đã cấu hình). Giới hạn của Codex là sandbox hệ điều hành: ghi trong workspace, không mạng.
 Một run Claude hoặc Gemini có bật engine Codex vẫn develop bằng Codex trên model OpenAI, nên máy cần cả key của
 nhà cung cấp chính lẫn `OPENAI_API_KEY`.
+
+#### Antigravity CLI cho Gemini (`coding_engine: antigravity`)
+
+Chuẩn bị máy worker (một lần):
+
+1. Cài Antigravity CLI theo Quickstart: antigravity.google/docs/getting-started. Lệnh `agy` phải có trên PATH, hoặc
+   đặt `AWF_ANTIGRAVITY_BIN=<đường dẫn>` trong `.env`.
+2. Xác thực, **chọn một** trong hai cách:
+   - **Gói Google AI Pro/Ultra:** đăng nhập ngay trên máy worker, bằng đúng tài khoản Windows/Linux sẽ chạy worker.
+     Chạy `agy`, đăng nhập tài khoản Google trong trình duyệt, rồi thoát. Thông tin đăng nhập nằm trong keyring
+     của hệ điều hành, và chế độ headless dùng lại nó. Phải đăng nhập trực tiếp trên máy: qua SSH thì CLI đòi dán
+     mã bằng tay. Worker chạy dịch vụ bằng tài khoản khác (ví dụ systemd với user khác) sẽ không thấy phiên đăng
+     nhập này.
+   - **API key:** đặt `"modelProvider": "gemini"` trong `~/.gemini/antigravity-cli/settings.json` và
+     `GEMINI_API_KEY` trong `.env` của worker. Chỉ đặt `GEMINI_API_KEY` mà không có `modelProvider` thì không có
+     tác dụng.
+3. Khởi động lại worker. **Workers** phải thấy capability `antigravity`. Engine không cần `llm-google`, vì nó tự
+   xác thực.
+
+Worker chạy `agy -p "<đọc file nhiệm vụ>" --output-format stream-json --dangerously-skip-permissions --print-timeout
+<timeout của contract>`. Prompt đầy đủ (role, quy tắc platform, task) nằm trong file `.awf-task.md` trong workspace.
+File này không bao giờ được commit, và bị xoá trước khi platform commit. Model: Antigravity tự chọn (mặc định của
+CLI). Muốn cố định model thì đặt `AWF_ANTIGRAVITY_MODEL=<tên trong agy models>` trên worker. Chế độ headless không
+tự đổi sang model khác khi tên sai. Với gói Google AI Pro, quota tính theo tài khoản, refresh theo chu kỳ của gói.
+Chi phí factory hiển thị là ước tính theo giá API, không phải số tiền thật bạn trả.
+
+#### Qwen Code (`coding_engine: qwen-code`)
+
+1. Cài Node.js, rồi `npm i -g @qwen-code/qwen-code` (lệnh `qwen`; hoặc `AWF_QWEN_CODE_BIN`).
+2. Đặt `DASHSCOPE_API_KEY` trên worker. Worker truyền key cho Qwen Code qua `OPENAI_API_KEY`, `OPENAI_BASE_URL`
+   (endpoint DashScope, theo `AWF_QWEN_BASE_URL` nếu có) và `OPENAI_MODEL`. Gói Qwen OAuth miễn phí đã ngừng từ
+   15/4/2026, nên phải dùng API key.
+3. Khởi động lại worker. Cần capability `qwen-code` và `llm-qwen`.
+
+Worker chạy `qwen -p "<đọc file nhiệm vụ>" --output-format stream-json --approval-mode yolo --max-session-turns <max_turns>
+--max-wall-time <timeout> --model <model>`. Model lấy từ bảng `providers.qwen` (class `CODE_SPECIALIST`). `yolo`
+không bật sandbox. Muốn chạy lệnh trong sandbox của Qwen Code thì đặt `AWF_QWEN_CODE_SANDBOX=1` (cần Docker hoặc
+Podman trên worker).
+
+#### Kimi Code (`coding_engine: kimi-code`)
+
+1. Cài Kimi Code CLI: Linux/macOS `curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash`, Windows (PowerShell)
+   `irm https://code.kimi.com/kimi-code/install.ps1 | iex`. Windows cần Git for Windows; nếu Git Bash nằm chỗ
+   khác chuẩn, đặt `KIMI_SHELL_PATH` trỏ tới `bash.exe`.
+2. Đăng nhập một lần, bằng tài khoản sẽ chạy worker: chạy `kimi` → `/login` → *Kimi Platform (API key ·
+   platform.kimi.ai)* → dán API key → chọn model. Lựa chọn được lưu và dùng lại cho các lần chạy sau.
+3. Khởi động lại worker. Cần capability `kimi-code`.
+
+Worker chạy `kimi -p "<đọc file nhiệm vụ>" --output-format stream-json`. Chế độ không tương tác tự duyệt mọi
+tool call. Model: lựa chọn đã lưu khi `/login`, hoặc `AWF_KIMI_CODE_MODEL` trên worker. Mã thoát 75 (lỗi tạm thời:
+429, 5xx, timeout) thì job được chạy lại; mã 1 (cấu hình, xác thực, hết quota) thì không. Kimi Code không báo số
+token, nên chi phí của engine này hiện là $0.
+
+#### DeepSeek Harness (`coding_engine: deepseek-harness`)
+
+DeepSeek Harness (`dsh`) là coding agent mã nguồn mở của DeepSeek (bản 0.1 tháng 8/2026, 0.2 ngày 1/10/2026).
+Nó dựng trên các plugin, có Web UI và chế độ headless.
+
+1. Cài: `npm i -g @deepseek-ai/dsh` (lệnh `dsh`; hoặc `AWF_DEEPSEEK_HARNESS_BIN`). Kiểm tra bằng `dsh --version`.
+2. Đặt `DEEPSEEK_API_KEY` trong `.env` của worker. Headless đọc key từ môi trường, bỏ qua key và đăng nhập đã
+   lưu trong Web UI.
+3. Khởi động lại worker. Cần capability `deepseek-harness` và `llm-deepseek`.
+
+Worker chạy `dsh --profile headless --json --permission-mode auto --approval-policy never -`, với prompt qua stdin.
+Ở chế độ auto (DeepSeek ghi là thử nghiệm), một bộ review tự động duyệt hoặc từ chối từng tool call. Lần bị từ chối
+(`AUTO_REVIEW_DENIED`) được ghi là `engine_denied` trong tool call của agent run. `never` nghĩa là không chờ người
+duyệt. Chế độ auto **không có sandbox file**. Model là model mặc định của Harness (`agentDefaultModel` trong cấu
+hình của `dsh`, đặt trong Web UI → Settings → Models). Job thành công khi `dsh` thoát 0 **và** sự kiện `final` có
+`reason.kind = completed`. Harness không báo số token, nên chi phí của engine này hiện là $0.
+
+#### MiniMax Code (`coding_engine: minimax-code`)
+
+MiniMax Code là coding agent của MiniMax, huấn luyện cùng MiniMax M3. CLI của nó là `mcode`; chế độ headless là
+`mcode exec`.
+
+1. Cài Node.js 22.19 trở lên (hoặc 24, 25, 26), rồi `npm i -g @minimax-ai/code` (lệnh `mcode`; hoặc
+   `AWF_MINIMAX_CODE_BIN`). Kiểm tra bằng `mcode --version`.
+2. Xác thực một lần, bằng tài khoản hệ điều hành sẽ chạy worker, **chọn một** cách:
+   - đăng nhập tài khoản MiniMax: `mcode login --region global` (bỏ `--region global` nếu là tài khoản Trung
+     Quốc; mặc định là vùng Trung Quốc);
+   - API key: đặt biến `MCODE_PROVIDER_API_KEY=<key>` trong cửa sổ lệnh, rồi chạy `mcode provider set-minimax-key`.
+     Key được lưu trong thư mục dữ liệu của `mcode` (mặc định `~/.minimax`, đổi bằng `MINIMAX_DATA_DIR`).
+3. Khởi động lại worker. Cần capability `minimax-code`.
+
+Worker chạy `mcode exec --output-format json --permission full --timeout <timeout> --max-steps <max_turns> --input -`,
+với prompt qua stdin. Model: model đã chọn trong cấu hình `mcode`, hoặc `AWF_MINIMAX_CODE_MODEL` trên worker. Job
+thành công khi `mcode` thoát 0 **và** `status` là `succeeded`. Mã thoát 2 (lệnh sai) và 3 (lỗi cấu hình, ví dụ chưa
+đăng nhập) thì không chạy lại; mã 4 (lỗi khi chạy), 6 (timeout), 70 (lỗi nội bộ) thì được chạy lại. Số token lấy từ
+`usage`, chi phí ước tính theo giá `MiniMax-M3`.
+
+#### Engine "lỏng": cần biết gì
+
+Antigravity, Qwen Code, Kimi Code và MiniMax Code đều **tự duyệt mọi tool call** ở chế độ headless; DeepSeek Harness
+để bộ review tự động của nó duyệt. Engine có thể chạy bất kỳ lệnh
+nào và truy cập mạng (Qwen Code thì trừ khi bật sandbox). Những gì vẫn giữ an toàn:
+
+- workspace là bản clone dùng một lần, xoá sau job;
+- môi trường đã gỡ token của máy (`AWF_*`...), chỉ còn key của chính engine;
+- giới hạn thời gian theo contract;
+- platform tự build/test, Critic chấm trên đó, platform tự commit; engine đụng git history thì job fail.
+
+Nên dùng các engine này trên máy worker riêng cho factory, không phải máy chứa dữ liệu quan trọng. Nếu cần kiểm
+soát chặt, dùng `claude-code` hoặc `codex`.
 
 ## 7. Dashboard
 
@@ -1032,7 +1251,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (210 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (236 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -1069,6 +1288,12 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |
 | `model provider rejected the request` | Thiếu/sai `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trên worker. |
 | Tạo run lỗi `missing llm-google` (hoặc `llm-anthropic`) | Không máy nào có key của nhà cung cấp đó: đặt key trong `.env` của worker rồi khởi động lại worker. |
+| Tạo run lỗi `missing llm-qwen` / `llm-kimi` / `llm-deepseek` / `llm-minimax` | Không máy nào có `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY` / `DEEPSEEK_API_KEY` / `MINIMAX_API_KEY` (mục 6). |
+| Tạo run lỗi `missing antigravity` / `qwen-code` / `kimi-code` / `deepseek-harness` / `minimax-code` | Chưa cài CLI tương ứng (`agy`, `qwen`, `kimi`, `dsh`, `mcode`) trên worker, hoặc chưa khởi động lại worker sau khi cài (mục 6). |
+| `minimax-code failed: ...` với mã thoát 3 | `mcode` chưa đăng nhập hoặc chưa có provider/key: chạy `mcode login` hoặc `mcode provider set-minimax-key` bằng đúng tài khoản chạy worker. |
+| `antigravity ERROR: authentication required` | `agy` chưa đăng nhập trên máy worker, hoặc worker chạy bằng tài khoản hệ điều hành khác. Chạy `agy` một lần bằng đúng tài khoản đó. |
+| `... insufficient_balance` / HTTP 402 | Hết số dư API của hãng (DeepSeek, Kimi...). Nạp tiền; job không tự chạy lại. |
+| `... reasoning_content ... must be passed back` | Không xảy ra với adapter của factory (nó gửi lại `reasoning_content`). Nếu gặp, báo lỗi kèm log job. |
 | Tạo run lỗi `missing llm-openai` | Không máy nào có `OPENAI_API_KEY`: đặt key trong `.env` của worker rồi khởi động lại worker (mục 6). |
 | Tạo run lỗi `missing codex` | Run/project chọn engine Codex nhưng không máy nào có lệnh `codex` (`npm i -g @openai/codex`) hoặc `AWF_CODEX_BIN`. |
 | `codex: ... Incorrect API key` / `insufficient_quota` | Sai `OPENAI_API_KEY` hoặc hết credit OpenAI; không retry. |
@@ -1513,6 +1738,24 @@ công cụ đó và chưa có domain. Docker image cũng chưa được build v�
 `docker compose up -d --build` dùng cùng `requirements.lock` và Python 3.12. Profile `public` thêm Caddy cho
 HTTPS. Worker Windows (.NET) vẫn chạy native bằng bootstrap.
 
+### Thêm nhà cung cấp hoặc engine mới (cho người phát triển)
+
+Danh sách nhà cung cấp và engine nằm ở một vài chỗ cố định. Thêm một hãng mới:
+
+1. `packages/awf/agent_runtime/providers.py`: thêm `Provider(id, nhãn, api, biến key, nơi lấy key, base URL)`.
+   Hãng nói Chat Completions tương thích OpenAI thì dùng `api="chat_completions"`, không cần viết adapter.
+   Worker, router và doctor đều tự đọc từ bảng này.
+2. `config/model-routing.yaml`: thêm bảng `providers.<id>` (model cho từng class, `extra` nếu cần) và giá trong
+   `pricing`.
+3. Dashboard: thêm vào `LLM_NAMES` và `KEY_HELP` trong `static/app.js`. Chuỗi hiển thị phải có đủ hai ngôn ngữ
+   (`static/i18n.js`, xem `CLAUDE.md`).
+4. Engine viết code (nếu hãng có CLI headless): thêm vào `CODING_ENGINES` (`packages/awf/orchestrator/task_router.py`),
+   viết phần chạy CLI và đọc output trong `packages/awf/worker_sdk/` (mẫu: `cli_engines.py`), thêm tên engine vào
+   `engines:` của `agents/profiles/engineering.developer.yaml`, `ENGINES`/`ENGINE_HELP` trong `app.js` và key
+   `engine.<tên>` trong `i18n.js`.
+5. Test: mẫu ở `tests/integration/test_more_providers.py` (API giả lập, CLI giả trong `tests/fakes/`).
+6. Tài liệu: bảng tổng hợp và mục lấy key ở mục 6, bảng sự cố ở mục 19, và một ADR.
+
 ### Đổi dependency
 
 Sửa `pyproject.toml`, rồi trên Python 3.12:
@@ -1598,6 +1841,8 @@ Factory gọi API bằng `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trong `.env` c�
 | Factory, Claude | Credit của API key (Anthropic Console) | Không, nếu app Claude/Claude Code đăng nhập bằng gói Pro/Max: gói thuê bao và API là hai nguồn riêng |
 | Factory, Gemini | Key từ AI Studio / Google Cloud | Antigravity dùng quota tài khoản Google riêng; chỉ chung khi dùng cùng key hoặc cùng project Google Cloud |
 | Factory, ChatGPT / engine Codex | Credit của API key (platform.openai.com) | Không: gói ChatGPT Plus/Pro và OpenAI API là hai nguồn riêng; engine Codex chỉ dùng API key, không dùng đăng nhập ChatGPT trên máy |
+| Engine Antigravity (Gemini) | Quota gói Google AI Pro/Ultra nếu `agy` đăng nhập bằng tài khoản Google; credit API nếu dùng API key | **Có**, khi đăng nhập Google: chung quota với Antigravity bạn dùng trên máy cá nhân cùng tài khoản |
+| Factory, Qwen / Kimi / DeepSeek / MiniMax | Số dư API của từng hãng | Không: API key riêng. Engine Kimi Code dùng API key Kimi đã `/login`; engine MiniMax Code dùng tài khoản `mcode login` hoặc key đã lưu |
 | Factory, engine Claude Code (mục 6) | Credit của API key, như dòng Claude ở trên | Không: engine chạy `--bare`, chỉ dùng API key, không dùng gói đăng nhập của app Claude Code |
 
 - App local dùng **cùng API key / cùng tổ chức** trên Console thì hai bên chung credit và chung rate limit. Dùng

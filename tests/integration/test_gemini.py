@@ -139,7 +139,7 @@ def test_router_maps_classes_to_gemini():
     from awf.model_router import RouteRequest
 
     router = ModelRouter.load(ROOT / "config" / "model-routing.yaml")
-    assert router.providers() == ["anthropic", "google", "openai"]
+    assert router.providers() == ["anthropic", "google", "openai", "qwen", "kimi", "deepseek", "minimax"]
     route = router.resolve(RouteRequest(profile_class="REASONING", provider="google"))
     assert (route.provider, route.model, route.params) == ("google", "gemini-4-argon", {"effort": "high"})
     assert router.resolve(RouteRequest(profile_class="REASONING")).provider == "anthropic"

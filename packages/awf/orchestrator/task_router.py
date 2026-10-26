@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from awf.agent_runtime import AgentDefinition, AgentRegistry
+from awf.agent_runtime.providers import LLM_PROVIDERS  # providers that need a key on the worker
 from awf.domain.models import AgentRun, Project, Task, WorkflowRun
 from awf.model_router import ModelRoute, ModelRouter, RouteRequest
 from awf.policy import PolicyEngine
@@ -27,15 +28,20 @@ class TaskRoute:
     engine: str = "native"
 
 
-# Providers whose agents need an API key on the worker (scripted/unavailable need nothing).
-LLM_PROVIDERS = ("anthropic", "google", "openai")
-
-# Coding engines (ADR-011): the provider an engine talks to and what the worker must have installed.
+# Coding engines (ADR-011, ADR-012, ADR-013): the provider an engine talks to and what the worker must have.
+# `key: False` engines sign in on their own (Antigravity with a Google account, e.g. a Google AI Pro plan; Kimi
+# Code with `/login`, MiniMax Code with `mcode login` or a saved key), so they need the CLI but not an API key on the
+# worker, and they pick the model themselves. DeepSeek Harness reads DEEPSEEK_API_KEY but chooses its own model.
 NATIVE_ENGINE = "native"
 CODING_ENGINES: dict[str, dict[str, Any]] = {
     NATIVE_ENGINE: {},
     "claude-code": {"provider": "anthropic", "capabilities": ["claude-code", "llm-anthropic"]},
     "codex": {"provider": "openai", "capabilities": ["codex", "llm-openai"]},
+    "antigravity": {"provider": "google", "capabilities": ["antigravity"], "key": False},
+    "qwen-code": {"provider": "qwen", "capabilities": ["qwen-code", "llm-qwen"]},
+    "kimi-code": {"provider": "kimi", "capabilities": ["kimi-code"], "key": False},
+    "deepseek-harness": {"provider": "deepseek", "capabilities": ["deepseek-harness", "llm-deepseek"]},
+    "minimax-code": {"provider": "minimax", "capabilities": ["minimax-code"], "key": False},
 }
 
 
@@ -51,7 +57,8 @@ def engine_route(models: ModelRouter, request: RouteRequest, route: ModelRoute, 
         route = models.resolve(replace(request, provider=provider))
     if route.provider != provider:
         return NATIVE_ENGINE, route
-    route.reason = f"{route.reason}; engine {engine}" if route.reason else f"engine {engine}"
+    note = f"engine {engine}" + ("" if CODING_ENGINES[engine].get("key", True) else " (signed-in CLI, its own model)")
+    route.reason = f"{route.reason}; {note}" if route.reason else note
     return engine, route
 
 
@@ -131,7 +138,7 @@ class TaskRouter:
         if engine != NATIVE_ENGINE:
             requirements["capabilities"] = sorted(set(requirements["capabilities"])
                                                   | set(CODING_ENGINES[engine]["capabilities"]))
-        if route.provider in LLM_PROVIDERS:
+        if route.provider in LLM_PROVIDERS and CODING_ENGINES[engine].get("key", True):
             requirements["capabilities"] = sorted(set(requirements["capabilities"]) | {f"llm-{route.provider}"})
         write = self.policy.evaluate("fs.write", contract.permissions).allowed and \
             self.policy.evaluate("git.branch_write", contract.permissions).allowed

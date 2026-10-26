@@ -16,7 +16,7 @@ from awf.security import redact, redact_obj
 from awf.tool_sdk import ToolContext, ToolRegistry
 from awf.tool_sdk.build import configured_command
 from awf.tool_sdk.command import GitError
-from awf.worker_sdk import claude_code, codex
+from awf.worker_sdk import claude_code, cli_engines, codex
 from awf.worker_sdk.sandbox import IntegrationConflict, Workspace
 
 # Permissions a standalone tool job needs; tool jobs are platform actions, not agent actions.
@@ -28,10 +28,12 @@ LogFn = Callable[[str, str], None]
 class JobExecutor:
     def __init__(self, workspace_root: Path, policy: PolicyEngine, registry: ToolRegistry | None = None,
                  adapter_factory: Callable[[str], ModelAdapter] = get_adapter, keep_workspaces: bool = False,
-                 claude_code_bin: list[str] | None = None, codex_bin: list[str] | None = None):
+                 claude_code_bin: list[str] | None = None, codex_bin: list[str] | None = None,
+                 engine_bins: dict[str, list[str]] | None = None):
         self.workspace_root = workspace_root
         self.claude_code_bin = claude_code_bin
         self.codex_bin = codex_bin
+        self.engine_bins = engine_bins or {}  # tests: engine -> argv of a stand-in CLI
         self.policy = policy
         self.registry = registry or ToolRegistry()
         self.runtime = AgentRuntime(self.registry)
@@ -101,7 +103,7 @@ class JobExecutor:
         }
         log(f"agent {agent['role']} starting on {route['provider']}/{route['model']}"
             + (f" with engine {engine}" if engine != claude_code.NATIVE else ""), "system")
-        if engine in (claude_code.ENGINE, codex.ENGINE):
+        if engine in (claude_code.ENGINE, codex.ENGINE, *cli_engines.ENGINES):
             res, engine_usage = self._run_engine(engine, payload, contract, route, ws, ctx, log)
         elif adapter is not None:
             res = self.runtime.run(contract=contract, system_prompt=agent["system_prompt"],
@@ -148,15 +150,19 @@ class JobExecutor:
                 result["outputs"][out.name] = json.dumps(_public_evidence(ctx.evidence), indent=2)
         return result
 
-    # ------------------------------------------------------------------ coding engines (ADR-011, ADR-012)
+    # ------------------------------------------------------------------ coding engines (ADR-011, -012, -013)
     def _run_engine(self, engine: str, payload: dict[str, Any], contract: AgentContract, route: dict[str, Any],
                     ws: Workspace, ctx: ToolContext, log: LogFn) -> tuple[AgentResult, dict[str, Any]]:
-        """Claude Code or Codex edits the workspace; the platform then verifies, commits and reports."""
+        """A coding engine edits the workspace; the platform then verifies, commits and reports."""
         usage: dict[str, Any] = {"engine": engine}
         if engine == claude_code.ENGINE:
             base, hint = self.claude_code_bin or claude_code.claude_code_bin(), "Claude Code or set AWF_CLAUDE_CODE_BIN"
-        else:
+        elif engine == codex.ENGINE:
             base, hint = self.codex_bin or codex.codex_bin(), "Codex (npm i -g @openai/codex) or set AWF_CODEX_BIN"
+        else:
+            spec = cli_engines.SPECS[engine]
+            base = self.engine_bins.get(engine) or cli_engines.engine_bin(engine)
+            hint = f"{spec['install']}, or set {spec['bin_env']}"
         if not base:
             return AgentResult(status="failed", error=f"{engine} is not installed on this worker (install {hint})",
                                retryable=False), usage
@@ -169,7 +175,10 @@ class JobExecutor:
             argv = configured_command(ctx, key)
             if argv and self.policy.command_allowed(argv) and "," not in " ".join(argv):
                 commands.append(argv)
-        rules = (claude_code.ENGINE_RULES if engine == claude_code.ENGINE else codex.ENGINE_RULES).format(
+        template = {claude_code.ENGINE: claude_code.ENGINE_RULES, codex.ENGINE: codex.ENGINE_RULES}.get(
+            engine, cli_engines.ENGINE_RULES)
+        rules = template.format(
+            task_file=cli_engines.TASK_FILE,
             commands=", ".join(f"`{claude_code.command_text(c)}`" for c in commands) or "none",
             sections=", ".join(f"`## {s}`" for s in (s for o in contract.agent_outputs() for s in o.required_sections))
             or "a short summary")
@@ -188,6 +197,20 @@ class JobExecutor:
                 allowed=claude_code.bash_rules(commands) + claude_code.READ_ONLY_RULES, system_prompt_file=prompt_file,
                 max_budget_usd=params.get("max_budget_usd"))
             er = claude_code.run_engine(argv, payload["context"]["user_message"], ws.repo, timeout, log)
+        elif engine in cli_engines.ENGINES:
+            # The prompt goes in a task file the CLI is pointed at (removed before the platform commits).
+            text = f"{payload['agent']['system_prompt']}{rules}\n\n# Your task\n\n{payload['context']['user_message']}\n"
+            stdin = cli_engines.uses_stdin(engine)
+            task = None if stdin else cli_engines.write_task(ws.repo, text, ws.is_git)
+            argv = cli_engines.build_argv(engine, base, model=route["model"], max_turns=contract.timeout_policy.max_turns,
+                                          timeout=timeout)
+            try:
+                er = claude_code.run_engine(argv, text if stdin else "", ws.repo, timeout + 60, log,
+                                            env=cli_engines.engine_env(engine, route["model"]),
+                                            parser=cli_engines.make_parser(engine, log), name=engine)
+            finally:
+                if task:
+                    task.unlink(missing_ok=True)
         else:
             # Codex reads the repository's AGENTS.md itself; the role prompt and rules lead the stdin prompt.
             prompt = f"{payload['agent']['system_prompt']}{rules}\n\n# Your task\n\n{payload['context']['user_message']}"
