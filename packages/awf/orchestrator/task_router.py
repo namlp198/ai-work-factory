@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any
 
@@ -24,10 +24,50 @@ class TaskRoute:
     requirements: dict[str, Any] = field(default_factory=dict)
     write: bool = False
     needs_approval: bool = False
+    engine: str = "native"
 
 
 # Providers whose agents need an API key on the worker (scripted/unavailable need nothing).
 LLM_PROVIDERS = ("anthropic", "google")
+
+# Coding engines (ADR-011): the provider an engine talks to and what the worker must have installed.
+NATIVE_ENGINE = "native"
+CODING_ENGINES: dict[str, dict[str, Any]] = {
+    NATIVE_ENGINE: {},
+    "claude-code": {"provider": "anthropic", "capabilities": ["claude-code", "llm-anthropic"]},
+}
+
+
+def engine_route(models: ModelRouter, request: RouteRequest, route: ModelRoute, profile_engines: list[str],
+                 engine: str | None) -> tuple[str, ModelRoute]:
+    """The engine a role runs on, and its model route. An engine applies only to roles whose profile lists
+    it, and only when its provider is reachable: a restricted project (LOCAL_PRIVATE) or the offline scripted
+    provider keeps the native runtime."""
+    if not engine or engine == NATIVE_ENGINE or engine not in profile_engines:
+        return NATIVE_ENGINE, route
+    provider = CODING_ENGINES[engine]["provider"]
+    if route.provider not in (provider, "unavailable", "scripted"):
+        route = models.resolve(replace(request, provider=provider))
+    if route.provider != provider:
+        return NATIVE_ENGINE, route
+    route.reason = f"{route.reason}; engine {engine}" if route.reason else f"engine {engine}"
+    return engine, route
+
+
+def engine_capabilities(agents: AgentRegistry, models: ModelRouter, roles: set[str], confidentiality: str,
+                        engine: str | None) -> set[str]:
+    """What a worker needs for the roles of a workflow that will run on `engine`."""
+    if engine not in CODING_ENGINES:
+        raise ValueError(f"unknown coding engine '{engine}' (supported: {', '.join(CODING_ENGINES)})")
+    caps: set[str] = set()
+    for role in roles:
+        profile = agents.get(role).profile
+        request = RouteRequest(profile_class=profile.model_policy.class_, fallback_class=profile.model_policy.fallback,
+                               task_type=profile.task_type, confidentiality=confidentiality)
+        chosen, _ = engine_route(models, request, models.resolve(request), profile.engines, engine)
+        if chosen != NATIVE_ENGINE:
+            caps.update(CODING_ENGINES[chosen]["capabilities"])
+    return caps
 
 
 def llm_capabilities(agents: AgentRegistry, models: ModelRouter, roles: set[str], confidentiality: str,
@@ -77,20 +117,25 @@ class TaskRouter:
         if project.budget_usd is not None:
             budget_remaining = Decimal(str(project.budget_usd)) - project_spend(session, project.id)
         run = session.get(WorkflowRun, task.workflow_run_id)
-        route = self.models.resolve(RouteRequest(
+        request = RouteRequest(
             profile_class=definition.profile.model_policy.class_,
             fallback_class=definition.profile.model_policy.fallback,
             task_type=definition.profile.task_type,
             confidentiality=project.confidentiality,
             budget_remaining_usd=budget_remaining,
             provider=(run.context_json or {}).get("llm") if run else None,
-        ))
+        )
+        engine, route = engine_route(self.models, request, self.models.resolve(request), definition.profile.engines,
+                                     (run.context_json or {}).get("coding_engine") if run else None)
+        if engine != NATIVE_ENGINE:
+            requirements["capabilities"] = sorted(set(requirements["capabilities"])
+                                                  | set(CODING_ENGINES[engine]["capabilities"]))
         if route.provider in LLM_PROVIDERS:
             requirements["capabilities"] = sorted(set(requirements["capabilities"]) | {f"llm-{route.provider}"})
         write = self.policy.evaluate("fs.write", contract.permissions).allowed and \
             self.policy.evaluate("git.branch_write", contract.permissions).allowed
         return TaskRoute(definition, route, requirements, write=write,
-                         needs_approval=gate or contract.human_approval)
+                         needs_approval=gate or contract.human_approval, engine=engine)
 
     def _requirements(self, stage: StageSpec, project: Project) -> dict[str, Any]:
         repo = project.repository or {}

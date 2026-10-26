@@ -22,7 +22,12 @@ async function api(path, opts = {}) {
   catch { throw new Offline(); }
   if ([502, 503, 504].includes(res.status)) throw new Offline();  // proxy (tailscale serve/Caddy) up, awf down
   if (res.status === 401) throw new AuthRequired();
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  if (!res.ok) {  // show FastAPI's {"detail": "..."} as a sentence, not raw JSON
+    const text = await res.text();
+    let message = `${res.status} ${text}`;
+    try { const detail = JSON.parse(text).detail; if (typeof detail === "string") message = detail; } catch { /* not JSON */ }
+    throw new Error(message);
+  }
   const type = res.headers.get("content-type") || "";
   return type.includes("json") && !path.endsWith("/content") ? res.json() : res.text();
 }
@@ -64,27 +69,89 @@ $("#drawer").onclick = (e) => { if (e.target.id === "drawer") $("#drawer").class
 function drawer(html) { $("#drawer-body").innerHTML = html; $("#drawer").classList.remove("hidden"); }
 
 // ------------------------------------------------------------------------------------ views
+// Stroke icons (24px grid) for the overview cards.
+const ICONS = {
+  runs: '<path d="M5 3l14 9-14 9V3z"/>',
+  approvals: '<path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/>',
+  workers: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+  cost: '<circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.5-1-1.6-1.5-3-1.5-1.7 0-3 .8-3 2s1.3 1.7 3 2 3 .8 3 2-1.3 2-3 2c-1.4 0-2.5-.5-3-1.5M12 6v2m0 8v2"/>',
+  tasks: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
+  failed: '<path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4m0 3h.01"/>',
+  projects: '<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>',
+};
+const icon = (name) => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8"
+  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+const ago = (ts) => {
+  if (!ts) return "";
+  const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+};
+
+// One KPI card: tone colours the icon and, when `alert`, the border (something needs you).
+function kpi({ label, value, sub = "", tone = "info", ico, href, alert = false, meter = null, title = "" }) {
+  const tag = (href ? `a href="${href}"` : "div") + (title ? ` title="${esc(title)}"` : "");
+  const bar = meter == null ? "" : `<div class="meter"><span style="width:${Math.round(meter * 100)}%"></span></div>`;
+  return `<${tag} class="kpi tone-${tone}${alert ? " alert" : ""}">
+    <div class="kpi-ico">${icon(ico)}</div>
+    <div class="kpi-body"><div class="kpi-label">${esc(label)}</div><div class="kpi-value">${value}</div>
+      ${bar}<div class="kpi-sub">${sub}</div></div></${href ? "a" : "div"}>`;
+}
+
 async function viewOverview() {
   const [o, approvals] = await Promise.all([api("/overview"), api("/approvals?state=pending")]);
-  const card = (k, v, href) => `<a class="card" ${href ? `href="${href}"` : ""}><div class="k">${k}</div><div class="v">${v}</div></a>`;
-  const waiting = approvals.slice(0, 5).map((a) => `<a class="item warn" href="#/approvals/${a.id}"><b>${esc(a.action)}</b>
-      <span class="muted">run <code>${short(a.workflow_run_id)}</code> · ${when(a.created_at)}</span></a>`).join("");
-  const runs = (o.runs || []).map((r) => {
+  const online = o.workers_total ? o.workers_online / o.workers_total : 0;
+  const cards = [
+    kpi({ label: "Active runs", value: o.active_runs, ico: "runs", tone: "info",
+          sub: `${o.active_tasks} task${o.active_tasks === 1 ? "" : "s"} in progress` }),
+    kpi({ label: "Waiting for you", value: o.waiting_approvals, ico: "approvals", href: "#/approvals",
+          tone: o.waiting_approvals ? "warn" : "ok", alert: o.waiting_approvals > 0,
+          sub: o.waiting_approvals ? "approvals pending →" : "nothing to approve" }),
+    kpi({ label: "Workers online", value: `${o.workers_online}<span class="of">/${o.workers_total}</span>`, ico: "workers",
+          href: "#/workers", tone: !o.workers_total ? "idle" : o.workers_online ? "ok" : "bad",
+          alert: o.workers_total > 0 && !o.workers_online, meter: o.workers_total ? online : null,
+          sub: !o.workers_total ? "no machine registered" : o.workers_online ? "ready for jobs" : "no machine can run jobs" }),
+    kpi({ label: "LLM spend", value: money(o.total_cost_usd).replace(/(\.\d{2})\d+$/, "$1"), ico: "cost", tone: "info",
+          sub: `estimated · all projects`, title: `${money(o.total_cost_usd)} estimated` }),
+  ].join("");
+  const minor = [
+    kpi({ label: "Failed tasks", value: o.failed_tasks, ico: "failed", tone: o.failed_tasks ? "bad" : "idle",
+          sub: o.failed_tasks ? "see the runs below" : "none" }),
+    kpi({ label: "Projects", value: o.projects, ico: "projects", href: "#/projects", tone: "info",
+          sub: o.projects ? "open projects →" : "create your first one →" }),
+  ].join("");
+
+  const waiting = approvals.slice(0, 5).map((a) => `<a class="row-card warn" href="#/approvals/${a.id}">
+      <div class="rc-main"><b>${esc(a.action)}</b><span class="muted">run <code>${short(a.workflow_run_id)}</code></span></div>
+      <span class="muted">${ago(a.created_at)}</span><span class="go">Review →</span></a>`).join("");
+  const running = (o.runs || []).map((r) => {
     const pct = r.stages_total ? Math.round((100 * r.stages_done) / r.stages_total) : 0;
-    const where = r.worker ? `on ${esc(r.worker)}` : (r.waiting_for ? `<span class="error">${esc(r.waiting_for)}</span>` : "");
-    return `<a class="item" href="#/runs/${r.id}">
-      <div class="row"><b>${esc(r.project || "")}</b><span class="muted">${esc(r.workflow_id)}</span></div>
+    const where = r.worker ? `<span>on <b>${esc(r.worker)}</b></span>` : (r.waiting_for ? `<span class="error">${esc(r.waiting_for)}</span>` : "");
+    return `<a class="run-card${r.current_gate ? " gate" : ""}" href="#/runs/${r.id}">
+      <div class="rc-head"><b>${esc(r.project || "")}</b><span class="tag">${esc(r.workflow_id)}</span>
+        ${r.current_gate ? '<span class="pill s-APPROVAL_REQUIRED">waiting approval</span>' : pill("RUNNING")}</div>
       <div class="obj">${esc(r.objective)}</div>
-      <div class="progress"><span style="width:${pct}%"></span></div>
-      <div class="muted">${r.stages_done}/${r.stages_total} · ${r.current_gate ? "⏳ " : ""}${esc(r.current_stage || "")} ${where}</div></a>`;
+      <div class="rc-progress"><div class="progress"><span style="width:${pct}%"></span></div><span class="pct">${pct}%</span></div>
+      <div class="rc-meta"><span>${r.stages_done}/${r.stages_total} stages</span>${r.current_stage ? `<span>· ${esc(r.current_stage)}</span>` : ""}
+        ${where ? `<span>·</span>${where}` : ""}<span class="muted">· started ${ago(r.created_at)}</span></div></a>`;
   }).join("");
-  return `<h1>Overview</h1>${installHint()}
-    <div class="cards">${card("Active runs", o.active_runs)}${card("Waiting approvals", o.waiting_approvals, "#/approvals")}
-    ${card("Workers online", `${o.workers_online}/${o.workers_total}`, "#/workers")}${card("Failed tasks", o.failed_tasks)}
-    ${card("Active tasks", o.active_tasks)}${card("Projects", o.projects, "#/projects")}${card("LLM cost", money(o.total_cost_usd))}</div>
-    ${approvals.length ? `<h2>Waiting for your approval</h2><div class="list">${waiting}
-      ${approvals.length > 5 ? `<a href="#/approvals">See all ${approvals.length} →</a>` : ""}</div>` : ""}
-    <h2>Running</h2><div class="list">${runs || '<p class="muted">Nothing running.</p>'}</div>`;
+  const recent = (o.recent_runs || []).map((r) => `<a class="row-card" href="#/runs/${r.id}">
+      <div class="rc-main"><b>${esc(r.project || "")}</b><span class="obj1">${esc(r.objective)}</span>
+        ${r.status === "FAILED" && r.error ? `<span class="error obj1">${esc(r.error)}</span>` : ""}</div>
+      ${pill(r.status)}<span class="muted">${ago(r.finished_at || r.created_at)}</span></a>`).join("");
+  const empty = !o.projects ? `<div class="empty"><b>Bắt đầu</b><p class="muted">Chưa có project nào. Tạo project, rồi đưa
+      một objective cho nó.</p><a class="btn" href="#/projects">Create a project</a></div>` : "";
+
+  return `<div class="page-head"><h1>Overview</h1><span class="muted">updated ${new Date().toLocaleTimeString()}</span></div>
+    ${installHint()}${empty}
+    <div class="kpis">${cards}</div><div class="kpis minor">${minor}</div>
+    ${approvals.length ? `<section class="panel"><div class="panel-head"><h2>Waiting for your approval</h2><span class="count warn">${approvals.length}</span>
+      ${approvals.length > 5 ? `<a href="#/approvals">See all →</a>` : ""}</div><div class="list">${waiting}</div></section>` : ""}
+    <section class="panel"><div class="panel-head"><h2>Running</h2><span class="count">${(o.runs || []).length}</span></div>
+      <div class="list">${running || '<p class="muted pad">Nothing running right now.</p>'}</div></section>
+    ${recent ? `<section class="panel"><div class="panel-head"><h2>Recently finished</h2></div><div class="list">${recent}</div></section>` : ""}`;
 }
 
 // ---------------------------------------------------------------- installable app (PWA)
@@ -124,15 +191,26 @@ const llmName = (p) => (LLM_NAMES[p] ? `${LLM_NAMES[p]} (${p})` : p);
 const llmOptions = (models, selected = "", auto = "") =>
   `<option value="">${esc(auto || `Default — ${llmName(models.default_provider)}`)}</option>` +
   models.providers.map((p) => `<option value="${esc(p)}" ${p === selected ? "selected" : ""}>${esc(llmName(p))}</option>`).join("");
+const ENGINES = [["native", "Native runtime"], ["claude-code", "Claude Code"]];
+const engineOptions = (selected = "", auto = "") => `<option value="">${esc(auto || "Default — Native runtime")}</option>` +
+  ENGINES.map(([v, t]) => `<option value="${v}" ${v === selected ? "selected" : ""}>${esc(t)}</option>`).join("");
+const engineName = (v) => (ENGINES.find(([k]) => k === v) || [v, v])[1];
+// Commands are edited as text and sent as argv arrays: quotes group words, backslashes stay as typed (Windows paths).
+const argvParse = (text) => (String(text || "").match(/"[^"]*"|'[^']*'|\S+/g) || []).map((w) => w.replace(/^(["'])(.*)\1$/, "$2"));
+const argvText = (v) => (Array.isArray(v) ? v.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ") : (v || ""));
 const capList = (raw) => String(raw || "").split(",").map((c) => c.trim()).filter(Boolean);
 
 async function viewProjects() {
-  const projects = await api("/projects");
+  const [projects, archived] = await Promise.all([api("/projects"), api("/projects?archived=true")]);
+  const archivedRows = archived.map((p) => `<tr class="click" data-href="#/projects/${p.id}"><td>${esc(p.name)}</td>
+    <td><code>${esc(p.slug)}</code></td><td>${esc(p.repository?.url || "")}</td><td>${when(p.updated_at)}</td></tr>`).join("");
   const rows = projects.map((p) => `<tr class="click" data-href="#/projects/${p.id}"><td>${esc(p.name)}</td><td><code>${esc(p.slug)}</code></td>
     <td>${p.labels?.platform ? `<code>${esc(p.labels.platform)}</code>` : '<span class="error">not set</span>'}</td>
     <td>${esc(p.repository?.url || "")}</td><td>${esc(p.confidentiality)}</td><td>${when(p.created_at)}</td></tr>`).join("");
   return `<h1>Projects</h1>
     <div class="table-wrap"><table><tr><th>Name</th><th>Slug</th><th>Platform</th><th>Repository</th><th>Confidentiality</th><th>Created</th></tr>${rows || '<tr><td colspan="6" class="muted">No projects yet</td></tr>'}</table></div>
+    ${archived.length ? `<details class="archived"><summary class="muted">Archived projects (${archived.length})</summary>
+      <div class="table-wrap"><table><tr><th>Name</th><th>Slug</th><th>Repository</th><th>Archived</th></tr>${archivedRows}</table></div></details>` : ""}
     <h2>New project</h2>
     <form class="grid" id="project-form">
       <label>Name<input name="name" required></label>
@@ -158,7 +236,7 @@ function bindProjects() {
     const body = { name: f.get("name"), confidentiality: f.get("confidentiality"), labels: { platform: f.get("platform") } };
     if (f.get("url")) {  // software projects; content projects may have no repository
       const repo = { url: f.get("url"), base_branch: f.get("base_branch") || "main" };
-      for (const k of ["build_command", "test_command", "lint_command"]) if (f.get(k)) repo[k] = f.get(k);
+      for (const k of ["build_command", "test_command", "lint_command"]) if (f.get(k)) repo[k] = argvParse(f.get(k));
       repo.required_capabilities = capList(f.get("required_capabilities"));
       body.repository = repo;
     }
@@ -180,18 +258,64 @@ async function viewProject(id) {
   const rows = runs.map((r) => `<tr class="click" data-href="#/runs/${r.id}"><td><code>${short(r.id)}</code></td><td>${esc(r.workflow_id)}</td>
     <td>${pill(r.status)}</td><td>${esc(r.input?.objective || "")}</td><td>${when(r.created_at)}</td></tr>`).join("");
   const options = workflows.filter((w) => w.status === "active").map((w) => `<option value="${esc(w.id)}">${esc(w.name || w.id)} v${esc(w.version)}</option>`).join("");
-  return `<h1>${esc(p.name)}</h1>
-    <div class="kv"><div>Repository</div><div><code>${esc(p.repository?.url)}</code> (${esc(p.repository?.base_branch)})</div>
-    <div>Commands</div><div>build: <code>${esc(JSON.stringify(p.repository?.build_command ?? null))}</code> test: <code>${esc(JSON.stringify(p.repository?.test_command ?? null))}</code> lint: <code>${esc(JSON.stringify(p.repository?.lint_command ?? null))}</code></div>
+  const archived = p.status === "ARCHIVED";
+  return `<div class="page-head"><h1>${esc(p.name)}</h1><span class="muted"><code>${esc(p.slug)}</code> · ${p.run_count} run${p.run_count === 1 ? "" : "s"}</span></div>
+    ${archived ? `<div class="archived-banner"><span><b>Archived.</b> Runs and artifacts stay readable; no new run can start.</span>
+      <button class="ghost" id="restore-project">Restore project</button></div>` : ""}
+    <div class="kv"><div>Repository</div><div>${p.repository?.url ? `<code>${esc(p.repository.url)}</code> (${esc(p.repository.base_branch)})` : '<span class="muted">none (content workflows)</span>'}</div>
+    <div>Commands</div><div>build: <code>${esc(argvText(p.repository?.build_command) || "—")}</code> test: <code>${esc(argvText(p.repository?.test_command) || "—")}</code> lint: <code>${esc(argvText(p.repository?.lint_command) || "—")}</code></div>
     <div>Spend / budget</div><div>${money(p.spend_usd)} / ${p.budget_usd == null ? "∞" : money(p.budget_usd)}</div></div>
+    ${projectSettings(p)}
     ${projectMachines(p, models)}
-    <h2>Start a workflow run</h2>
+    ${archived ? "" : `<h2>Start a workflow run</h2>
     <form class="grid" id="run-form"><label>Workflow<select name="workflow_id">${options}</select></label>
       <label>Machine${machineSelect(workers)}</label>
       <label>Model<select name="llm">${llmOptions(models, "", `Project default — ${llmName(p.labels?.llm || models.default_provider)}`)}</select></label>
+      <label>Coding engine<select name="coding_engine">${engineOptions("", `Project default — ${engineName(p.labels?.coding_engine || "native")}`)}</select></label>
       <label class="full">Objective<textarea name="objective" rows="3" required></textarea></label>
-      <div class="full row"><button>Start</button><span id="run-error" class="error"></span></div></form>
-    <h2>Runs</h2><div class="table-wrap"><table><tr><th>Run</th><th>Workflow</th><th>Status</th><th>Objective</th><th>Created</th></tr>${rows || '<tr><td colspan="5" class="muted">No runs</td></tr>'}</table></div>`;
+      <div class="full row"><button>Start</button></div><div class="full" id="run-error"></div></form>`}
+    <h2>Runs</h2><div class="table-wrap"><table><tr><th>Run</th><th>Workflow</th><th>Status</th><th>Objective</th><th>Created</th></tr>${rows || '<tr><td colspan="5" class="muted">No runs</td></tr>'}</table></div>
+    ${projectDangerZone(p)}`;
+}
+
+function projectSettings(p) {
+  const r = p.repository || {};
+  const conf = ["internal", "public", "restricted"].map((c) => `<option ${c === p.confidentiality ? "selected" : ""}>${c}</option>`).join("");
+  return `<h2>Settings</h2>
+    <form class="grid" id="project-settings-form">
+      <label>Name<input name="name" value="${esc(p.name)}" required></label>
+      <label>Repository URL / path<input name="url" value="${esc(r.url || "")}" placeholder="https://… , ssh://… or D:/src/repo"></label>
+      <label>Base branch<input name="base_branch" value="${esc(r.base_branch || "main")}"></label>
+      <label>Build command<input name="build_command" value="${esc(argvText(r.build_command))}" placeholder="dotnet build App.csproj -nologo"></label>
+      <label>Test command<input name="test_command" value="${esc(argvText(r.test_command))}" placeholder="dotnet test tests/App.Tests"></label>
+      <label>Lint command<input name="lint_command" value="${esc(argvText(r.lint_command))}" placeholder="optional"></label>
+      <label>Confidentiality<select name="confidentiality">${conf}</select></label>
+      <label>Budget (USD, empty = no limit)<input name="budget_usd" type="number" step="0.01" min="0" value="${p.budget_usd ?? ""}"></label>
+      <label class="full">Description<textarea name="description" rows="2">${esc(p.description || "")}</textarea></label>
+      <div class="full row"><button>Save settings</button><span id="settings-msg" class="muted"></span><span id="settings-error" class="error"></span>
+        <span class="muted">Runs already started keep the settings they started with.</span></div></form>`;
+}
+
+function projectDangerZone(p) {
+  if (p.status === "ARCHIVED") return "";
+  const canDelete = !p.run_count;
+  return `<h2>Danger zone</h2><div class="danger-zone">
+    ${canDelete ? `<b>Delete project</b><p class="muted">This project has no runs. Deleting removes it for good (the audit trail keeps a record).</p>
+      <button class="danger" id="delete-project">Delete project</button>`
+    : `<b>Archive project</b><p class="muted">The project has ${p.run_count} run(s), so it cannot be deleted without losing their
+      history. Archiving hides it from the project list and blocks new runs; runs, artifacts and audit stay readable,
+      and you can restore it at any time.</p><button class="danger" id="archive-project">Archive project</button>`}
+    <span id="danger-error" class="error"></span></div>`;
+}
+
+// Explains why a run was refused when the fix is on a worker machine.
+function runErrorHint(message) {
+  const hints = [];
+  if (/missing llm-anthropic/.test(message)) hints.push("Không máy nào có API key của Claude. Đặt <code>ANTHROPIC_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở platform.claude.com (hướng dẫn §6).");
+  if (/missing llm-google/.test(message)) hints.push("Không máy nào có API key của Gemini. Đặt <code>GEMINI_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở aistudio.google.com (hướng dẫn §6).");
+  if (/missing claude-code/.test(message)) hints.push("Engine Claude Code cần lệnh <code>claude</code> trên máy worker (hướng dẫn §6), hoặc chọn Coding engine = Native runtime.");
+  if (/platform \S+, needs|platform is /.test(message)) hints.push("Platform của project không khớp máy nào: sửa ở <b>Where it runs</b>, hoặc bật một máy đúng hệ điều hành.");
+  return `<span class="error">${esc(message)}</span>${hints.map((h) => `<span class="hint-fix">${h}</span>`).join("")}`;
 }
 
 function projectMachines(p, models) {
@@ -207,6 +331,7 @@ function projectMachines(p, models) {
       <label>Required capabilities<input name="required_capabilities" value="${esc((p.repository?.required_capabilities || []).join(", "))}"
         placeholder="dotnet-windowsdesktop, msbuild"></label>
       <label>Default model<select name="llm">${llmOptions(models, p.labels?.llm || "")}</select></label>
+      <label>Default coding engine<select name="coding_engine">${engineOptions(p.labels?.coding_engine || "")}</select></label>
       <div class="full row"><button class="ghost">Save</button><span id="project-edit-error" class="error"></span>
         <span class="muted">Projects with a repository also need <code>git</code>; workflow stages and the model may add more.</span></div></form>
     <div class="table-wrap"><table><tr><th>Machine</th><th>Status</th><th>Platform</th><th>Can run it</th></tr>
@@ -214,6 +339,43 @@ function projectMachines(p, models) {
 }
 
 function bindProject(id) {
+  const settings = $("#project-settings-form");
+  if (settings) settings.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(settings);
+    try {
+      const p = await api(`/projects/${id}`);
+      const body = { name: f.get("name"), description: f.get("description") || "", confidentiality: f.get("confidentiality"),
+                     budget_usd: f.get("budget_usd") === "" ? null : Number(f.get("budget_usd")) };
+      if (f.get("url")) {
+        const repo = { ...(p.repository || {}), url: f.get("url"), base_branch: f.get("base_branch") || "main" };
+        for (const k of ["build_command", "test_command", "lint_command"]) {
+          // An untouched field keeps its stored value exactly; an edited one is parsed into argv.
+          if (f.get(k) === argvText(p.repository?.[k])) continue;
+          if (f.get(k)) repo[k] = argvParse(f.get(k)); else delete repo[k];
+        }
+        body.repository = repo;
+      }
+      await api(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+      await render();
+      const msg = $("#settings-msg"); if (msg) msg.textContent = "Saved.";
+    } catch (err) { $("#settings-error").textContent = err.message; }
+  };
+  const del = $("#delete-project");
+  if (del) del.onclick = async () => {
+    if (!confirm("Delete this project for good?")) return;
+    try { await api(`/projects/${id}`, { method: "DELETE" }); location.hash = "#/projects"; }
+    catch (err) { $("#danger-error").textContent = err.message; }
+  };
+  const arc = $("#archive-project");
+  if (arc) arc.onclick = async () => {
+    if (!confirm("Archive this project? New runs are blocked until you restore it.")) return;
+    try { await api(`/projects/${id}/archive`, { method: "POST" }); render(); }
+    catch (err) { $("#danger-error").textContent = err.message; }
+  };
+  const restore = $("#restore-project");
+  if (restore) restore.onclick = async () => { await api(`/projects/${id}/restore`, { method: "POST" }); render(); };
+
   const edit = $("#project-edit-form");
   if (edit) edit.onsubmit = async (e) => {
     e.preventDefault();
@@ -222,6 +384,7 @@ function bindProject(id) {
       const p = await api(`/projects/${id}`);
       const labels = { ...(p.labels || {}), platform: f.get("platform") };
       if (f.get("llm")) labels.llm = f.get("llm"); else delete labels.llm;
+      if (f.get("coding_engine")) labels.coding_engine = f.get("coding_engine"); else delete labels.coding_engine;
       const body = { labels };
       if (p.repository?.url) body.repository = { ...p.repository, required_capabilities: capList(f.get("required_capabilities")) };
       await api(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -237,9 +400,10 @@ function bindProject(id) {
       const body = { workflow_id: f.get("workflow_id"), inputs: { objective: f.get("objective") } };
       if (f.get("worker")) body.placement = { worker: f.get("worker") };
       if (f.get("llm")) body.llm = f.get("llm");
+      if (f.get("coding_engine")) body.coding_engine = f.get("coding_engine");
       const r = await api(`/projects/${id}/workflow-runs`, { method: "POST", body: JSON.stringify(body) });
       location.hash = `#/runs/${r.id}`;
-    } catch (err) { $("#run-error").textContent = err.message; }
+    } catch (err) { $("#run-error").innerHTML = runErrorHint(err.message); }
   };
 }
 
@@ -277,7 +441,8 @@ function placementRows(run, workers) {
   return `<div>Machine</div><div>${machine}${run.placement.worker ? ' <span class="muted">(chosen by hand)</span>' : ""}
       ${run.placement.wait ? `<div class="error">${esc(run.placement.wait)}</div>` : ""}${move}</div>
     <div>Requirements</div><div>platform <code>${esc(req.platform || "any")}</code> · capabilities <code>${esc((req.capabilities || []).join(", "))}</code></div>
-    ${run.llm ? `<div>Model</div><div>${esc(llmName(run.llm))}</div>` : ""}`;
+    ${run.llm ? `<div>Model</div><div>${esc(llmName(run.llm))}</div>` : ""}
+    ${run.coding_engine && run.coding_engine !== "native" ? `<div>Coding engine</div><div>${esc(engineName(run.coding_engine))}</div>` : ""}`;
 }
 
 async function bindRun(id) {

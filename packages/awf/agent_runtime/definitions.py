@@ -126,6 +126,8 @@ class AgentProfile(_Strict):
     task_type: str = "general"
     model_policy: ModelPolicy
     context: ContextPolicy = Field(default_factory=ContextPolicy)
+    # Coding engines this role may run on besides the native runtime (ADR-011), e.g. [claude-code].
+    engines: list[str] = Field(default_factory=list)
 
 
 class AgentDefinition(BaseModel):

@@ -18,9 +18,10 @@ from __future__ import annotations
 import copy
 import json
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from awf.domain.enums import (
@@ -57,7 +58,7 @@ from awf.orchestrator import placement
 from awf.orchestrator.jobs import expire_leases, mismatch_reasons, requeue_or_fail, requirements_met
 from awf.orchestrator.context import ContextBuilder, task_meta
 from awf.orchestrator.critic import CHANGES_REQUIRED, Critic, CriticResult
-from awf.orchestrator.task_router import TaskRouter, llm_capabilities, slug
+from awf.orchestrator.task_router import NATIVE_ENGINE, TaskRouter, engine_capabilities, llm_capabilities, slug
 from awf.platform import Platform
 from awf.workflow_engine import LoadedWorkflow, StageSpec
 
@@ -65,6 +66,8 @@ logger = get_logger("orchestrator")
 
 # Extra time on top of a task's own timeout before a claimed job counts as lost (slow uploads, clone time).
 LEASE_MARGIN_SECONDS = 900
+PROJECT_ACTIVE = "ACTIVE"
+PROJECT_ARCHIVED = "ARCHIVED"
 
 # Outputs of standalone tool jobs: output key -> (artifact type, media type, extension)
 TOOL_OUTPUTS: dict[str, dict[str, tuple[str, str, str]]] = {
@@ -109,6 +112,32 @@ class Orchestrator:
                               "required_capabilities": (project.repository or {}).get("required_capabilities")})
         return project
 
+    def archive_project(self, session: Session, project: Project, actor: str = "admin") -> Project:
+        """Hide a project that has history; its runs, artifacts and audit trail stay readable."""
+        running = session.scalar(select(func.count(WorkflowRun.id)).where(
+            WorkflowRun.project_id == project.id, WorkflowRun.status == RunStatus.RUNNING)) or 0
+        if running:
+            raise OrchestratorError(f"project has {running} running run(s); cancel them before archiving")
+        project.status = PROJECT_ARCHIVED
+        audit.record(session, EventType.PROJECT_ARCHIVED, actor_type="human", actor_id=actor, project_id=project.id,
+                     payload={"name": project.name})
+        return project
+
+    def restore_project(self, session: Session, project: Project, actor: str = "admin") -> Project:
+        project.status = PROJECT_ACTIVE
+        audit.record(session, EventType.PROJECT_RESTORED, actor_type="human", actor_id=actor, project_id=project.id,
+                     payload={"name": project.name})
+        return project
+
+    def delete_project(self, session: Session, project: Project, actor: str = "admin") -> None:
+        """Delete a project that never ran. One with runs is archived instead, so nothing it produced is lost."""
+        runs = session.scalar(select(func.count(WorkflowRun.id)).where(WorkflowRun.project_id == project.id)) or 0
+        if runs:
+            raise OrchestratorError(f"project has {runs} run(s) and cannot be deleted; archive it instead")
+        audit.record(session, EventType.PROJECT_DELETED, actor_type="human", actor_id=actor, project_id=project.id,
+                     payload={"name": project.name, "slug": project.slug})
+        session.delete(project)
+
     def create_project(self, session: Session, *, name: str, slug_value: str | None = None, description: str = "",
                        repository: dict[str, Any] | None = None, confidentiality: str = "internal",
                        budget_usd: float | None = None, labels: dict[str, Any] | None = None,
@@ -123,10 +152,15 @@ class Orchestrator:
         return project
 
     def start_run(self, session: Session, project: Project, workflow_id: str, inputs: dict[str, Any],
-                  actor: str = "admin", worker_name: str | None = None, llm: str | None = None) -> WorkflowRun:
+                  actor: str = "admin", worker_name: str | None = None, llm: str | None = None,
+                  coding_engine: str | None = None) -> WorkflowRun:
         """Start a run. With run placement (the default) `worker_name` pins it to that machine; otherwise
         the orchestrator picks the least loaded matching machine at the first dispatch. `llm` chooses the model
-        provider for every agent of the run (default: the project's labels.llm, then default_provider)."""
+        provider for every agent of the run (default: the project's labels.llm, then default_provider).
+        `coding_engine` runs the roles that support it on another engine, e.g. claude-code (default: the project's
+        labels.coding_engine, else native)."""
+        if project.status == PROJECT_ARCHIVED:
+            raise OrchestratorError("project is archived; restore it before starting a run")
         workflow = self.p.workflows.get(workflow_id)
         if workflow.spec.status != "active":
             raise OrchestratorError(f"workflow '{workflow_id}' is not active (status {workflow.spec.status})")
@@ -142,9 +176,12 @@ class Orchestrator:
         if provider not in self.p.router.providers():
             raise OrchestratorError(f"unknown model provider '{provider}' (configured: "
                                     f"{', '.join(self.p.router.providers())})")
+        engine = coding_engine or (project.labels or {}).get("coding_engine") or NATIVE_ENGINE
         try:
             llm_caps = llm_capabilities(self.p.agents, self.p.router, workflow.spec.roles(),
                                         project.confidentiality, provider)
+            llm_caps |= engine_capabilities(self.p.agents, self.p.router, workflow.spec.roles(),
+                                            project.confidentiality, engine)
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
         placed = workflow.spec.placement == placement.RUN
@@ -164,7 +201,7 @@ class Orchestrator:
             status=RunStatus.RUNNING, input_json=inputs, started_at=utcnow(),
             context_json={"stage_iteration": {}, "fix_loops": {}, "integration_branch": f"awf/run-{run_id[:8]}",
                           "placement": {"mode": workflow.spec.placement, "worker": worker_name, "wait": None},
-                          "llm": provider},
+                          "llm": provider, "coding_engine": engine},
             requirements=requirements,
         )
         session.add(run)
@@ -179,7 +216,7 @@ class Orchestrator:
                                                       "version": workflow.spec.version,
                                                       "placement": workflow.spec.placement,
                                                       "requirements": requirements, "worker": worker_name,
-                                                      "llm": provider})
+                                                      "llm": provider, "coding_engine": engine})
         return run
 
     @staticmethod
@@ -419,8 +456,12 @@ class Orchestrator:
             usage = result.get("usage") or {}
             agent_run.token_input += int(usage.get("input_tokens") or 0)
             agent_run.token_output += int(usage.get("output_tokens") or 0)
-            agent_run.cost_estimate = self.p.router.estimate_cost(
-                agent_run.model_name, agent_run.token_input, agent_run.token_output)
+            if usage.get("cost_usd") is not None:  # an engine that reports its own spend (claude-code)
+                agent_run.cost_estimate = (Decimal(str(agent_run.cost_estimate or 0))
+                                           + Decimal(str(usage["cost_usd"]))).quantize(Decimal("0.000001"))
+            else:
+                agent_run.cost_estimate = self.p.router.estimate_cost(
+                    agent_run.model_name, agent_run.token_input, agent_run.token_output)
             agent_run.duration_ms += int(result.get("duration_ms") or 0)
             agent_run.tool_calls = calls
             agent_run.output_json = {k: v for k, v in result.items()
@@ -842,6 +883,7 @@ class Orchestrator:
                 "contract": definition.contract.model_dump(by_alias=True),
                 "system_prompt": definition.system_prompt,
                 "route": model.as_dict(),
+                "engine": route.engine,
             }
             agent_run = AgentRun(id=new_id(), task_id=task.id, role=definition.role,
                                  profile_version=f"{definition.profile.version}/{definition.contract.version}",

@@ -362,16 +362,52 @@ Mặc định `config/model-routing.yaml` định tuyến theo model class:
 | CODE_SPECIALIST | `claude-opus-5-5` (effort high) | developer |
 | LOCAL_PRIVATE | (chưa có) | project `restricted` → fail an toàn |
 
-Agent chạy **trên worker**, nên credential đặt ở máy worker:
+### Lấy API key và đặt vào worker
 
-```powershell
-$env:ANTHROPIC_API_KEY = "<key của bạn>"     # chỉ trên máy worker
-Remove-Item Env:AWF_MODEL_PROVIDER -ErrorAction SilentlyContinue   # bỏ chế độ scripted
-.\.venv\Scripts\awf worker --url http://127.0.0.1:8000 --name win-worker-01
+Agent chạy **trên worker**, nên API key đặt trong `.env` của **máy worker**, không đặt trên máy trung tâm. Một máy
+chỉ nhận run của nhà cung cấp mà nó có key: worker có `ANTHROPIC_API_KEY` thì báo capability `llm-anthropic`, có
+`GEMINI_API_KEY` thì báo `llm-google`. Không máy nào có key cần thiết thì run bị từ chối ngay khi bấm **Start**,
+với lỗi như sau:
+
+```text
+worker 'DESKTOP-...' does not meet platform windows, capabilities [git, llm-anthropic]: missing llm-anthropic
 ```
 
-Control plane cũng không được đặt `AWF_MODEL_PROVIDER=scripted` (biến này ghi đè route). Demo với model thật:
-`awf demo --live-model`.
+Nghĩa là máy đó chưa có API key của Claude. Đây là key của **Claude API**, không phải tài khoản app Claude hay
+gói Claude Pro/Max: gói thuê bao không dùng được cho factory.
+
+**Claude (Anthropic):**
+
+1. Mở **platform.claude.com** (Claude Console), đăng nhập hoặc đăng ký.
+2. **Billing**: nạp credit. API trả tiền theo lượng dùng; không có credit thì mọi request bị từ chối.
+3. **API Keys → Create Key**: đặt tên (ví dụ `awf-worker-01`), chép key (dạng `sk-ant-...`). Key chỉ hiện **một lần**.
+4. Nên tạo mỗi worker một key: khi một máy bị lộ thì chỉ cần thu hồi key của máy đó. Có thể đặt giới hạn chi tiêu
+   theo tháng trong Console (**Limits**).
+
+**Gemini (Google):**
+
+1. Mở **aistudio.google.com**, đăng nhập bằng tài khoản Google.
+2. **Get API key → Create API key**: chọn (hoặc tạo) một Google Cloud project, chép key (dạng `AIza...`).
+3. Gói miễn phí có giới hạn số request và dữ liệu có thể được dùng để cải thiện sản phẩm. Để dùng cho code thật,
+   bật billing cho project đó (Google Cloud Console → Billing).
+
+**Đặt key vào worker** (mỗi máy worker):
+
+1. Mở file `.env` trong thư mục repo của máy worker, thêm một hoặc cả hai dòng (bỏ dấu `#` nếu dòng đã có sẵn):
+   ```text
+   ANTHROPIC_API_KEY=sk-ant-...
+   GEMINI_API_KEY=AIza...
+   ```
+2. Kiểm tra `.env` **không** có dòng `AWF_MODEL_PROVIDER=scripted` (chế độ offline, ghi đè mọi model). Máy trung
+   tâm cũng không được đặt dòng này.
+3. Khởi động lại worker: dừng `awf start` (`Ctrl+C`) rồi chạy lại. Nếu đã cài dịch vụ, chạy
+   `.\scripts\install-task.ps1 -Restart` (Windows) hoặc `sudo systemctl restart awf` (Linux).
+4. Kiểm tra: `awf doctor` trên worker liệt kê `llm-anthropic` (hoặc `llm-google`) trong capability. Trên dashboard,
+   trang **Workers** cũng phải thấy capability đó. Sau đó **Start** lại run.
+
+Key chỉ nằm trong `.env` của máy, file này không commit vào git. Factory không gửi key sang máy trung tâm, không
+đưa key vào prompt, và lệnh build/test chạy với môi trường đã gỡ mọi biến có tên dạng `*KEY*`/`*TOKEN*`.
+Demo với model thật: `awf demo --live-model`.
 
 Chi tiết tích hợp (`awf/agent_runtime/adapters/anthropic_adapter.py`): Messages API, vòng lặp tool-use thủ
 công (để mọi tool call đi qua Policy Engine), prompt caching tự động, `output_config.effort` theo class,
@@ -418,14 +454,68 @@ model mà phát lại kịch bản; role không có trong kịch bản dùng hà
 (git, sandbox, build/test thật, critic, gate) vẫn chạy thật — dùng để kiểm thử tích hợp repo trước khi tốn
 tiền model. Xem `examples/*/scripted-responses.yaml`.
 
+### Claude Code làm engine cho Developer (`coding_engine: claude-code`)
+
+Mặc định Developer chạy trên runtime native của factory: dùng các tool có kiểu (`fs.read`, `fs.replace`,
+`build.run`...) với một vòng gọi model. Bật engine `claude-code` thì riêng stage development giao việc sửa code
+cho **Claude Code** chạy headless trên worker. Mọi phần còn lại vẫn như cũ: Critic, evidence, policy, commit và
+gate (ADR-011).
+
+Bật engine:
+
+| Phạm vi | Cách bật |
+|---|---|
+| Một run | Dashboard → project → *Start a workflow run* → **Coding engine** = Claude Code, hoặc API `"coding_engine": "claude-code"` |
+| Mặc định cho project | Trang project → **Default coding engine**, hoặc `labels.coding_engine = "claude-code"` |
+
+Chuẩn bị máy worker:
+
+1. Cài Claude Code (code.claude.com). Lệnh `claude` phải có trên PATH, hoặc đặt `AWF_CLAUDE_CODE_BIN=<đường dẫn>`
+   trong `.env`.
+2. Đặt `ANTHROPIC_API_KEY` trong `.env` của worker. Engine chạy ở chế độ `--bare`, chỉ dùng API key, **không dùng
+   gói đăng nhập Claude Pro/Max**. Chi phí tính vào tài khoản API.
+3. Khởi động lại worker. `awf doctor` và trang **Workers** phải thấy capability `claude-code` (và `llm-anthropic`).
+   Run dùng engine chỉ được giao cho máy có đủ hai capability này. Không có máy nào như vậy thì run bị từ chối
+   ngay khi tạo.
+
+Worker làm gì trong một job development:
+
+- Clone repo như bình thường, rồi chạy `claude --bare -p` trong thư mục đó, với cùng prompt và context mà runtime
+  native sẽ nhận. Model và effort lấy từ `config/model-routing.yaml` (class `CODE_SPECIALIST`).
+- Engine chỉ có các tool Read/Edit/Write/Glob/Grep/Bash. Bash **chỉ chạy được** các lệnh build/test/lint đã cấu
+  hình cho project và các lệnh git chỉ đọc. Lệnh khác, mạng, commit và push đều bị từ chối. Các lần bị từ chối
+  được ghi ở tool call của agent run (`engine_denied`).
+- Engine không đọc hook, plugin hay MCP từ máy worker hay từ repo, và không lưu session. Nó nhận
+  `ANTHROPIC_API_KEY`, nhưng không nhận các token khác của máy (`AWF_*`, key Gemini...).
+- `CLAUDE.md` và `AGENTS.md` ở gốc repo (nếu có) được đưa vào làm quy ước code.
+- Engine xong việc thì **worker tự chạy lại build/test/lint**. Critic chấm trên kết quả đó, giống hệt runtime
+  native. Engine báo "đã xong" mà code không build được thì task vẫn `COMPLETION_RULE_FAILED` và đi vào fix loop.
+- Worker tự commit và integrate. Engine tự commit thì job fail với `ENGINE_TOUCHED_GIT`.
+- Chi phí của agent run là ước tính `total_cost_usd` do Claude Code báo về.
+
+Không áp dụng cho:
+
+- các role khác: analyst, architect, planner, reviewer, QA vẫn chạy native. Reviewer và QA cần trả về quyết định
+  có cấu trúc;
+- project `restricted`: engine không bao giờ gửi code ra model hosted;
+- chế độ `scripted`.
+
+Một run Gemini có bật engine vẫn develop bằng Claude Code trên Claude.
+
+Hạn chế: bên trong workspace, engine đọc và ghi tự do. Phạm vi kiểm soát của nó thô hơn các tool có kiểu, chỉ
+giới hạn ở shell, mạng và git. Lệnh chạy một phần test (ví dụ một file test) bị từ chối nếu không bắt đầu bằng
+đúng lệnh đã cấu hình.
+
 ## 7. Dashboard
 
 `http://<host>:8000/` — đăng nhập bằng `AWF_API_TOKEN` một lần (giữ 30 ngày), hoặc chạy `awf open` trên máy trung tâm để vào thẳng. Xem [mục 21](#đăng-nhập-dashboard-không-phải-nhập-token-mỗi-lần).
 
 | Trang | Nội dung |
 |---|---|
-| Overview | số liệu tổng, yêu cầu đang chờ duyệt, các run đang chạy (tiến độ stage, stage hiện tại, máy đang chạy) |
-| Projects | danh sách, tạo project, chi tiết project, bắt đầu run |
+| Overview | card số liệu (run đang chạy, chờ duyệt, worker online, chi phí, task lỗi, project; card đổi màu khi cần bạn xử lý), yêu cầu đang chờ duyệt, run đang chạy (tiến độ, stage hiện tại, máy), run vừa kết thúc |
+| Projects | danh sách (project đã lưu trữ nằm trong mục *Archived projects*), tạo project, chi tiết project, bắt đầu run |
+| Project → Settings | sửa tên, URL repository, base branch, lệnh build/test/lint, confidentiality, budget (để trống = không giới hạn), mô tả. Run đã bắt đầu giữ cấu hình lúc nó bắt đầu |
+| Project → Danger zone | project **chưa có run**: *Delete project* (xoá hẳn, audit vẫn ghi lại). Project **đã có run**: *Archive project* (ẩn khỏi danh sách, chặn run mới; run, artifact, audit vẫn xem được; *Restore project* để dùng lại). Run đang chạy phải huỷ trước khi lưu trữ |
 | Run | pipeline stage (iteration, trạng thái), bảng task (critic decision + verdict), approval chờ, artifact |
 | Task (click dòng) | tiêu chí chấp nhận, feedback, agent run (model, route reason, token, chi phí, critic findings, tool calls), log job |
 | Artifact (click dòng) | nội dung, checksum, quan hệ trace, impact analysis |
@@ -813,9 +903,11 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 |---|---|---|
 | POST/GET | `/projects`, `/projects/{id}` | tạo (bắt buộc `labels.platform`) / liệt kê / chi tiết (kèm `spend_usd`, `requirements`, `machines`: máy nào chạy được và lý do) |
 | PATCH | `/projects/{id}` | sửa các trường gửi lên; `repository`, `labels` được thay cả khối |
+| DELETE | `/projects/{id}` | xoá project chưa có run nào (409 nếu đã có run: dùng archive) |
+| POST | `/projects/{id}/archive`, `/projects/{id}/restore` | lưu trữ / khôi phục; `GET /projects?archived=true` liệt kê project đã lưu trữ |
 | GET | `/workflows`, `/agents` | định nghĩa workflow, agent |
 | GET | `/models` | nhà cung cấp model (Claude, Gemini) và model của từng class |
-| POST | `/projects/{id}/workflow-runs` | `{workflow_id, inputs: {objective}, placement?: {worker}, llm?: "anthropic"\|"google"}` |
+| POST | `/projects/{id}/workflow-runs` | `{workflow_id, inputs: {objective}, placement?: {worker}, llm?: "anthropic"\|"google", coding_engine?: "native"\|"claude-code"}` |
 | GET | `/projects/{id}/workflow-runs`, `/workflow-runs/{id}` | run + stage overview + chi phí + máy được giao (`assigned_worker`, `requirements`, `placement.wait`) |
 | POST | `/workflow-runs/{id}/reassign` | `{worker}` chuyển run sang máy đó; `{}` để orchestrator chọn lại |
 | POST | `/workflow-runs/{id}/cancel` | huỷ |
@@ -836,7 +928,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (176 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (190 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -873,6 +965,9 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |
 | `model provider rejected the request` | Thiếu/sai `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trên worker. |
 | Tạo run lỗi `missing llm-google` (hoặc `llm-anthropic`) | Không máy nào có key của nhà cung cấp đó: đặt key trong `.env` của worker rồi khởi động lại worker. |
+| Tạo run lỗi `missing claude-code` | Run/project chọn engine Claude Code nhưng không máy nào có `claude` trên PATH (hoặc `AWF_CLAUDE_CODE_BIN`) và `ANTHROPIC_API_KEY`. Cài Claude Code trên worker rồi khởi động lại worker (mục 6). |
+| `claude-code error_max_turns` / `timed out` | Task quá lớn so với `max_turns`/timeout của contract Developer; chia nhỏ objective hoặc tăng `timeout_policy` trong `agents/contracts/engineering.developer.yaml`. |
+| `ENGINE_TOUCHED_GIT` | Engine tự commit hoặc đổi nhánh; chỉ platform được commit. Không retry: xem log job. |
 | `git push ... rejected` vào repo cục bộ | Không đẩy vào nhánh đang checkout; dùng bare mirror. |
 | API 401 | Script: thiếu `Authorization: Bearer ...`. Dashboard: đăng nhập lại hoặc `awf open`. |
 | Worker: `worker name ... is in use by another online machine` | Hai máy trùng tên: đặt `AWF_WORKER_NAME` khác nhau. |
@@ -1396,12 +1491,13 @@ Factory gọi API bằng `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trong `.env` c�
 | Factory, Claude | Credit của API key (Anthropic Console) | Không, nếu app Claude/Claude Code đăng nhập bằng gói Pro/Max: gói thuê bao và API là hai nguồn riêng |
 | Factory, Gemini | Key từ AI Studio / Google Cloud | Antigravity dùng quota tài khoản Google riêng; chỉ chung khi dùng cùng key hoặc cùng project Google Cloud |
 | Codex | — | Factory không hỗ trợ OpenAI/Codex (chỉ Claude, Gemini, `scripted`) |
+| Factory, engine Claude Code (mục 6) | Credit của API key, như dòng Claude ở trên | Không: engine chạy `--bare`, chỉ dùng API key, không dùng gói đăng nhập của app Claude Code |
 
 - App local dùng **cùng API key / cùng tổ chức** trên Console thì hai bên chung credit và chung rate limit. Dùng
   nặng cùng lúc có thể bị giới hạn tốc độ. Factory tự thử lại (SDK Claude thử 4 lần, Gemini thử lại khi gặp
   429/5xx, job lỗi tạm thời được chạy lại); app local thì có thể chậm hoặc báo lỗi.
 - **Hết hẳn credit API:** provider từ chối, factory coi là lỗi không thử lại được, nên job **fail ngay**, không
-  đứng chờ. Nạp credit rồi chạy lại. Đặt `budget_usd` cho project để giới hạn chi phí mỗi run.
+  đứng chờ. Nạp credit rồi chạy lại. `budget_usd` của project là ngân sách **cộng dồn cho mọi run** của project: khi còn ít, router tự hạ xuống model rẻ hơn (mục 6).
 - Worker clone repo vào `var/workspaces/<job_id>` và xoá sau khi xong. Nó **không động vào thư mục repo** bạn
   đang mở trong app local, chỉ đẩy các nhánh `awf/*`.
 - Worker chạy trên chính PC bạn đang dùng thì job build/test chiếm CPU/RAM; giữ `AWF_WORKER_MAX_JOBS=1` nếu máy

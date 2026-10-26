@@ -111,8 +111,10 @@ def create_project(body: ProjectIn, state: AppState = Depends(get_state), sessio
 
 
 @router.get("/projects")
-def list_projects(session: Session = Depends(get_session, scope="function")):
-    return [ser.project(p) for p in session.scalars(select(Project).order_by(Project.created_at.desc()))]
+def list_projects(archived: bool = False, session: Session = Depends(get_session, scope="function")):
+    """Active projects; `archived=true` lists the archived ones instead."""
+    status = Project.status == "ARCHIVED" if archived else Project.status != "ARCHIVED"
+    return [ser.project(p) for p in session.scalars(select(Project).where(status).order_by(Project.created_at.desc()))]
 
 
 @router.get("/projects/{project_id}")
@@ -122,7 +124,8 @@ def get_project(project_id: str, session: Session = Depends(get_session, scope="
                            .join(Task, Task.id == AgentRun.task_id)
                            .join(WorkflowRun, WorkflowRun.id == Task.workflow_run_id)
                            .where(WorkflowRun.project_id == project_id))
-    return {**ser.project(project), "spend_usd": float(spend or 0), **_machines(session, project)}
+    runs = session.scalar(select(func.count(WorkflowRun.id)).where(WorkflowRun.project_id == project_id)) or 0
+    return {**ser.project(project), "spend_usd": float(spend or 0), "run_count": runs, **_machines(session, project)}
 
 
 def _machines(session: Session, project: Project) -> dict[str, Any]:
@@ -148,6 +151,37 @@ def update_project(project_id: str, body: ProjectPatch, state: AppState = Depend
         changes["repository"] = body.repository.model_dump()
     state.orchestrator.update_project(session, project, changes, actor=actor)
     return {**ser.project(project), **_machines(session, project)}
+
+
+@router.delete("/projects/{project_id}")
+def delete_project(project_id: str, state: AppState = Depends(get_state),
+                   session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
+    """Delete a project that never ran (409 otherwise: archive it)."""
+    project = _get(session, Project, project_id)
+    try:
+        state.orchestrator.delete_project(session, project, actor=actor)
+    except OrchestratorError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"deleted": project_id}
+
+
+@router.post("/projects/{project_id}/archive")
+def archive_project(project_id: str, state: AppState = Depends(get_state),
+                    session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
+    project = _get(session, Project, project_id)
+    try:
+        state.orchestrator.archive_project(session, project, actor=actor)
+    except OrchestratorError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return ser.project(project)
+
+
+@router.post("/projects/{project_id}/restore")
+def restore_project(project_id: str, state: AppState = Depends(get_state),
+                    session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
+    project = _get(session, Project, project_id)
+    state.orchestrator.restore_project(session, project, actor=actor)
+    return ser.project(project)
 
 
 # ---------------------------------------------------------------------------- models
@@ -191,6 +225,8 @@ class RunIn(BaseModel):
     placement: PlacementIn | None = None
     # Model provider for every agent of this run: anthropic (Claude) or google (Gemini); default: project/config.
     llm: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{1,30}$")
+    # Coding engine for the roles that support one (ADR-011): native or claude-code; default: project/native.
+    coding_engine: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{1,30}$")
 
 
 @router.post("/projects/{project_id}/workflow-runs", status_code=201)
@@ -200,7 +236,7 @@ def start_run(project_id: str, body: RunIn, state: AppState = Depends(get_state)
     try:
         run = state.orchestrator.start_run(session, project, body.workflow_id, body.inputs, actor=actor,
                                            worker_name=body.placement.worker if body.placement else None,
-                                           llm=body.llm)
+                                           llm=body.llm, coding_engine=body.coding_engine)
     except (OrchestratorError, KeyError) as exc:
         raise HTTPException(422, str(exc)) from None
     return ser.run(run, worker=None)
@@ -468,7 +504,7 @@ def overview(state: AppState = Depends(get_state), session: Session = Depends(ge
 
     active_tasks = [TaskState.READY, TaskState.WAITING, TaskState.RUNNING, TaskState.REVIEW]
     return {
-        "projects": count(Project),
+        "projects": count(Project, Project.status != "ARCHIVED"),
         "active_runs": count(WorkflowRun, WorkflowRun.status == RunStatus.RUNNING),
         "active_tasks": count(Task, Task.state.in_(active_tasks)),
         "failed_tasks": count(Task, Task.state == TaskState.FAILED),
@@ -477,7 +513,19 @@ def overview(state: AppState = Depends(get_state), session: Session = Depends(ge
         "workers_total": count(Worker),
         "total_cost_usd": float(session.scalar(select(func.coalesce(func.sum(AgentRun.cost_estimate), 0))) or 0),
         "runs": _active_runs(state, session),
+        "recent_runs": _recent_runs(session),
     }
+
+
+def _recent_runs(session: Session, limit: int = 6) -> list[dict[str, Any]]:
+    """The last finished runs: what just completed, failed or was cancelled."""
+    rows = session.execute(select(WorkflowRun, Project.name).join(Project, Project.id == WorkflowRun.project_id)
+                           .where(WorkflowRun.status != RunStatus.RUNNING)
+                           .order_by(WorkflowRun.created_at.desc()).limit(limit)).all()
+    return [{"id": r.id, "project": name, "workflow_id": r.workflow_id, "status": r.status,
+             "objective": (r.input_json or {}).get("objective", "")[:200], "error": (r.error or "")[:300],
+             "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+             "created_at": r.created_at.isoformat() if r.created_at else None} for r, name in rows]
 
 
 def _active_runs(state: AppState, session: Session, limit: int = 20) -> list[dict[str, Any]]:

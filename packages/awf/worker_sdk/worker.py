@@ -18,6 +18,8 @@ from typing import Any
 
 from awf.logging import get_logger, log_event
 from awf.policy import PolicyConfig, PolicyEngine
+from awf.worker_sdk.claude_code import CAPABILITY as CLAUDE_CODE_CAPABILITY
+from awf.worker_sdk.claude_code import claude_code_bin
 from awf.worker_sdk.client import ControlPlaneClient, ControlPlaneError
 from awf.worker_sdk.executor import JobExecutor
 
@@ -87,6 +89,8 @@ def detect_capabilities() -> list[str]:
         caps |= dotnet_capabilities(_probe(["dotnet", "--list-sdks"]), _probe(["dotnet", "--list-runtimes"]))
     if shutil.which("msbuild"):
         caps.add("msbuild")
+    if claude_code_bin():
+        caps.add(CLAUDE_CODE_CAPABILITY)
     vswhere = _vswhere()
     if vswhere:
         caps |= visual_studio_capabilities(

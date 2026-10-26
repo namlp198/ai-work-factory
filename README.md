@@ -40,8 +40,9 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
   không cần đăng nhập; PowerShell admin).
 - Câu hỏi thường gặp (khác gì Claude Code local, repo local hay GitHub, project/run/task, API key, cập nhật
   máy): §22 của hướng dẫn.
-- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (176 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
-- Claude thật: đặt `ANTHROPIC_API_KEY` trong `.env` của máy worker.
+- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (190 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
+- Claude thật: đặt `ANTHROPIC_API_KEY` trong `.env` của máy worker. Developer chạy bằng Claude Code: chọn
+  *Coding engine = Claude Code* cho run hoặc project (§6 của hướng dẫn, ADR-011).
 
 ## Tài liệu
 
@@ -49,7 +50,7 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
 |---|---|
 | [docs/HUONG_DAN_SU_DUNG.md](docs/HUONG_DAN_SU_DUNG.md) | **Hướng dẫn chi tiết**: cài đặt, đưa repo thật vào, worker, nhiều máy (§21), cấu hình, viết workflow/agent, API, bảo mật, sự cố |
 | [docs/architecture/implementation-overview.md](docs/architecture/implementation-overview.md) | Ánh xạ thiết kế → code, vòng đời run, state machine, giới hạn |
-| [docs/adr/](docs/adr/) | ADR-001 … ADR-010 |
+| [docs/adr/](docs/adr/) | ADR-001 … ADR-011 |
 | [docs/trials/internal-file-server.md](docs/trials/internal-file-server.md) | Báo cáo chạy thử trên repo .NET thật |
 
 ## Cấu trúc

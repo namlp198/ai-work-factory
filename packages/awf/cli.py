@@ -9,6 +9,7 @@ import argparse
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -440,7 +441,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 # ----------------------------------------------------------------------------------------- demo
 def _init_demo_repo(home: Path, target: Path) -> Path:
     if target.exists():
-        shutil.rmtree(target, ignore_errors=True)
+        def writable_then_retry(func, path, _exc):  # git leaves read-only object files on Windows
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+
+        shutil.rmtree(target, onexc=writable_then_retry)
     shutil.copytree(home / "examples" / "demo" / "perception-service", target)
     git = ["git", "-c", "core.autocrlf=false", "-c", "user.name=demo", "-c", "user.email=demo@localhost"]
     subprocess.run(git + ["init", "-q", "-b", "main"], cwd=target, check=True)
