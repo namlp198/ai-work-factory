@@ -1,13 +1,54 @@
 // AI Work Factory dashboard (Plan §19 Dashboard MVP). Plain JS, no build step.
+// Every text the user reads comes from i18n.js through t(): English and Vietnamese, chosen in the header.
 "use strict";
 
 const API = "/api/v1";
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const pill = (s) => `<span class="pill s-${esc(s)}">${esc(s)}</span>`;
 const short = (id) => (id || "").slice(0, 8);
-const when = (ts) => (ts ? new Date(ts).toLocaleString() : "");
 const money = (v) => `$${Number(v || 0).toFixed(4)}`;
+
+// ------------------------------------------------------------------------------------ language
+// The choice is kept in this browser (localStorage) and used on every later visit; the first visit follows the
+// browser's language. Strings in i18n.js may contain markup; values put into them with {name} are escaped here
+// unless the key's caller passes markup on purpose (raw: true).
+const LANGS = { en: "English", vi: "Tiếng Việt" };
+const LANG_KEY = "awf.lang";
+function initialLang() {
+  try { const saved = localStorage.getItem(LANG_KEY); if (LANGS[saved]) return saved; } catch { /* storage blocked */ }
+  return (navigator.language || "").toLowerCase().startsWith("vi") ? "vi" : "en";
+}
+let lang = initialLang();
+const locale = () => (lang === "vi" ? "vi-VN" : "en-GB");
+function t(key, vars = {}, raw = false) {
+  const dict = window.AWF_I18N || {};
+  const text = dict[lang]?.[key] ?? dict.en?.[key] ?? key;
+  return text.replace(/\{(\w+)\}/g, (_, name) => (raw ? String(vars[name] ?? "") : esc(vars[name])));
+}
+// Count-dependent text: <key>.one for 1, <key>.other otherwise ({n} is the number).
+const tn = (key, n, vars = {}) => t(`${key}.${n === 1 ? "one" : "other"}`, { ...vars, n });
+const when = (ts) => (ts ? new Date(ts).toLocaleString(locale()) : "");
+const pill = (s) => `<span class="pill s-${esc(s)}">${esc(t(`status.${s}`) === `status.${s}` ? s : t(`status.${s}`))}</span>`;
+
+function setLang(next) {
+  if (!LANGS[next]) return;
+  lang = next;
+  try { localStorage.setItem(LANG_KEY, next); } catch { /* storage blocked: the choice lasts until reload */ }
+  applyStatic();
+  render();
+}
+
+// Text in index.html (header, banner, drawer) carries data-i18n / data-i18n-title.
+function applyStatic() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll("[data-i18n-title]").forEach((el) => { el.title = t(el.dataset.i18nTitle); });
+  const select = $("#lang-select");
+  if (select) {
+    select.innerHTML = Object.entries(LANGS).map(([v, name]) => `<option value="${v}" ${v === lang ? "selected" : ""}>${esc(name)}</option>`).join("");
+    select.title = t("header.language");
+  }
+}
 
 // Auth: an HttpOnly session cookie set by POST /api/v1/session (30 days). The admin token is typed once
 // per browser, or never when the dashboard is opened with `awf open` (one-time login link).
@@ -42,11 +83,10 @@ async function consumeLoginLink() {
 
 function viewLogin(message = "") {
   return `<div class="card" style="max-width:440px;margin:40px auto">
-    <h1>Sign in</h1>
-    <p class="muted">Paste <code>AWF_API_TOKEN</code> from the control plane's <code>.env</code>. This browser stays
-      signed in for 30 days. Tip: run <code>awf open</code> on the control-plane machine to sign in without typing.</p>
+    <h1>${t("login.title")}</h1>
+    <p class="muted">${t("login.help")}</p>
     <form id="login-form" class="row"><input type="password" name="token" autocomplete="current-password" required
-      placeholder="admin token"><button>Sign in</button></form>
+      placeholder="${t("login.placeholder")}"><button>${t("login.submit")}</button></form>
     <p id="login-error" class="error">${esc(message)}</p></div>`;
 }
 
@@ -57,7 +97,7 @@ function bindLogin() {
       await api("/session", { method: "POST", body: JSON.stringify({ token: new FormData(e.target).get("token") }) });
       render();
     } catch (err) {
-      $("#login-error").textContent = err instanceof AuthRequired ? "Invalid token." : err.message;
+      $("#login-error").textContent = err instanceof AuthRequired ? t("login.invalid") : err.message;
     }
   };
 }
@@ -65,6 +105,7 @@ function bindLogin() {
 $("#logout-btn").onclick = async () => { await api("/session", { method: "DELETE" }); render(); };
 $("#drawer-close").onclick = () => $("#drawer").classList.add("hidden");
 $("#drawer").onclick = (e) => { if (e.target.id === "drawer") $("#drawer").classList.add("hidden"); };
+$("#lang-select").onchange = (e) => { e.target.blur(); setLang(e.target.value); };
 
 function drawer(html) { $("#drawer-body").innerHTML = html; $("#drawer").classList.remove("hidden"); }
 
@@ -84,10 +125,10 @@ const icon = (name) => `<svg viewBox="0 0 24 24" width="20" height="20" fill="no
 const ago = (ts) => {
   if (!ts) return "";
   const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return `${Math.floor(s / 86400)} d ago`;
+  if (s < 60) return t("time.just_now");
+  if (s < 3600) return t("time.minutes_ago", { n: Math.floor(s / 60) });
+  if (s < 86400) return t("time.hours_ago", { n: Math.floor(s / 3600) });
+  return t("time.days_ago", { n: Math.floor(s / 86400) });
 };
 
 // One KPI card: tone colours the icon and, when `alert`, the border (something needs you).
@@ -96,7 +137,7 @@ function kpi({ label, value, sub = "", tone = "info", ico, href, alert = false, 
   const bar = meter == null ? "" : `<div class="meter"><span style="width:${Math.round(meter * 100)}%"></span></div>`;
   return `<${tag} class="kpi tone-${tone}${alert ? " alert" : ""}">
     <div class="kpi-ico">${icon(ico)}</div>
-    <div class="kpi-body"><div class="kpi-label">${esc(label)}</div><div class="kpi-value">${value}</div>
+    <div class="kpi-body"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div>
       ${bar}<div class="kpi-sub">${sub}</div></div></${href ? "a" : "div"}>`;
 }
 
@@ -104,54 +145,54 @@ async function viewOverview() {
   const [o, approvals] = await Promise.all([api("/overview"), api("/approvals?state=pending")]);
   const online = o.workers_total ? o.workers_online / o.workers_total : 0;
   const cards = [
-    kpi({ label: "Active runs", value: o.active_runs, ico: "runs", tone: "info",
-          sub: `${o.active_tasks} task${o.active_tasks === 1 ? "" : "s"} in progress` }),
-    kpi({ label: "Waiting for you", value: o.waiting_approvals, ico: "approvals", href: "#/approvals",
+    kpi({ label: t("overview.active_runs"), value: o.active_runs, ico: "runs", tone: "info",
+          sub: tn("overview.tasks_in_progress", o.active_tasks) }),
+    kpi({ label: t("overview.waiting_for_you"), value: o.waiting_approvals, ico: "approvals", href: "#/approvals",
           tone: o.waiting_approvals ? "warn" : "ok", alert: o.waiting_approvals > 0,
-          sub: o.waiting_approvals ? "approvals pending →" : "nothing to approve" }),
-    kpi({ label: "Workers online", value: `${o.workers_online}<span class="of">/${o.workers_total}</span>`, ico: "workers",
+          sub: o.waiting_approvals ? t("overview.approvals_pending") : t("overview.nothing_to_approve") }),
+    kpi({ label: t("overview.workers_online"), value: `${o.workers_online}<span class="of">/${o.workers_total}</span>`, ico: "workers",
           href: "#/workers", tone: !o.workers_total ? "idle" : o.workers_online ? "ok" : "bad",
           alert: o.workers_total > 0 && !o.workers_online, meter: o.workers_total ? online : null,
-          sub: !o.workers_total ? "no machine registered" : o.workers_online ? "ready for jobs" : "no machine can run jobs" }),
-    kpi({ label: "LLM spend", value: money(o.total_cost_usd).replace(/(\.\d{2})\d+$/, "$1"), ico: "cost", tone: "info",
-          sub: `estimated · all projects`, title: `${money(o.total_cost_usd)} estimated` }),
+          sub: !o.workers_total ? t("overview.no_machine") : o.workers_online ? t("overview.ready_for_jobs") : t("overview.no_machine_online") }),
+    kpi({ label: t("overview.llm_spend"), value: money(o.total_cost_usd).replace(/(\.\d{2})\d+$/, "$1"), ico: "cost", tone: "info",
+          sub: t("overview.spend_sub"), title: t("overview.spend_title", { amount: money(o.total_cost_usd) }) }),
   ].join("");
   const minor = [
-    kpi({ label: "Failed tasks", value: o.failed_tasks, ico: "failed", tone: o.failed_tasks ? "bad" : "idle",
-          sub: o.failed_tasks ? "see the runs below" : "none" }),
-    kpi({ label: "Projects", value: o.projects, ico: "projects", href: "#/projects", tone: "info",
-          sub: o.projects ? "open projects →" : "create your first one →" }),
+    kpi({ label: t("overview.failed_tasks"), value: o.failed_tasks, ico: "failed", tone: o.failed_tasks ? "bad" : "idle",
+          sub: o.failed_tasks ? t("overview.see_runs_below") : t("common.none") }),
+    kpi({ label: t("overview.projects"), value: o.projects, ico: "projects", href: "#/projects", tone: "info",
+          sub: o.projects ? t("overview.open_projects") : t("overview.create_first") }),
   ].join("");
 
   const waiting = approvals.slice(0, 5).map((a) => `<a class="row-card warn" href="#/approvals/${a.id}">
-      <div class="rc-main"><b>${esc(a.action)}</b><span class="muted">run <code>${short(a.workflow_run_id)}</code></span></div>
-      <span class="muted">${ago(a.created_at)}</span><span class="go">Review →</span></a>`).join("");
+      <div class="rc-main"><b>${esc(a.action)}</b><span class="muted">${t("common.run")} <code>${short(a.workflow_run_id)}</code></span></div>
+      <span class="muted">${ago(a.created_at)}</span><span class="go">${t("overview.review")}</span></a>`).join("");
   const running = (o.runs || []).map((r) => {
     const pct = r.stages_total ? Math.round((100 * r.stages_done) / r.stages_total) : 0;
-    const where = r.worker ? `<span>on <b>${esc(r.worker)}</b></span>` : (r.waiting_for ? `<span class="error">${esc(r.waiting_for)}</span>` : "");
+    const where = r.worker ? `<span>${t("overview.on_machine", { name: r.worker })}</span>` : (r.waiting_for ? `<span class="error">${esc(r.waiting_for)}</span>` : "");
     return `<a class="run-card${r.current_gate ? " gate" : ""}" href="#/runs/${r.id}">
       <div class="rc-head"><b>${esc(r.project || "")}</b><span class="tag">${esc(r.workflow_id)}</span>
-        ${r.current_gate ? '<span class="pill s-APPROVAL_REQUIRED">waiting approval</span>' : pill("RUNNING")}</div>
+        ${r.current_gate ? `<span class="pill s-APPROVAL_REQUIRED">${t("overview.waiting_approval")}</span>` : pill("RUNNING")}</div>
       <div class="obj">${esc(r.objective)}</div>
       <div class="rc-progress"><div class="progress"><span style="width:${pct}%"></span></div><span class="pct">${pct}%</span></div>
-      <div class="rc-meta"><span>${r.stages_done}/${r.stages_total} stages</span>${r.current_stage ? `<span>· ${esc(r.current_stage)}</span>` : ""}
-        ${where ? `<span>·</span>${where}` : ""}<span class="muted">· started ${ago(r.created_at)}</span></div></a>`;
+      <div class="rc-meta"><span>${t("overview.stages", { done: r.stages_done, total: r.stages_total })}</span>${r.current_stage ? `<span>· ${esc(r.current_stage)}</span>` : ""}
+        ${where ? `<span>·</span>${where}` : ""}<span class="muted">· ${t("overview.started", { ago: ago(r.created_at) })}</span></div></a>`;
   }).join("");
   const recent = (o.recent_runs || []).map((r) => `<a class="row-card" href="#/runs/${r.id}">
       <div class="rc-main"><b>${esc(r.project || "")}</b><span class="obj1">${esc(r.objective)}</span>
         ${r.status === "FAILED" && r.error ? `<span class="error obj1">${esc(r.error)}</span>` : ""}</div>
       ${pill(r.status)}<span class="muted">${ago(r.finished_at || r.created_at)}</span></a>`).join("");
-  const empty = !o.projects ? `<div class="empty"><b>Bắt đầu</b><p class="muted">Chưa có project nào. Tạo project, rồi đưa
-      một objective cho nó.</p><a class="btn" href="#/projects">Create a project</a></div>` : "";
+  const empty = !o.projects ? `<div class="empty"><b>${t("overview.empty_title")}</b><p class="muted">${t("overview.empty_text")}</p>
+      <a class="btn" href="#/projects">${t("overview.empty_button")}</a></div>` : "";
 
-  return `<div class="page-head"><h1>Overview</h1><span class="muted">updated ${new Date().toLocaleTimeString()}</span></div>
+  return `<div class="page-head"><h1>${t("overview.title")}</h1><span class="muted">${t("overview.updated", { time: new Date().toLocaleTimeString(locale()) })}</span></div>
     ${installHint()}${empty}
     <div class="kpis">${cards}</div><div class="kpis minor">${minor}</div>
-    ${approvals.length ? `<section class="panel"><div class="panel-head"><h2>Waiting for your approval</h2><span class="count warn">${approvals.length}</span>
-      ${approvals.length > 5 ? `<a href="#/approvals">See all →</a>` : ""}</div><div class="list">${waiting}</div></section>` : ""}
-    <section class="panel"><div class="panel-head"><h2>Running</h2><span class="count">${(o.runs || []).length}</span></div>
-      <div class="list">${running || '<p class="muted pad">Nothing running right now.</p>'}</div></section>
-    ${recent ? `<section class="panel"><div class="panel-head"><h2>Recently finished</h2></div><div class="list">${recent}</div></section>` : ""}`;
+    ${approvals.length ? `<section class="panel"><div class="panel-head"><h2>${t("overview.waiting_title")}</h2><span class="count warn">${approvals.length}</span>
+      ${approvals.length > 5 ? `<a href="#/approvals">${t("overview.see_all")}</a>` : ""}</div><div class="list">${waiting}</div></section>` : ""}
+    <section class="panel"><div class="panel-head"><h2>${t("overview.running_title")}</h2><span class="count">${(o.runs || []).length}</span></div>
+      <div class="list">${running || `<p class="muted pad">${t("overview.nothing_running")}</p>`}</div></section>
+    ${recent ? `<section class="panel"><div class="panel-head"><h2>${t("overview.recent_title")}</h2></div><div class="list">${recent}</div></section>` : ""}`;
 }
 
 // ---------------------------------------------------------------- installable app (PWA)
@@ -161,10 +202,8 @@ const standalone = () => window.matchMedia("(display-mode: standalone)").matches
 
 function installHint() {
   if (standalone()) return "";
-  if (installPrompt) return `<div class="hint row"><span>Cài dashboard thành ứng dụng trên máy này.</span><button id="install-btn">Install app</button></div>`;
-  if (/iPhone|iPad/.test(navigator.userAgent) && window.isSecureContext) {
-    return `<div class="hint">iPhone/iPad: bấm <b>Chia sẻ</b> → <b>Thêm vào MH chính</b> để dùng như một ứng dụng.</div>`;
-  }
+  if (installPrompt) return `<div class="hint row"><span>${t("pwa.install_text")}</span><button id="install-btn">${t("pwa.install_button")}</button></div>`;
+  if (/iPhone|iPad/.test(navigator.userAgent) && window.isSecureContext) return `<div class="hint">${t("pwa.ios")}</div>`;
   return "";
 }
 
@@ -181,49 +220,50 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
 }
 
 // Every project says where it runs (no silent default). Free text is accepted too, e.g. linux-amd64.
-const PLATFORMS = [["windows", "Windows"], ["linux", "Linux (any)"], ["linux-amd64", "Linux x64"],
-  ["linux-arm64", "Linux ARM64 (Jetson)"], ["any", "Any machine"]];
-const platformOptions = (selected = "") => `<option value="" ${selected ? "" : "selected"} disabled>Choose…</option>` +
-  PLATFORMS.map(([v, t]) => `<option value="${v}" ${v === selected ? "selected" : ""}>${esc(t)} — ${v}</option>`).join("") +
-  (selected && !PLATFORMS.some(([v]) => v === selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : "");
+const PLATFORMS = ["windows", "linux", "linux-amd64", "linux-arm64", "any"];
+const platformOptions = (selected = "") => `<option value="" ${selected ? "" : "selected"} disabled>${t("common.choose")}</option>` +
+  PLATFORMS.map((v) => `<option value="${v}" ${v === selected ? "selected" : ""}>${t(`platform.${v}`)} — ${v}</option>`).join("") +
+  (selected && !PLATFORMS.includes(selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : "");
 const LLM_NAMES = { anthropic: "Claude", google: "Gemini" };
 const llmName = (p) => (LLM_NAMES[p] ? `${LLM_NAMES[p]} (${p})` : p);
 const llmOptions = (models, selected = "", auto = "") =>
-  `<option value="">${esc(auto || `Default — ${llmName(models.default_provider)}`)}</option>` +
+  `<option value="">${auto || t("common.default_value", { value: llmName(models.default_provider) })}</option>` +
   models.providers.map((p) => `<option value="${esc(p)}" ${p === selected ? "selected" : ""}>${esc(llmName(p))}</option>`).join("");
-const ENGINES = [["native", "Native runtime"], ["claude-code", "Claude Code"]];
-const engineOptions = (selected = "", auto = "") => `<option value="">${esc(auto || "Default — Native runtime")}</option>` +
-  ENGINES.map(([v, t]) => `<option value="${v}" ${v === selected ? "selected" : ""}>${esc(t)}</option>`).join("");
-const engineName = (v) => (ENGINES.find(([k]) => k === v) || [v, v])[1];
+const ENGINES = ["native", "claude-code"];
+const engineName = (v) => (ENGINES.includes(v) ? t(`engine.${v}`) : esc(v));
+const engineOptions = (selected = "", auto = "") => `<option value="">${auto || t("common.default_value", { value: t("engine.native") })}</option>` +
+  ENGINES.map((v) => `<option value="${v}" ${v === selected ? "selected" : ""}>${engineName(v)}</option>`).join("");
 // Commands are edited as text and sent as argv arrays: quotes group words, backslashes stay as typed (Windows paths).
 const argvParse = (text) => (String(text || "").match(/"[^"]*"|'[^']*'|\S+/g) || []).map((w) => w.replace(/^(["'])(.*)\1$/, "$2"));
 const argvText = (v) => (Array.isArray(v) ? v.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ") : (v || ""));
 const capList = (raw) => String(raw || "").split(",").map((c) => c.trim()).filter(Boolean);
+const confidentialityOptions = (selected = "internal") => ["internal", "public", "restricted"]
+  .map((c) => `<option value="${c}" ${c === selected ? "selected" : ""}>${t(`confidentiality.${c}`)}</option>`).join("");
 
 async function viewProjects() {
   const [projects, archived] = await Promise.all([api("/projects"), api("/projects?archived=true")]);
   const archivedRows = archived.map((p) => `<tr class="click" data-href="#/projects/${p.id}"><td>${esc(p.name)}</td>
     <td><code>${esc(p.slug)}</code></td><td>${esc(p.repository?.url || "")}</td><td>${when(p.updated_at)}</td></tr>`).join("");
   const rows = projects.map((p) => `<tr class="click" data-href="#/projects/${p.id}"><td>${esc(p.name)}</td><td><code>${esc(p.slug)}</code></td>
-    <td>${p.labels?.platform ? `<code>${esc(p.labels.platform)}</code>` : '<span class="error">not set</span>'}</td>
-    <td>${esc(p.repository?.url || "")}</td><td>${esc(p.confidentiality)}</td><td>${when(p.created_at)}</td></tr>`).join("");
-  return `<h1>Projects</h1>
-    <div class="table-wrap"><table><tr><th>Name</th><th>Slug</th><th>Platform</th><th>Repository</th><th>Confidentiality</th><th>Created</th></tr>${rows || '<tr><td colspan="6" class="muted">No projects yet</td></tr>'}</table></div>
-    ${archived.length ? `<details class="archived"><summary class="muted">Archived projects (${archived.length})</summary>
-      <div class="table-wrap"><table><tr><th>Name</th><th>Slug</th><th>Repository</th><th>Archived</th></tr>${archivedRows}</table></div></details>` : ""}
-    <h2>New project</h2>
+    <td>${p.labels?.platform ? `<code>${esc(p.labels.platform)}</code>` : `<span class="error">${t("projects.not_set")}</span>`}</td>
+    <td>${esc(p.repository?.url || "")}</td><td>${t(`confidentiality.${p.confidentiality}`)}</td><td>${when(p.created_at)}</td></tr>`).join("");
+  return `<h1>${t("projects.title")}</h1>
+    <div class="table-wrap"><table><tr><th>${t("field.name")}</th><th>${t("field.slug")}</th><th>${t("field.platform")}</th><th>${t("field.repository")}</th><th>${t("field.confidentiality")}</th><th>${t("field.created")}</th></tr>${rows || `<tr><td colspan="6" class="muted">${t("projects.none")}</td></tr>`}</table></div>
+    ${archived.length ? `<details class="archived"><summary class="muted">${t("projects.archived_list", { n: archived.length })}</summary>
+      <div class="table-wrap"><table><tr><th>${t("field.name")}</th><th>${t("field.slug")}</th><th>${t("field.repository")}</th><th>${t("projects.archived_at")}</th></tr>${archivedRows}</table></div></details>` : ""}
+    <h2>${t("projects.new")}</h2>
     <form class="grid" id="project-form">
-      <label>Name<input name="name" required></label>
-      <label>Repository URL / path<input name="url" placeholder="optional for content: https://… or D:/src/repo"></label>
-      <label>Base branch<input name="base_branch" value="main"></label>
-      <label>Platform<select name="platform" required>${platformOptions()}</select></label>
-      <label>Required capabilities<input name="required_capabilities" placeholder="dotnet-windowsdesktop, msbuild"></label>
-      <label>Build command<input name="build_command" placeholder="python -m compileall -q src"></label>
-      <label>Test command<input name="test_command" placeholder="python -m pytest -q"></label>
-      <label>Lint command<input name="lint_command" placeholder="ruff check ."></label>
-      <label>Confidentiality<select name="confidentiality"><option>internal</option><option>public</option><option>restricted</option></select></label>
-      <label>Budget (USD)<input name="budget_usd" type="number" step="0.01"></label>
-      <div class="full row"><button>Create project</button><span id="project-error" class="error"></span></div>
+      <label>${t("field.name")}<input name="name" required></label>
+      <label>${t("field.repository_url")}<input name="url" placeholder="${t("projects.url_placeholder")}"></label>
+      <label>${t("field.base_branch")}<input name="base_branch" value="main"></label>
+      <label>${t("field.platform")}<select name="platform" required>${platformOptions()}</select></label>
+      <label>${t("field.required_capabilities")}<input name="required_capabilities" placeholder="dotnet-windowsdesktop, msbuild"></label>
+      <label>${t("field.build_command")}<input name="build_command" placeholder="python -m compileall -q src"></label>
+      <label>${t("field.test_command")}<input name="test_command" placeholder="python -m pytest -q"></label>
+      <label>${t("field.lint_command")}<input name="lint_command" placeholder="ruff check ."></label>
+      <label>${t("field.confidentiality")}<select name="confidentiality">${confidentialityOptions()}</select></label>
+      <label>${t("field.budget")}<input name="budget_usd" type="number" step="0.01"></label>
+      <div class="full row"><button>${t("projects.create")}</button><span id="project-error" class="error"></span></div>
     </form>`;
 }
 
@@ -247,10 +287,10 @@ function bindProjects() {
 }
 
 // Machine picker for run placement: "" lets the orchestrator choose the least loaded matching machine.
-function machineSelect(workers, selected = "", auto = "Automatic (least loaded matching machine)") {
+function machineSelect(workers, selected = "", auto = "") {
   const opts = workers.filter((w) => w.status !== "revoked").map((w) =>
-    `<option value="${esc(w.name)}" ${w.name === selected ? "selected" : ""}>${esc(w.name)} · ${esc(w.platform)} · ${esc(w.status)}</option>`).join("");
-  return `<select name="worker"><option value="">${esc(auto)}</option>${opts}</select>`;
+    `<option value="${esc(w.name)}" ${w.name === selected ? "selected" : ""}>${esc(w.name)} · ${esc(w.platform)} · ${esc(t(`status.${w.status}`))}</option>`).join("");
+  return `<select name="worker"><option value="">${auto || t("run.machine_auto")}</option>${opts}</select>`;
 }
 
 async function viewProject(id) {
@@ -259,83 +299,81 @@ async function viewProject(id) {
     <td>${pill(r.status)}</td><td>${esc(r.input?.objective || "")}</td><td>${when(r.created_at)}</td></tr>`).join("");
   const options = workflows.filter((w) => w.status === "active").map((w) => `<option value="${esc(w.id)}">${esc(w.name || w.id)} v${esc(w.version)}</option>`).join("");
   const archived = p.status === "ARCHIVED";
-  return `<div class="page-head"><h1>${esc(p.name)}</h1><span class="muted"><code>${esc(p.slug)}</code> · ${p.run_count} run${p.run_count === 1 ? "" : "s"}</span></div>
-    ${archived ? `<div class="archived-banner"><span><b>Archived.</b> Runs and artifacts stay readable; no new run can start.</span>
-      <button class="ghost" id="restore-project">Restore project</button></div>` : ""}
-    <div class="kv"><div>Repository</div><div>${p.repository?.url ? `<code>${esc(p.repository.url)}</code> (${esc(p.repository.base_branch)})` : '<span class="muted">none (content workflows)</span>'}</div>
-    <div>Commands</div><div>build: <code>${esc(argvText(p.repository?.build_command) || "—")}</code> test: <code>${esc(argvText(p.repository?.test_command) || "—")}</code> lint: <code>${esc(argvText(p.repository?.lint_command) || "—")}</code></div>
-    <div>Spend / budget</div><div>${money(p.spend_usd)} / ${p.budget_usd == null ? "∞" : money(p.budget_usd)}</div></div>
+  const repo = p.repository || {};
+  return `<div class="page-head"><h1>${esc(p.name)}</h1><span class="muted"><code>${esc(p.slug)}</code> · ${tn("project.run_count", p.run_count)}</span></div>
+    ${archived ? `<div class="archived-banner"><span>${t("project.archived_banner")}</span>
+      <button class="ghost" id="restore-project">${t("project.restore")}</button></div>` : ""}
+    <div class="kv"><div>${t("field.repository")}</div><div>${repo.url ? `<code>${esc(repo.url)}</code> (${esc(repo.base_branch)})` : `<span class="muted">${t("project.no_repository")}</span>`}</div>
+    <div>${t("project.commands")}</div><div>build: <code>${esc(argvText(repo.build_command) || "—")}</code> test: <code>${esc(argvText(repo.test_command) || "—")}</code> lint: <code>${esc(argvText(repo.lint_command) || "—")}</code></div>
+    <div>${t("project.spend_budget")}</div><div>${money(p.spend_usd)} / ${p.budget_usd == null ? "∞" : money(p.budget_usd)}</div></div>
     ${projectSettings(p)}
     ${projectMachines(p, models)}
-    ${archived ? "" : `<h2>Start a workflow run</h2>
-    <form class="grid" id="run-form"><label>Workflow<select name="workflow_id">${options}</select></label>
-      <label>Machine${machineSelect(workers)}</label>
-      <label>Model<select name="llm">${llmOptions(models, "", `Project default — ${llmName(p.labels?.llm || models.default_provider)}`)}</select></label>
-      <label>Coding engine<select name="coding_engine">${engineOptions("", `Project default — ${engineName(p.labels?.coding_engine || "native")}`)}</select></label>
-      <label class="full">Objective<textarea name="objective" rows="3" required></textarea></label>
-      <div class="full row"><button>Start</button></div><div class="full" id="run-error"></div></form>`}
-    <h2>Runs</h2><div class="table-wrap"><table><tr><th>Run</th><th>Workflow</th><th>Status</th><th>Objective</th><th>Created</th></tr>${rows || '<tr><td colspan="5" class="muted">No runs</td></tr>'}</table></div>
+    ${archived ? "" : `<h2>${t("run.start_title")}</h2>
+    <form class="grid" id="run-form"><label>${t("field.workflow")}<select name="workflow_id">${options}</select></label>
+      <label>${t("field.machine")}${machineSelect(workers)}</label>
+      <label>${t("field.model")}<select name="llm">${llmOptions(models, "", t("common.project_default", { value: llmName(p.labels?.llm || models.default_provider) }))}</select></label>
+      <label>${t("field.coding_engine")}<select name="coding_engine">${engineOptions("", t("common.project_default", { value: engineName(p.labels?.coding_engine || "native") }, true))}</select></label>
+      <label class="full">${t("field.objective")}<textarea name="objective" rows="3" required></textarea></label>
+      <div class="full row"><button>${t("run.start")}</button></div><div class="full" id="run-error"></div></form>`}
+    <h2>${t("project.runs")}</h2><div class="table-wrap"><table><tr><th>${t("common.run")}</th><th>${t("field.workflow")}</th><th>${t("field.status")}</th><th>${t("field.objective")}</th><th>${t("field.created")}</th></tr>${rows || `<tr><td colspan="5" class="muted">${t("project.no_runs")}</td></tr>`}</table></div>
     ${projectDangerZone(p)}`;
 }
 
 function projectSettings(p) {
   const r = p.repository || {};
-  const conf = ["internal", "public", "restricted"].map((c) => `<option ${c === p.confidentiality ? "selected" : ""}>${c}</option>`).join("");
-  return `<h2>Settings</h2>
+  return `<h2>${t("settings.title")}</h2>
     <form class="grid" id="project-settings-form">
-      <label>Name<input name="name" value="${esc(p.name)}" required></label>
-      <label>Repository URL / path<input name="url" value="${esc(r.url || "")}" placeholder="https://… , ssh://… or D:/src/repo"></label>
-      <label>Base branch<input name="base_branch" value="${esc(r.base_branch || "main")}"></label>
-      <label>Build command<input name="build_command" value="${esc(argvText(r.build_command))}" placeholder="dotnet build App.csproj -nologo"></label>
-      <label>Test command<input name="test_command" value="${esc(argvText(r.test_command))}" placeholder="dotnet test tests/App.Tests"></label>
-      <label>Lint command<input name="lint_command" value="${esc(argvText(r.lint_command))}" placeholder="optional"></label>
-      <label>Confidentiality<select name="confidentiality">${conf}</select></label>
-      <label>Budget (USD, empty = no limit)<input name="budget_usd" type="number" step="0.01" min="0" value="${p.budget_usd ?? ""}"></label>
-      <label class="full">Description<textarea name="description" rows="2">${esc(p.description || "")}</textarea></label>
-      <div class="full row"><button>Save settings</button><span id="settings-msg" class="muted"></span><span id="settings-error" class="error"></span>
-        <span class="muted">Runs already started keep the settings they started with.</span></div></form>`;
+      <label>${t("field.name")}<input name="name" value="${esc(p.name)}" required></label>
+      <label>${t("field.repository_url")}<input name="url" value="${esc(r.url || "")}" placeholder="https://… , ssh://… , D:/src/repo"></label>
+      <label>${t("field.base_branch")}<input name="base_branch" value="${esc(r.base_branch || "main")}"></label>
+      <label>${t("field.build_command")}<input name="build_command" value="${esc(argvText(r.build_command))}" placeholder="dotnet build App.csproj -nologo"></label>
+      <label>${t("field.test_command")}<input name="test_command" value="${esc(argvText(r.test_command))}" placeholder="dotnet test tests/App.Tests"></label>
+      <label>${t("field.lint_command")}<input name="lint_command" value="${esc(argvText(r.lint_command))}" placeholder="${t("common.optional")}"></label>
+      <label>${t("field.confidentiality")}<select name="confidentiality">${confidentialityOptions(p.confidentiality)}</select></label>
+      <label>${t("settings.budget")}<input name="budget_usd" type="number" step="0.01" min="0" value="${p.budget_usd ?? ""}"></label>
+      <label class="full">${t("field.description")}<textarea name="description" rows="2">${esc(p.description || "")}</textarea></label>
+      <div class="full row"><button>${t("settings.save")}</button><span id="settings-msg" class="muted"></span><span id="settings-error" class="error"></span>
+        <span class="muted">${t("settings.note")}</span></div></form>`;
 }
 
 function projectDangerZone(p) {
   if (p.status === "ARCHIVED") return "";
-  const canDelete = !p.run_count;
-  return `<h2>Danger zone</h2><div class="danger-zone">
-    ${canDelete ? `<b>Delete project</b><p class="muted">This project has no runs. Deleting removes it for good (the audit trail keeps a record).</p>
-      <button class="danger" id="delete-project">Delete project</button>`
-    : `<b>Archive project</b><p class="muted">The project has ${p.run_count} run(s), so it cannot be deleted without losing their
-      history. Archiving hides it from the project list and blocks new runs; runs, artifacts and audit stay readable,
-      and you can restore it at any time.</p><button class="danger" id="archive-project">Archive project</button>`}
+  return `<h2>${t("danger.title")}</h2><div class="danger-zone">
+    ${!p.run_count ? `<b>${t("danger.delete_title")}</b><p class="muted">${t("danger.delete_text")}</p>
+      <button class="danger" id="delete-project">${t("danger.delete_button")}</button>`
+    : `<b>${t("danger.archive_title")}</b><p class="muted">${t("danger.archive_text", { n: p.run_count })}</p>
+      <button class="danger" id="archive-project">${t("danger.archive_button")}</button>`}
     <span id="danger-error" class="error"></span></div>`;
 }
 
 // Explains why a run was refused when the fix is on a worker machine.
 function runErrorHint(message) {
   const hints = [];
-  if (/missing llm-anthropic/.test(message)) hints.push("Không máy nào có API key của Claude. Đặt <code>ANTHROPIC_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở platform.claude.com (hướng dẫn §6).");
-  if (/missing llm-google/.test(message)) hints.push("Không máy nào có API key của Gemini. Đặt <code>GEMINI_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở aistudio.google.com (hướng dẫn §6).");
-  if (/missing claude-code/.test(message)) hints.push("Engine Claude Code cần lệnh <code>claude</code> trên máy worker (hướng dẫn §6), hoặc chọn Coding engine = Native runtime.");
-  if (/platform \S+, needs|platform is /.test(message)) hints.push("Platform của project không khớp máy nào: sửa ở <b>Where it runs</b>, hoặc bật một máy đúng hệ điều hành.");
+  if (/missing llm-anthropic/.test(message)) hints.push(t("hint.llm_anthropic"));
+  if (/missing llm-google/.test(message)) hints.push(t("hint.llm_google"));
+  if (/missing claude-code/.test(message)) hints.push(t("hint.claude_code"));
+  if (/platform is /.test(message)) hints.push(t("hint.platform"));
   return `<span class="error">${esc(message)}</span>${hints.map((h) => `<span class="hint-fix">${h}</span>`).join("")}`;
 }
 
 function projectMachines(p, models) {
   const req = p.requirements || {};
   const rows = (p.machines || []).map((m) => `<tr><td>${esc(m.name)}</td><td>${pill(m.status)}</td><td><code>${esc(m.platform)}</code></td>
-    <td>${m.matches ? '<span class="pill s-PASS">yes</span>' : `<span class="error">${esc(m.reasons.join("; "))}</span>`}</td></tr>`).join("");
+    <td>${m.matches ? `<span class="pill s-PASS">${t("common.yes")}</span>` : `<span class="error">${esc(m.reasons.join("; "))}</span>`}</td></tr>`).join("");
   const none = req.platform && (p.machines || []).length && !(p.machines || []).some((m) => m.matches);
-  return `<h2>Where it runs</h2>
-    ${req.platform ? "" : '<p class="error">This project has no platform yet: runs are refused until you choose one below.</p>'}
-    ${none ? '<p class="error">No registered machine can run this project.</p>' : ""}
+  return `<h2>${t("where.title")}</h2>
+    ${req.platform ? "" : `<p class="error">${t("where.no_platform")}</p>`}
+    ${none ? `<p class="error">${t("where.no_machine")}</p>` : ""}
     <form class="grid" id="project-edit-form">
-      <label>Platform<select name="platform" required>${platformOptions(req.platform || "")}</select></label>
-      <label>Required capabilities<input name="required_capabilities" value="${esc((p.repository?.required_capabilities || []).join(", "))}"
+      <label>${t("field.platform")}<select name="platform" required>${platformOptions(req.platform || "")}</select></label>
+      <label>${t("field.required_capabilities")}<input name="required_capabilities" value="${esc((p.repository?.required_capabilities || []).join(", "))}"
         placeholder="dotnet-windowsdesktop, msbuild"></label>
-      <label>Default model<select name="llm">${llmOptions(models, p.labels?.llm || "")}</select></label>
-      <label>Default coding engine<select name="coding_engine">${engineOptions(p.labels?.coding_engine || "")}</select></label>
-      <div class="full row"><button class="ghost">Save</button><span id="project-edit-error" class="error"></span>
-        <span class="muted">Projects with a repository also need <code>git</code>; workflow stages and the model may add more.</span></div></form>
-    <div class="table-wrap"><table><tr><th>Machine</th><th>Status</th><th>Platform</th><th>Can run it</th></tr>
-      ${rows || '<tr><td colspan="4" class="muted">No workers registered</td></tr>'}</table></div>`;
+      <label>${t("where.default_model")}<select name="llm">${llmOptions(models, p.labels?.llm || "")}</select></label>
+      <label>${t("where.default_engine")}<select name="coding_engine">${engineOptions(p.labels?.coding_engine || "")}</select></label>
+      <div class="full row"><button class="ghost">${t("common.save")}</button><span id="project-edit-error" class="error"></span>
+        <span class="muted">${t("where.note")}</span></div></form>
+    <div class="table-wrap"><table><tr><th>${t("field.machine")}</th><th>${t("field.status")}</th><th>${t("field.platform")}</th><th>${t("where.can_run")}</th></tr>
+      ${rows || `<tr><td colspan="4" class="muted">${t("workers.none")}</td></tr>`}</table></div>`;
 }
 
 function bindProject(id) {
@@ -358,18 +396,18 @@ function bindProject(id) {
       }
       await api(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) });
       await render();
-      const msg = $("#settings-msg"); if (msg) msg.textContent = "Saved.";
+      const msg = $("#settings-msg"); if (msg) msg.textContent = t("common.saved");
     } catch (err) { $("#settings-error").textContent = err.message; }
   };
   const del = $("#delete-project");
   if (del) del.onclick = async () => {
-    if (!confirm("Delete this project for good?")) return;
+    if (!confirm(t("danger.delete_confirm"))) return;
     try { await api(`/projects/${id}`, { method: "DELETE" }); location.hash = "#/projects"; }
     catch (err) { $("#danger-error").textContent = err.message; }
   };
   const arc = $("#archive-project");
   if (arc) arc.onclick = async () => {
-    if (!confirm("Archive this project? New runs are blocked until you restore it.")) return;
+    if (!confirm(t("danger.archive_confirm"))) return;
     try { await api(`/projects/${id}/archive`, { method: "POST" }); render(); }
     catch (err) { $("#danger-error").textContent = err.message; }
   };
@@ -410,39 +448,39 @@ function bindProject(id) {
 async function viewRun(id) {
   const [run, tasks, approvals, workers] = await Promise.all([api(`/workflow-runs/${id}`), api(`/workflow-runs/${id}/tasks`), api("/approvals?state=pending"), api("/workers")]);
   const pipeline = run.stages.map((s) => `<div class="stage ${esc(s.status)}"><div class="t">${esc(s.title)}</div>
-    <div class="m">${esc(s.kind)}${s.gate ? " · gate" : ""} · iter ${s.iteration}</div><div>${pill(s.status)}</div></div>`).join('<div class="arrow">→</div>');
-  const rows = tasks.map((t) => `<tr class="click" data-task="${t.id}"><td>${esc(t.stage_id)}</td><td>${esc(t.title)}</td>
-    <td>${esc(t.assigned_role || t.task_type)}</td><td>${pill(t.state)}</td><td>${t.iteration}</td><td>${t.attempt}/${t.max_attempts}</td>
-    <td>${t.output?.critic ? pill(t.output.critic.decision) : ""} ${t.output?.critic?.verdict ? pill(t.output.critic.verdict) : ""}</td></tr>`).join("");
+    <div class="m">${esc(s.kind)}${s.gate ? ` · ${t("run.gate")}` : ""} · ${t("run.iteration", { n: s.iteration })}</div><div>${pill(s.status)}</div></div>`).join('<div class="arrow">→</div>');
+  const rows = tasks.map((task) => `<tr class="click" data-task="${task.id}"><td>${esc(task.stage_id)}</td><td>${esc(task.title)}</td>
+    <td>${esc(task.assigned_role || task.task_type)}</td><td>${pill(task.state)}</td><td>${task.iteration}</td><td>${task.attempt}/${task.max_attempts}</td>
+    <td>${task.output?.critic ? pill(task.output.critic.decision) : ""} ${task.output?.critic?.verdict ? pill(task.output.critic.verdict) : ""}</td></tr>`).join("");
   const mine = approvals.filter((a) => a.workflow_run_id === id);
-  return `<div class="row"><h1>Run <code>${short(run.id)}</code></h1>${pill(run.status)}
-      ${run.status === "RUNNING" ? '<button class="danger" id="cancel-run">Cancel run</button>' : ""}</div>
-    <div class="kv"><div>Workflow</div><div>${esc(run.workflow_id)} v${esc(run.workflow_version)}</div>
-      <div>Objective</div><div>${esc(run.input?.objective)}</div>
+  return `<div class="row"><h1>${t("common.run")} <code>${short(run.id)}</code></h1>${pill(run.status)}
+      ${run.status === "RUNNING" ? `<button class="danger" id="cancel-run">${t("run.cancel")}</button>` : ""}</div>
+    <div class="kv"><div>${t("field.workflow")}</div><div>${esc(run.workflow_id)} v${esc(run.workflow_version)}</div>
+      <div>${t("field.objective")}</div><div>${esc(run.input?.objective)}</div>
       ${placementRows(run, workers)}
-      ${run.input?.repository ? `<div>Integration branch</div><div><code>${esc(run.integration_branch)}</code></div>` : ""}
-      <div>Fix loops</div><div>${esc(JSON.stringify(run.fix_loops))}</div>
-      <div>LLM cost</div><div>${money(run.cost_usd)}</div>
-      ${run.error ? `<div>Error</div><div class="error">${esc(run.error)}</div>` : ""}</div>
-    ${mine.length ? `<h2>Waiting for your approval</h2>${approvalTable(mine)}` : ""}
-    <h2>Workflow</h2><div class="pipeline">${pipeline}</div>
-    <h2>Tasks</h2><div class="table-wrap"><table><tr><th>Stage</th><th>Task</th><th>Role</th><th>State</th><th>Iter</th><th>Attempt</th><th>Critic</th></tr>${rows}</table></div>
-    <h2>Artifacts</h2><div id="run-artifacts" class="muted">Loading…</div>`;
+      ${run.input?.repository ? `<div>${t("run.integration_branch")}</div><div><code>${esc(run.integration_branch)}</code></div>` : ""}
+      <div>${t("run.fix_loops")}</div><div>${esc(JSON.stringify(run.fix_loops))}</div>
+      <div>${t("run.llm_cost")}</div><div>${money(run.cost_usd)}</div>
+      ${run.error ? `<div>${t("common.error")}</div><div class="error">${esc(run.error)}</div>` : ""}</div>
+    ${mine.length ? `<h2>${t("overview.waiting_title")}</h2>${approvalTable(mine)}` : ""}
+    <h2>${t("field.workflow")}</h2><div class="pipeline">${pipeline}</div>
+    <h2>${t("run.tasks")}</h2><div class="table-wrap"><table><tr><th>${t("run.stage")}</th><th>${t("run.task")}</th><th>${t("run.role")}</th><th>${t("run.state")}</th><th>${t("run.iter")}</th><th>${t("run.attempt")}</th><th>${t("run.critic")}</th></tr>${rows}</table></div>
+    <h2>${t("run.artifacts")}</h2><div id="run-artifacts" class="muted">${t("common.loading")}</div>`;
 }
 
 function placementRows(run, workers) {
-  if (run.placement?.mode !== "run") return `<div>Machine</div><div class="muted">any matching machine per job (placement: stage)</div>`;
+  if (run.placement?.mode !== "run") return `<div>${t("field.machine")}</div><div class="muted">${t("run.placement_stage")}</div>`;
   const w = run.assigned_worker;
-  const machine = w ? `<b>${esc(w.name || short(w.id))}</b> ${w.status ? pill(w.status) : ""} <span class="muted">since ${when(run.assigned_at)}</span>`
-    : `<span class="muted">not assigned yet</span>`;
+  const machine = w ? `<b>${esc(w.name || short(w.id))}</b> ${w.status ? pill(w.status) : ""} <span class="muted">${t("run.since", { time: when(run.assigned_at) })}</span>`
+    : `<span class="muted">${t("run.not_assigned")}</span>`;
   const req = run.requirements || {};
-  const move = run.status === "RUNNING" ? `<form id="reassign-form" class="row">${machineSelect(workers, run.placement.worker || "", "Let the orchestrator choose")}
-      <button class="ghost">Move run</button><span id="reassign-error" class="error"></span></form>` : "";
-  return `<div>Machine</div><div>${machine}${run.placement.worker ? ' <span class="muted">(chosen by hand)</span>' : ""}
+  const move = run.status === "RUNNING" ? `<form id="reassign-form" class="row">${machineSelect(workers, run.placement.worker || "", t("run.machine_choose"))}
+      <button class="ghost">${t("run.move")}</button><span id="reassign-error" class="error"></span></form>` : "";
+  return `<div>${t("field.machine")}</div><div>${machine}${run.placement.worker ? ` <span class="muted">${t("run.chosen_by_hand")}</span>` : ""}
       ${run.placement.wait ? `<div class="error">${esc(run.placement.wait)}</div>` : ""}${move}</div>
-    <div>Requirements</div><div>platform <code>${esc(req.platform || "any")}</code> · capabilities <code>${esc((req.capabilities || []).join(", "))}</code></div>
-    ${run.llm ? `<div>Model</div><div>${esc(llmName(run.llm))}</div>` : ""}
-    ${run.coding_engine && run.coding_engine !== "native" ? `<div>Coding engine</div><div>${esc(engineName(run.coding_engine))}</div>` : ""}`;
+    <div>${t("run.requirements")}</div><div>${t("field.platform")} <code>${esc(req.platform || "any")}</code> · ${t("run.capabilities")} <code>${esc((req.capabilities || []).join(", "))}</code></div>
+    ${run.llm ? `<div>${t("field.model")}</div><div>${esc(llmName(run.llm))}</div>` : ""}
+    ${run.coding_engine && run.coding_engine !== "native" ? `<div>${t("field.coding_engine")}</div><div>${engineName(run.coding_engine)}</div>` : ""}`;
 }
 
 async function bindRun(id) {
@@ -454,7 +492,7 @@ async function bindRun(id) {
     catch (err) { $("#reassign-error").textContent = err.message; }
   };
   const btn = $("#cancel-run");
-  if (btn) btn.onclick = async () => { if (confirm("Cancel this run?")) { await api(`/workflow-runs/${id}/cancel`, { method: "POST" }); render(); } };
+  if (btn) btn.onclick = async () => { if (confirm(t("run.cancel_confirm"))) { await api(`/workflow-runs/${id}/cancel`, { method: "POST" }); render(); } };
   document.querySelectorAll("tr[data-task]").forEach((tr) => (tr.onclick = () => openTask(tr.dataset.task)));
   bindApprovalButtons();
   const run = await api(`/workflow-runs/${id}`);
@@ -466,7 +504,7 @@ async function bindRun(id) {
 function artifactTable(arts) {
   const rows = arts.map((a) => `<tr class="click" data-artifact="${a.id}"><td>${esc(a.type)}</td><td><code>${esc(a.name)}</code></td>
     <td>v${a.version}</td><td>${esc(a.stage_id || "")}</td><td><code>${esc(a.checksum.slice(0, 19))}</code></td><td>${a.size_bytes}</td></tr>`).join("");
-  return `<div class="table-wrap"><table><tr><th>Type</th><th>Name</th><th>Ver</th><th>Stage</th><th>Checksum</th><th>Bytes</th></tr>${rows || '<tr><td colspan="6" class="muted">None</td></tr>'}</table></div>`;
+  return `<div class="table-wrap"><table><tr><th>${t("artifact.type")}</th><th>${t("field.name")}</th><th>${t("artifact.version")}</th><th>${t("run.stage")}</th><th>${t("artifact.checksum")}</th><th>${t("artifact.bytes")}</th></tr>${rows || `<tr><td colspan="6" class="muted">${t("common.none")}</td></tr>`}</table></div>`;
 }
 
 function bindArtifactLinks() { document.querySelectorAll("tr[data-artifact]").forEach((tr) => (tr.onclick = () => openArtifact(tr.dataset.artifact))); }
@@ -474,48 +512,48 @@ function bindArtifactLinks() { document.querySelectorAll("tr[data-artifact]").fo
 async function openArtifact(id) {
   const [a, content, rel, impact] = await Promise.all([api(`/artifacts/${id}`), api(`/artifacts/${id}/content`), api(`/artifacts/${id}/relations`), api(`/artifacts/${id}/impact`)]);
   const relRows = [...rel.outgoing.map((r) => `<li>${esc(r.relation_type)} → <code>${short(r.to_artifact_id)}</code></li>`),
-    ...rel.incoming.map((r) => `<li><code>${short(r.from_artifact_id)}</code> ${esc(r.relation_type)} → this</li>`)].join("");
+    ...rel.incoming.map((r) => `<li><code>${short(r.from_artifact_id)}</code> ${esc(r.relation_type)} → ${t("artifact.this")}</li>`)].join("");
   drawer(`<h2>${esc(a.name)} <span class="muted">v${a.version}</span></h2>
-    <div class="kv"><div>Type</div><div>${esc(a.type)}</div><div>Checksum</div><div><code>${esc(a.checksum)}</code></div>
-    <div>Storage</div><div><code>${esc(a.storage_backend)}</code> ${esc(a.uri)}</div><div>Task</div><div><code>${short(a.task_id)}</code></div></div>
-    <h3>Traceability</h3><ul>${relRows || "<li class='muted'>none</li>"}</ul>
-    <h3>Impact (${impact.impacted_artifacts.length} downstream artifacts)</h3>
-    <ul>${impact.impacted_artifacts.map((x) => `<li>${esc(x.type)} <code>${esc(x.name)}</code> (depth ${x.depth}, ${esc(x.via)})</li>`).join("")}</ul>
-    <h3>Content</h3><pre>${esc(content)}</pre>`);
+    <div class="kv"><div>${t("artifact.type")}</div><div>${esc(a.type)}</div><div>${t("artifact.checksum")}</div><div><code>${esc(a.checksum)}</code></div>
+    <div>${t("artifact.storage")}</div><div><code>${esc(a.storage_backend)}</code> ${esc(a.uri)}</div><div>${t("run.task")}</div><div><code>${short(a.task_id)}</code></div></div>
+    <h3>${t("artifact.traceability")}</h3><ul>${relRows || `<li class='muted'>${t("common.none")}</li>`}</ul>
+    <h3>${t("artifact.impact", { n: impact.impacted_artifacts.length })}</h3>
+    <ul>${impact.impacted_artifacts.map((x) => `<li>${esc(x.type)} <code>${esc(x.name)}</code> (${t("artifact.depth", { n: x.depth })}, ${esc(x.via)})</li>`).join("")}</ul>
+    <h3>${t("artifact.content")}</h3><pre>${esc(content)}</pre>`);
 }
 
 async function openTask(id) {
-  const t = await api(`/tasks/${id}`);
-  const runs = t.agent_runs.map((r) => `<h3>Agent run <code>${short(r.id)}</code> ${pill(r.status)}</h3>
-    <div class="kv"><div>Model</div><div>${esc(r.model_provider)}/${esc(r.model_name)} (${esc(r.model_class)})</div>
-    <div>Route reason</div><div>${esc(r.route_reason)}</div><div>Tokens</div><div>${r.token_input} in / ${r.token_output} out · ${money(r.cost_estimate)} · ${r.duration_ms} ms</div>
-    <div>Critic</div><div>${r.critic?.decision ? pill(r.critic.decision) : ""} ${esc((r.critic?.findings || []).map((f) => `[${f.severity}] ${f.message}`).join(" · "))}</div>
-    ${r.error ? `<div>Error</div><div class="error">${esc(r.error)}</div>` : ""}</div>
-    <details><summary>${r.tool_calls.length} tool calls</summary><pre>${esc(r.tool_calls.map((c) => `${c.status.padEnd(8)} ${c.tool} ${JSON.stringify(c.input || {})} ${c.message || ""}`).join("\n"))}</pre></details>`).join("");
-  const jobs = t.jobs.map((j) => `<li><a href="#" data-logs="${j.id}">job ${short(j.id)}</a> ${pill(j.state)} attempt ${j.attempt} ${j.error ? `<span class="error">${esc(j.error)}</span>` : ""}</li>`).join("");
-  drawer(`<h2>${esc(t.title)}</h2><div class="kv"><div>State</div><div>${pill(t.state)}</div><div>Role</div><div>${esc(t.assigned_role || t.task_type)}</div>
-    <div>Iteration / attempt</div><div>${t.iteration} / ${t.attempt} of ${t.max_attempts}</div>
-    <div>Acceptance criteria</div><div>${(t.acceptance_criteria || []).map(esc).join("<br>") || "—"}</div>
-    ${t.input?.feedback?.length ? `<div>Feedback</div><div>${t.input.feedback.map(esc).join("<br>")}</div>` : ""}
-    ${t.output?.failure_reason ? `<div>Failure</div><div class="error">${esc(t.output.failure_reason)}</div>` : ""}</div>
-    <h3>Summary</h3><p>${esc(t.output?.summary || "—")}</p>
-    <h3>Jobs</h3><ul>${jobs || "<li class='muted'>none</li>"}</ul><pre id="job-logs" class="hidden"></pre>
-    ${runs}<h3>Artifacts</h3>${artifactTable(t.artifacts)}`);
+  const task = await api(`/tasks/${id}`);
+  const runs = task.agent_runs.map((r) => `<h3>${t("task.agent_run")} <code>${short(r.id)}</code> ${pill(r.status)}</h3>
+    <div class="kv"><div>${t("field.model")}</div><div>${esc(r.model_provider)}/${esc(r.model_name)} (${esc(r.model_class)})</div>
+    <div>${t("task.route_reason")}</div><div>${esc(r.route_reason)}</div><div>${t("task.tokens")}</div><div>${t("task.tokens_value", { in: r.token_input, out: r.token_output, cost: money(r.cost_estimate), ms: r.duration_ms })}</div>
+    <div>${t("run.critic")}</div><div>${r.critic?.decision ? pill(r.critic.decision) : ""} ${esc((r.critic?.findings || []).map((f) => `[${f.severity}] ${f.message}`).join(" · "))}</div>
+    ${r.error ? `<div>${t("common.error")}</div><div class="error">${esc(r.error)}</div>` : ""}</div>
+    <details><summary>${tn("task.tool_calls", r.tool_calls.length)}</summary><pre>${esc(r.tool_calls.map((c) => `${c.status.padEnd(8)} ${c.tool} ${JSON.stringify(c.input || {})} ${c.message || ""}`).join("\n"))}</pre></details>`).join("");
+  const jobs = task.jobs.map((j) => `<li><a href="#" data-logs="${j.id}">${t("task.job", { id: short(j.id) })}</a> ${pill(j.state)} ${t("task.attempt_n", { n: j.attempt })} ${j.error ? `<span class="error">${esc(j.error)}</span>` : ""}</li>`).join("");
+  drawer(`<h2>${esc(task.title)}</h2><div class="kv"><div>${t("run.state")}</div><div>${pill(task.state)}</div><div>${t("run.role")}</div><div>${esc(task.assigned_role || task.task_type)}</div>
+    <div>${t("task.iteration_attempt")}</div><div>${t("task.iteration_attempt_value", { iter: task.iteration, attempt: task.attempt, max: task.max_attempts })}</div>
+    <div>${t("task.acceptance")}</div><div>${(task.acceptance_criteria || []).map(esc).join("<br>") || "—"}</div>
+    ${task.input?.feedback?.length ? `<div>${t("task.feedback")}</div><div>${task.input.feedback.map(esc).join("<br>")}</div>` : ""}
+    ${task.output?.failure_reason ? `<div>${t("task.failure")}</div><div class="error">${esc(task.output.failure_reason)}</div>` : ""}</div>
+    <h3>${t("task.summary")}</h3><p>${esc(task.output?.summary || "—")}</p>
+    <h3>${t("task.jobs")}</h3><ul>${jobs || `<li class='muted'>${t("common.none")}</li>`}</ul><pre id="job-logs" class="hidden"></pre>
+    ${runs}<h3>${t("run.artifacts")}</h3>${artifactTable(task.artifacts)}`);
   bindArtifactLinks();
   document.querySelectorAll("[data-logs]").forEach((a) => (a.onclick = async (e) => {
     e.preventDefault();
     const logs = await api(`/jobs/${a.dataset.logs}/logs`);
     const pre = $("#job-logs"); pre.classList.remove("hidden");
-    pre.textContent = logs.map((l) => `[${l.stream}] ${l.line}`).join("\n") || "(no log lines)";
+    pre.textContent = logs.map((l) => `[${l.stream}] ${l.line}`).join("\n") || t("task.no_logs");
   }));
 }
 
 function approvalTable(list) {
   const rows = list.map((a) => `<tr><td>${esc(a.action)}</td><td>${a.risk_level}</td><td><a href="#/runs/${a.workflow_run_id}"><code>${short(a.workflow_run_id)}</code></a></td>
     <td>${(a.scope?.artifact_ids || []).map((x) => `<a href="#" data-art="${x}"><code>${short(x)}</code></a>`).join(" ")}</td><td>${pill(a.state)}</td>
-    <td>${a.state === "PENDING" ? `<div class="row"><input placeholder="comment" data-comment="${a.id}" style="width:180px">
-      <button data-approve="${a.id}">Approve</button><button class="danger" data-reject="${a.id}">Reject</button></div>` : esc(a.approved_by || "")}</td></tr>`).join("");
-  return `<div class="table-wrap"><table><tr><th>Action</th><th>Risk</th><th>Run</th><th>Artifacts</th><th>State</th><th></th></tr>${rows || '<tr><td colspan="6" class="muted">Nothing waiting</td></tr>'}</table></div>`;
+    <td>${a.state === "PENDING" ? `<div class="row"><input placeholder="${t("approval.comment")}" data-comment="${a.id}" style="width:180px">
+      <button data-approve="${a.id}">${t("approval.approve")}</button><button class="danger" data-reject="${a.id}">${t("approval.reject")}</button></div>` : esc(a.approved_by || "")}</td></tr>`).join("");
+  return `<div class="table-wrap"><table><tr><th>${t("approval.action")}</th><th>${t("approval.risk")}</th><th>${t("common.run")}</th><th>${t("run.artifacts")}</th><th>${t("run.state")}</th><th></th></tr>${rows || `<tr><td colspan="6" class="muted">${t("approval.nothing")}</td></tr>`}</table></div>`;
 }
 
 function bindApprovalButtons() {
@@ -537,65 +575,65 @@ async function viewApproval(id) {
   return `<div class="card approval-card">
       <div class="row"><h1>${esc(a.action)}</h1>${pill(a.state)}</div>
       <div class="kv">
-        <div>Project</div><div>${a.project ? `<a href="#/projects/${a.project.id}">${esc(a.project.name)}</a>` : "—"}</div>
-        <div>Run</div><div>${a.run ? `<a href="#/runs/${a.run.id}"><code>${short(a.run.id)}</code></a> ${esc(a.run.workflow_id)}` : "—"}</div>
-        <div>Objective</div><div>${esc(a.run?.input?.objective || "")}</div>
-        <div>Risk</div><div>${a.risk_level}</div>
-        ${a.scope?.description ? `<div>What to check</div><div>${esc(a.scope.description)}</div>` : ""}
-        ${a.approved_by ? `<div>Decided by</div><div>${esc(a.approved_by)} ${a.comment ? `— ${esc(a.comment)}` : ""}</div>` : ""}
+        <div>${t("approval.project")}</div><div>${a.project ? `<a href="#/projects/${a.project.id}">${esc(a.project.name)}</a>` : "—"}</div>
+        <div>${t("common.run")}</div><div>${a.run ? `<a href="#/runs/${a.run.id}"><code>${short(a.run.id)}</code></a> ${esc(a.run.workflow_id)}` : "—"}</div>
+        <div>${t("field.objective")}</div><div>${esc(a.run?.input?.objective || "")}</div>
+        <div>${t("approval.risk")}</div><div>${a.risk_level}</div>
+        ${a.scope?.description ? `<div>${t("approval.what_to_check")}</div><div>${esc(a.scope.description)}</div>` : ""}
+        ${a.approved_by ? `<div>${t("approval.decided_by")}</div><div>${esc(a.approved_by)} ${a.comment ? `— ${esc(a.comment)}` : ""}</div>` : ""}
       </div>
-      <h3>Artifacts to review</h3><ul>${arts || "<li class='muted'>none</li>"}</ul>
-      ${pending ? `<textarea data-comment="${a.id}" rows="2" placeholder="Comment (optional)"></textarea>
-        <div class="row decide"><button data-approve="${a.id}">Approve</button><button class="danger" data-reject="${a.id}">Reject</button></div>` : ""}
+      <h3>${t("approval.artifacts_to_review")}</h3><ul>${arts || `<li class='muted'>${t("common.none")}</li>`}</ul>
+      ${pending ? `<textarea data-comment="${a.id}" rows="2" placeholder="${t("approval.comment_optional")}"></textarea>
+        <div class="row decide"><button data-approve="${a.id}">${t("approval.approve")}</button><button class="danger" data-reject="${a.id}">${t("approval.reject")}</button></div>` : ""}
     </div>`;
 }
 
 async function viewNotifications() {
   const n = await api("/notifications");
-  const channels = n.channels.length ? n.channels.map((c) => pill(c)).join(" ") : '<span class="error">none configured</span>';
+  const channels = n.channels.length ? n.channels.map((c) => pill(c)).join(" ") : `<span class="error">${t("notify.none_configured")}</span>`;
+  const delivery = (d, c) => `${c}: ${t("notify.sent", { n: d.done })}${d.failed ? `, ${t("notify.failed", { n: d.failed })}` : ""}${d.error ? ` (${esc(d.error)})` : ""}`;
   const rows = n.items.map((i) => `<tr><td>${when(i.created_at)}</td><td>${esc(i.title)}</td><td>${pill(i.state)}</td>
-    <td>${esc(Object.entries(i.deliveries).map(([c, d]) => `${c}: ${d.done} sent${d.failed ? `, ${d.failed} failed` : ""}${d.error ? ` (${d.error})` : ""}`).join("; "))}</td></tr>`).join("");
-  return `<h1>Notifications</h1>
-    <div class="kv"><div>Channels</div><div>${channels}</div>
-      <div>Events</div><div>${esc(n.events.join(", "))}</div>
-      <div>Approve in Telegram</div><div>${n.telegram_approvals ? "yes (allow-listed users, two taps)" : "no — messages link here"}</div>
-      <div>Links point to</div><div>${n.public_url ? `<code>${esc(n.public_url)}</code>` : '<span class="error">AWF_PUBLIC_URL not set: messages carry no link</span>'}</div></div>
-    <div class="row"><button id="notify-test" ${n.channels.length ? "" : "disabled"}>Send a test message</button><span id="notify-msg" class="muted"></span></div>
-    <h2>Recent</h2><div class="table-wrap"><table><tr><th>Created</th><th>Message</th><th>State</th><th>Delivery</th></tr>
-      ${rows || '<tr><td colspan="4" class="muted">Nothing sent yet</td></tr>'}</table></div>`;
+    <td>${Object.entries(i.deliveries).map(([c, d]) => delivery(d, esc(c))).join("; ")}</td></tr>`).join("");
+  return `<h1>${t("notify.title")}</h1>
+    <div class="kv"><div>${t("notify.channels")}</div><div>${channels}</div>
+      <div>${t("notify.events")}</div><div>${esc(n.events.join(", "))}</div>
+      <div>${t("notify.telegram")}</div><div>${n.telegram_approvals ? t("notify.telegram_yes") : t("notify.telegram_no")}</div>
+      <div>${t("notify.links")}</div><div>${n.public_url ? `<code>${esc(n.public_url)}</code>` : `<span class="error">${t("notify.no_public_url")}</span>`}</div></div>
+    <div class="row"><button id="notify-test" ${n.channels.length ? "" : "disabled"}>${t("notify.test")}</button><span id="notify-msg" class="muted"></span></div>
+    <h2>${t("notify.recent")}</h2><div class="table-wrap"><table><tr><th>${t("field.created")}</th><th>${t("notify.message")}</th><th>${t("run.state")}</th><th>${t("notify.delivery")}</th></tr>
+      ${rows || `<tr><td colspan="4" class="muted">${t("notify.nothing")}</td></tr>`}</table></div>`;
 }
 
 function bindNotifications() {
   const btn = $("#notify-test");
   if (btn) btn.onclick = async () => {
-    try { await api("/notifications/test", { method: "POST" }); $("#notify-msg").textContent = "Queued; refresh in a few seconds."; }
+    try { await api("/notifications/test", { method: "POST" }); $("#notify-msg").textContent = t("notify.queued"); }
     catch (err) { $("#notify-msg").textContent = err.message; }
   };
 }
 
 async function viewApprovals() {
   const all = await api("/approvals");
-  return `<h1>Approval queue</h1>${approvalTable(all.filter((a) => a.state === "PENDING"))}
-    <h2>History</h2>${approvalTable(all.filter((a) => a.state !== "PENDING").slice(0, 50))}`;
+  return `<h1>${t("approvals.title")}</h1>${approvalTable(all.filter((a) => a.state === "PENDING"))}
+    <h2>${t("approvals.history")}</h2>${approvalTable(all.filter((a) => a.state !== "PENDING").slice(0, 50))}`;
 }
 
 async function viewWorkers() {
   const workers = await api("/workers");
   const action = (w) => w.status === "revoked"
-    ? `<button class="ghost" data-delete-worker="${w.id}" title="Remove the record so this machine can join again">Delete</button>`
-    : `<button class="danger" data-revoke-worker="${w.id}" data-name="${esc(w.name)}" title="Lost or compromised machine">Revoke</button>`;
+    ? `<button class="ghost" data-delete-worker="${w.id}" title="${t("workers.delete_title")}">${t("workers.delete")}</button>`
+    : `<button class="danger" data-revoke-worker="${w.id}" data-name="${esc(w.name)}" title="${t("workers.revoke_title")}">${t("workers.revoke")}</button>`;
   const rows = workers.map((w) => `<tr><td>${esc(w.name)}<div class="muted"><code>${esc(w.machine_id || "")}</code></div></td><td>${pill(w.status)}</td><td><code>${esc(w.platform)}</code></td>
     <td>${(w.capabilities || []).map(esc).join(", ")}</td><td>${esc(Object.entries(w.labels || {}).map(([k, v]) => `${k}=${v}`).join(", "))}</td>
-    <td>${w.active_runs ?? 0} <span class="muted">· ${w.max_jobs ?? 1} job slot${(w.max_jobs ?? 1) === 1 ? "" : "s"}</span></td>
+    <td>${w.active_runs ?? 0} <span class="muted">· ${tn("workers.slots", w.max_jobs ?? 1)}</span></td>
     <td>${esc(JSON.stringify(w.load))}</td><td>${when(w.last_heartbeat)}</td><td>${action(w)}</td></tr>`).join("");
-  return `<h1>Workers</h1><div class="table-wrap"><table><tr><th>Name</th><th>Status</th><th>Platform</th><th>Capabilities</th><th>Labels</th><th>Runs</th><th>Load</th><th>Last heartbeat</th><th></th></tr>${rows || '<tr><td colspan="9" class="muted">No workers registered</td></tr>'}</table></div>
-    <p class="muted">Revoke immediately invalidates a worker's token, requeues its jobs and blocks it from re-registering.
-      If the machine was compromised, also rotate <code>AWF_WORKER_REGISTRATION_TOKEN</code> on the control plane.</p>`;
+  return `<h1>${t("workers.title")}</h1><div class="table-wrap"><table><tr><th>${t("field.name")}</th><th>${t("field.status")}</th><th>${t("field.platform")}</th><th>${t("run.capabilities")}</th><th>${t("workers.labels")}</th><th>${t("workers.runs")}</th><th>${t("workers.load")}</th><th>${t("workers.heartbeat")}</th><th></th></tr>${rows || `<tr><td colspan="9" class="muted">${t("workers.none")}</td></tr>`}</table></div>
+    <p class="muted">${t("workers.revoke_note")}</p>`;
 }
 
 function bindWorkers() {
   document.querySelectorAll("[data-revoke-worker]").forEach((b) => (b.onclick = async () => {
-    if (!confirm(`Revoke worker ${b.dataset.name}? Its runs move to other matching machines.`)) return;
+    if (!confirm(t("workers.revoke_confirm", { name: b.dataset.name }, true))) return;
     await api(`/workers/${b.dataset.revokeWorker}/revoke`, { method: "POST" }); render();
   }));
   document.querySelectorAll("[data-delete-worker]").forEach((b) => (b.onclick = async () => {
@@ -610,14 +648,14 @@ async function viewAgents() {
     return `<tr><td><code>${esc(a.role)}</code><div class="muted">${esc(a.objective)}</div></td><td>${esc(a.model_class)}</td>
       <td>${s.runs ?? 0}</td><td>${s.success_rate ?? "—"}</td><td>${s.retry_rate ?? "—"}</td><td>${s.critic_rejection_rate ?? "—"}</td>
       <td>${s.avg_latency_ms ?? "—"}</td><td>${s.avg_cost_usd != null ? money(s.avg_cost_usd) : "—"}</td><td>${a.allowed_tools.map(esc).join(", ")}</td></tr>`; }).join("");
-  return `<h1>Agents</h1><div class="table-wrap"><table><tr><th>Role</th><th>Model class</th><th>Runs</th><th>Success</th><th>Retry</th><th>Critic rejection</th><th>Avg ms</th><th>Avg cost</th><th>Tools</th></tr>${rows}</table></div>`;
+  return `<h1>${t("agents.title")}</h1><div class="table-wrap"><table><tr><th>${t("run.role")}</th><th>${t("agents.model_class")}</th><th>${t("workers.runs")}</th><th>${t("agents.success")}</th><th>${t("agents.retry")}</th><th>${t("agents.critic_rejection")}</th><th>${t("agents.avg_ms")}</th><th>${t("agents.avg_cost")}</th><th>${t("agents.tools")}</th></tr>${rows}</table></div>`;
 }
 
 async function viewAudit() {
   const events = await api("/audit?limit=300");
   const rows = events.map((e) => `<tr><td>${when(e.created_at)}</td><td>${esc(e.event_type)}</td><td>${esc(e.actor_type)}:${esc(e.actor_id)}</td>
     <td>${e.workflow_run_id ? `<a href="#/runs/${e.workflow_run_id}"><code>${short(e.workflow_run_id)}</code></a>` : ""}</td><td><code>${esc(JSON.stringify(e.payload)).slice(0, 300)}</code></td></tr>`).join("");
-  return `<h1>Audit trail</h1><div class="table-wrap"><table><tr><th>Time</th><th>Event</th><th>Actor</th><th>Run</th><th>Payload</th></tr>${rows}</table></div>`;
+  return `<h1>${t("audit.title")}</h1><div class="table-wrap"><table><tr><th>${t("audit.time")}</th><th>${t("audit.event")}</th><th>${t("audit.actor")}</th><th>${t("common.run")}</th><th>${t("audit.payload")}</th></tr>${rows}</table></div>`;
 }
 
 // ------------------------------------------------------------------------------------ router
@@ -663,10 +701,7 @@ async function render() {
   } catch (err) {
     if (err instanceof Offline) {
       $("#offline").classList.toggle("hidden", !shown);  // banner over the last view; nothing yet: the card says it
-      if (!shown) {
-        $("#view").innerHTML = `<div class="card"><h1>Không kết nối được máy chủ</h1><p class="muted">Kiểm tra mạng, bật
-          Tailscale trên điện thoại, hoặc máy chủ đang khởi động lại. Trang tự thử lại mỗi vài giây.</p></div>`;
-      }
+      if (!shown) $("#view").innerHTML = `<div class="card"><h1>${t("offline.title")}</h1><p class="muted">${t("offline.text")}</p></div>`;
     } else if (err instanceof AuthRequired) {
       $("#logout-btn").classList.add("hidden");
       if (!signedOut) { $("#view").innerHTML = viewLogin(); bindLogin(); signedOut = true; }
@@ -684,4 +719,5 @@ setInterval(() => {
   if (document.visibilityState === "visible" && $("#drawer").classList.contains("hidden") && !signedOut) render();
 }, 4000);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !signedOut) render(); });
+applyStatic();
 consumeLoginLink().then(render);

@@ -525,6 +525,30 @@ giới hạn ở shell, mạng và git. Lệnh chạy một phần test (ví d�
 | Audit | toàn bộ sự kiện |
 | Notifications | kênh Telegram/WhatsApp/Zalo, tin đã gửi, gửi tin thử |
 
+### Ngôn ngữ giao diện (English / Tiếng Việt)
+
+Dashboard có hai ngôn ngữ: **English** và **Tiếng Việt**. Chọn ở ô ngôn ngữ trên thanh tiêu đề, cạnh nút
+Đăng xuất. Lựa chọn được lưu trong trình duyệt (localStorage) và dùng lại mỗi lần mở sau, kể cả ở ứng dụng đã cài
+trên điện thoại. Mỗi trình duyệt/thiết bị nhớ riêng. Lần đầu mở, dashboard theo ngôn ngữ của trình duyệt (tiếng
+Việt nếu trình duyệt đặt tiếng Việt, còn lại là English).
+
+Phần được dịch là mọi chữ của giao diện: menu, tiêu đề, nút, nhãn, trạng thái, gợi ý sửa lỗi. Phần giữ nguyên:
+- dữ liệu: tên project, objective, tên stage trong workflow YAML, nội dung artifact;
+- mã định danh: `approve_architecture`, loại sự kiện audit, tên capability;
+- thông báo lỗi do API trả về (tiếng Anh). Dưới các lỗi hay gặp, dashboard thêm một dòng giải thích bằng ngôn ngữ
+  đã chọn.
+
+**Quy tắc khi sửa giao diện** (bắt buộc với mọi thay đổi về giao diện, ghi cả trong `CLAUDE.md` ở gốc repo):
+
+1. Không viết chữ hiển thị trực tiếp trong `app.js`/`index.html`. Thêm key vào **cả hai** bộ `en` và `vi` trong
+   `apps/control_api/awf_api/static/i18n.js`, rồi dùng `t("key")`. Chuỗi theo số lượng dùng `tn("key", n)` với
+   hai key `key.one`/`key.other`. Trong `index.html` dùng thuộc tính `data-i18n="key"` (hoặc `data-i18n-title`
+   cho tooltip).
+2. Giá trị chèn vào bằng `{tên}` được `t()` escape. Chuỗi trong từ điển được phép chứa markup (`<code>`, `<b>`).
+3. Trạng thái mới, platform mới, engine mới: thêm key `status.*`, `platform.*`, `engine.*` cho cả hai ngôn ngữ.
+4. Chạy `pytest tests/integration/test_i18n.py`. Test fail khi một ngôn ngữ thiếu key, khi có `t("…")` chưa được
+   dịch, hoặc khi `{placeholder}` giữa hai ngôn ngữ khác nhau.
+
 ### Cài dashboard lên điện thoại (ứng dụng PWA)
 
 Dashboard cài được như một ứng dụng: có biểu tượng trên màn hình chính, mở toàn màn hình (không thanh địa chỉ),
@@ -928,7 +952,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (190 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (195 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop

@@ -76,9 +76,9 @@ def create_app(platform: Platform | None = None, orchestrator: Orchestrator | No
 
     # Fingerprint app.js/style.css in the page so browsers (phones especially) never keep an old copy after an
     # update; the page itself is never cached.
-    digest = hashlib.sha256(b"".join((STATIC_DIR / n).read_bytes() for n in ("app.js", "style.css"))).hexdigest()[:12]
+    digest = hashlib.sha256(b"".join((STATIC_DIR / n).read_bytes() for n in ("i18n.js", "app.js", "style.css"))).hexdigest()[:12]
     page = (STATIC_DIR / "index.html").read_text(encoding="utf-8") \
-        .replace('/static/app.js"', f'/static/app.js?v={digest}"') \
+        .replace('/static/i18n.js"', f'/static/i18n.js?v={digest}"')         .replace('/static/app.js"', f'/static/app.js?v={digest}"') \
         .replace('/static/style.css"', f'/static/style.css?v={digest}"')
 
     @app.get("/", include_in_schema=False)

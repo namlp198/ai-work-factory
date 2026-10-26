@@ -7,6 +7,7 @@ const VERSION = "__VERSION__";  // asset fingerprint, filled in by the server: a
 const SHELL = `awf-shell-${VERSION}`;
 const ASSETS = [
   "/",
+  `/static/i18n.js?v=${VERSION}`,
   `/static/app.js?v=${VERSION}`,
   `/static/style.css?v=${VERSION}`,
   "/manifest.webmanifest",
