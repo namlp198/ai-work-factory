@@ -51,6 +51,25 @@ providers:
       model: gemini-3.8-flash
       effort: medium
 
+  # ChatGPT models (OpenAI Responses API). gpt-6.1-sol is also the model Codex recommends for coding; switch
+  # REASONING to gpt-6-astra (5x the price) for the hardest architecture/review work.
+  openai:
+    FAST:
+      model: gpt-6-luna
+      effort: low
+    BALANCED:
+      model: gpt-6.1-sol
+      effort: medium
+    REASONING:
+      model: gpt-6.1-sol
+      effort: high
+    CODE_SPECIALIST:
+      model: gpt-6.1-sol
+      effort: high
+    MULTIMODAL:
+      model: gpt-6.1-sol
+      effort: medium
+
 # Task-type overrides applied before the profile's own class.
 task_type_rules:
   log_summarization: FAST
@@ -74,4 +93,8 @@ pricing:
   gemini-4-argon: {input: 2.00, output: 10.00}
   gemini-3.8-flash: {input: 0.75, output: 3.75}
   gemini-3.5-flash-lite: {input: 0.30, output: 2.50}
+  # OpenAI prices (October 2026); reasoning tokens are billed as output.
+  gpt-6-astra: {input: 10.00, output: 50.00}
+  gpt-6.1-sol: {input: 2.00, output: 10.00}
+  gpt-6-luna: {input: 0.10, output: 0.50}
   scripted: {input: 0.0, output: 0.0}

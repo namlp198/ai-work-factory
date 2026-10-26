@@ -16,7 +16,7 @@ from awf.security import redact, redact_obj
 from awf.tool_sdk import ToolContext, ToolRegistry
 from awf.tool_sdk.build import configured_command
 from awf.tool_sdk.command import GitError
-from awf.worker_sdk import claude_code
+from awf.worker_sdk import claude_code, codex
 from awf.worker_sdk.sandbox import IntegrationConflict, Workspace
 
 # Permissions a standalone tool job needs; tool jobs are platform actions, not agent actions.
@@ -28,9 +28,10 @@ LogFn = Callable[[str, str], None]
 class JobExecutor:
     def __init__(self, workspace_root: Path, policy: PolicyEngine, registry: ToolRegistry | None = None,
                  adapter_factory: Callable[[str], ModelAdapter] = get_adapter, keep_workspaces: bool = False,
-                 claude_code_bin: list[str] | None = None):
+                 claude_code_bin: list[str] | None = None, codex_bin: list[str] | None = None):
         self.workspace_root = workspace_root
         self.claude_code_bin = claude_code_bin
+        self.codex_bin = codex_bin
         self.policy = policy
         self.registry = registry or ToolRegistry()
         self.runtime = AgentRuntime(self.registry)
@@ -100,8 +101,8 @@ class JobExecutor:
         }
         log(f"agent {agent['role']} starting on {route['provider']}/{route['model']}"
             + (f" with engine {engine}" if engine != claude_code.NATIVE else ""), "system")
-        if engine == claude_code.ENGINE:
-            res, engine_usage = self._run_claude_code(payload, contract, route, ws, ctx, log)
+        if engine in (claude_code.ENGINE, codex.ENGINE):
+            res, engine_usage = self._run_engine(engine, payload, contract, route, ws, ctx, log)
         elif adapter is not None:
             res = self.runtime.run(contract=contract, system_prompt=agent["system_prompt"],
                                    user_message=payload["context"]["user_message"], adapter=adapter,
@@ -147,16 +148,20 @@ class JobExecutor:
                 result["outputs"][out.name] = json.dumps(_public_evidence(ctx.evidence), indent=2)
         return result
 
-    # ------------------------------------------------------------------ claude-code engine (ADR-011)
-    def _run_claude_code(self, payload: dict[str, Any], contract: AgentContract, route: dict[str, Any],
-                         ws: Workspace, ctx: ToolContext, log: LogFn) -> tuple[AgentResult, dict[str, Any]]:
-        usage: dict[str, Any] = {"engine": claude_code.ENGINE}
-        base = self.claude_code_bin or claude_code.claude_code_bin()
+    # ------------------------------------------------------------------ coding engines (ADR-011, ADR-012)
+    def _run_engine(self, engine: str, payload: dict[str, Any], contract: AgentContract, route: dict[str, Any],
+                    ws: Workspace, ctx: ToolContext, log: LogFn) -> tuple[AgentResult, dict[str, Any]]:
+        """Claude Code or Codex edits the workspace; the platform then verifies, commits and reports."""
+        usage: dict[str, Any] = {"engine": engine}
+        if engine == claude_code.ENGINE:
+            base, hint = self.claude_code_bin or claude_code.claude_code_bin(), "Claude Code or set AWF_CLAUDE_CODE_BIN"
+        else:
+            base, hint = self.codex_bin or codex.codex_bin(), "Codex (npm i -g @openai/codex) or set AWF_CODEX_BIN"
         if not base:
-            return AgentResult(status="failed", error="claude-code is not installed on this worker "
-                               "(install Claude Code or set AWF_CLAUDE_CODE_BIN)", retryable=False), usage
+            return AgentResult(status="failed", error=f"{engine} is not installed on this worker (install {hint})",
+                               retryable=False), usage
         if contract.decision or any(o.type != "markdown" for o in contract.agent_outputs()):
-            return AgentResult(status="failed", error=f"engine claude-code cannot produce the outputs of "
+            return AgentResult(status="failed", error=f"engine {engine} cannot produce the outputs of "
                                f"{contract.id}; use the native engine", retryable=False), usage
 
         commands = []
@@ -164,25 +169,31 @@ class JobExecutor:
             argv = configured_command(ctx, key)
             if argv and self.policy.command_allowed(argv) and "," not in " ".join(argv):
                 commands.append(argv)
-        sections = [s for o in contract.agent_outputs() for s in o.required_sections]
-        system = (payload["agent"]["system_prompt"]
-                  + claude_code.ENGINE_RULES.format(
-                      commands=", ".join(f"`{claude_code.command_text(c)}`" for c in commands) or "none",
-                      sections=", ".join(f"`## {s}`" for s in sections) or "a short summary")
-                  + claude_code.repository_instructions(ws.repo))
-        prompt_file = ws.root / "claude-code-system.md"
-        prompt_file.write_text(system, encoding="utf-8")
-        if ws.is_git:  # local engine state must never end up in the commit
-            with (ws.repo / ".git" / "info" / "exclude").open("a", encoding="utf-8") as fh:
-                fh.write("\n.claude/settings.local.json\n")
+        rules = (claude_code.ENGINE_RULES if engine == claude_code.ENGINE else codex.ENGINE_RULES).format(
+            commands=", ".join(f"`{claude_code.command_text(c)}`" for c in commands) or "none",
+            sections=", ".join(f"`## {s}`" for s in (s for o in contract.agent_outputs() for s in o.required_sections))
+            or "a short summary")
         head_before = _head(ws)
         params = route.get("params") or {}
-        argv = claude_code.build_argv(
-            base, model=route["model"], effort=params.get("effort"), max_turns=contract.timeout_policy.max_turns,
-            allowed=claude_code.bash_rules(commands) + claude_code.READ_ONLY_RULES, system_prompt_file=prompt_file,
-            max_budget_usd=params.get("max_budget_usd"))
-        er = claude_code.run_engine(argv, payload["context"]["user_message"], ws.repo,
-                                    contract.timeout_policy.seconds, log)
+        timeout = contract.timeout_policy.seconds
+        if engine == claude_code.ENGINE:
+            prompt_file = ws.root / "claude-code-system.md"
+            prompt_file.write_text(payload["agent"]["system_prompt"] + rules + claude_code.repository_instructions(ws.repo),
+                                   encoding="utf-8")
+            if ws.is_git:  # local engine state must never end up in the commit
+                with (ws.repo / ".git" / "info" / "exclude").open("a", encoding="utf-8") as fh:
+                    fh.write("\n.claude/settings.local.json\n")
+            argv = claude_code.build_argv(
+                base, model=route["model"], effort=params.get("effort"), max_turns=contract.timeout_policy.max_turns,
+                allowed=claude_code.bash_rules(commands) + claude_code.READ_ONLY_RULES, system_prompt_file=prompt_file,
+                max_budget_usd=params.get("max_budget_usd"))
+            er = claude_code.run_engine(argv, payload["context"]["user_message"], ws.repo, timeout, log)
+        else:
+            # Codex reads the repository's AGENTS.md itself; the role prompt and rules lead the stdin prompt.
+            prompt = f"{payload['agent']['system_prompt']}{rules}\n\n# Your task\n\n{payload['context']['user_message']}"
+            argv = codex.build_argv(base, model=route["model"], effort=params.get("effort"))
+            er = claude_code.run_engine(argv, prompt, ws.repo, timeout, log, env=codex.engine_env(ws.root / "codex-home"),
+                                        parser=codex.CodexParser(log), name=codex.ENGINE)
         usage.update({"cost_usd": er.cost_usd, "session_id": er.session_id})
         ctx.calls.extend(er.tool_calls)
         res = AgentResult(status=er.status, turns=er.turns, input_tokens=er.input_tokens,

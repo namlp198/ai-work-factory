@@ -85,6 +85,7 @@ window.AWF_I18N = {
   "platform.any": "Any machine",
   "engine.native": "Native runtime",
   "engine.claude-code": "Claude Code",
+  "engine.codex": "Codex (OpenAI)",
   "confidentiality.internal": "internal",
   "confidentiality.public": "public",
   "confidentiality.restricted": "restricted",
@@ -146,6 +147,8 @@ window.AWF_I18N = {
 
   "hint.llm_anthropic": "No machine has a Claude API key. Put <code>ANTHROPIC_API_KEY</code> in the worker machine's <code>.env</code> and restart the worker. Get a key at platform.claude.com (guide §6).",
   "hint.llm_google": "No machine has a Gemini API key. Put <code>GEMINI_API_KEY</code> in the worker machine's <code>.env</code> and restart the worker. Get a key at aistudio.google.com (guide §6).",
+  "hint.llm_openai": "No machine has an OpenAI (ChatGPT) API key. Put <code>OPENAI_API_KEY</code> in the worker machine's <code>.env</code> and restart the worker. Get a key at platform.openai.com (guide §6).",
+  "hint.codex": "The Codex engine needs the <code>codex</code> command on the worker machine (<code>npm i -g @openai/codex</code>, guide §6), or choose Coding engine = Native runtime.",
   "hint.claude_code": "The Claude Code engine needs the <code>claude</code> command on the worker machine (guide §6), or choose Coding engine = Native runtime.",
   "hint.platform": "The project's platform matches no machine: change it under <b>Where it runs</b>, or start a machine with the right operating system.",
 
@@ -394,6 +397,7 @@ window.AWF_I18N = {
   "platform.any": "Máy bất kỳ",
   "engine.native": "Runtime native",
   "engine.claude-code": "Claude Code",
+  "engine.codex": "Codex (OpenAI)",
   "confidentiality.internal": "nội bộ",
   "confidentiality.public": "công khai",
   "confidentiality.restricted": "hạn chế",
@@ -455,6 +459,8 @@ window.AWF_I18N = {
 
   "hint.llm_anthropic": "Không máy nào có API key của Claude. Đặt <code>ANTHROPIC_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở platform.claude.com (hướng dẫn §6).",
   "hint.llm_google": "Không máy nào có API key của Gemini. Đặt <code>GEMINI_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở aistudio.google.com (hướng dẫn §6).",
+  "hint.llm_openai": "Không máy nào có API key của OpenAI (ChatGPT). Đặt <code>OPENAI_API_KEY</code> trong <code>.env</code> của máy worker rồi khởi động lại worker. Lấy key ở platform.openai.com (hướng dẫn §6).",
+  "hint.codex": "Engine Codex cần lệnh <code>codex</code> trên máy worker (<code>npm i -g @openai/codex</code>, hướng dẫn §6), hoặc chọn Engine viết code = Runtime native.",
   "hint.claude_code": "Engine Claude Code cần lệnh <code>claude</code> trên máy worker (hướng dẫn §6), hoặc chọn Engine viết code = Runtime native.",
   "hint.platform": "Platform của project không khớp máy nào: sửa ở <b>Nơi chạy</b>, hoặc bật một máy đúng hệ điều hành.",
 

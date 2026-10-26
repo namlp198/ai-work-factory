@@ -224,12 +224,12 @@ const PLATFORMS = ["windows", "linux", "linux-amd64", "linux-arm64", "any"];
 const platformOptions = (selected = "") => `<option value="" ${selected ? "" : "selected"} disabled>${t("common.choose")}</option>` +
   PLATFORMS.map((v) => `<option value="${v}" ${v === selected ? "selected" : ""}>${t(`platform.${v}`)} — ${v}</option>`).join("") +
   (selected && !PLATFORMS.includes(selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : "");
-const LLM_NAMES = { anthropic: "Claude", google: "Gemini" };
+const LLM_NAMES = { anthropic: "Claude", google: "Gemini", openai: "ChatGPT" };
 const llmName = (p) => (LLM_NAMES[p] ? `${LLM_NAMES[p]} (${p})` : p);
 const llmOptions = (models, selected = "", auto = "") =>
   `<option value="">${auto || t("common.default_value", { value: llmName(models.default_provider) })}</option>` +
   models.providers.map((p) => `<option value="${esc(p)}" ${p === selected ? "selected" : ""}>${esc(llmName(p))}</option>`).join("");
-const ENGINES = ["native", "claude-code"];
+const ENGINES = ["native", "claude-code", "codex"];
 const engineName = (v) => (ENGINES.includes(v) ? t(`engine.${v}`) : esc(v));
 const engineOptions = (selected = "", auto = "") => `<option value="">${auto || t("common.default_value", { value: t("engine.native") })}</option>` +
   ENGINES.map((v) => `<option value="${v}" ${v === selected ? "selected" : ""}>${engineName(v)}</option>`).join("");
@@ -349,9 +349,11 @@ function projectDangerZone(p) {
 // Explains why a run was refused when the fix is on a worker machine.
 function runErrorHint(message) {
   const hints = [];
-  if (/missing llm-anthropic/.test(message)) hints.push(t("hint.llm_anthropic"));
-  if (/missing llm-google/.test(message)) hints.push(t("hint.llm_google"));
+  if (/missing (.*, )?llm-anthropic/.test(message)) hints.push(t("hint.llm_anthropic"));
+  if (/missing (.*, )?llm-google/.test(message)) hints.push(t("hint.llm_google"));
+  if (/missing (.*, )?llm-openai/.test(message)) hints.push(t("hint.llm_openai"));
   if (/missing claude-code/.test(message)) hints.push(t("hint.claude_code"));
+  if (/missing (.*, )?codex/.test(message)) hints.push(t("hint.codex"));
   if (/platform is /.test(message)) hints.push(t("hint.platform"));
   return `<span class="error">${esc(message)}</span>${hints.map((h) => `<span class="hint-fix">${h}</span>`).join("")}`;
 }

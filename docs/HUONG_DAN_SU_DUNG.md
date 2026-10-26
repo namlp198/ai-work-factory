@@ -11,7 +11,7 @@ Mục lục
    - 3b. [Lần đầu: dựng máy trung tâm và worker (từng thao tác)](#3b-lần-đầu-dựng-máy-trung-tâm-và-worker-từng-thao-tác)
 4. [Chạy demo trong 1 phút](#4-chạy-demo-trong-1-phút)
 5. [Đưa một repo thật vào factory (từng bước)](#5-đưa-một-repo-thật-vào-factory-từng-bước)
-6. [Bật Claude (model thật)](#6-bật-claude-model-thật)
+6. [Bật Claude, Gemini hoặc ChatGPT (model thật)](#6-bật-claude-gemini-hoặc-chatgpt-model-thật)
 7. [Dashboard](#7-dashboard)
 8. [Duyệt (human approval) và fix loop](#8-duyệt-human-approval-và-fix-loop)
 9. [Lấy kết quả: nhánh git, patch, PR](#9-lấy-kết-quả-nhánh-git-patch-pr)
@@ -350,7 +350,13 @@ $r.id
   làm lại với comment của bạn).
 - Sau `approve_merge`: lấy nhánh `awf/run-<id>`, patch và `pull_request.md` (mục 9).
 
-## 6. Bật Claude hoặc Gemini (model thật)
+## 6. Bật Claude, Gemini hoặc ChatGPT (model thật)
+
+Factory hỗ trợ ba nhà cung cấp model: **Claude** (Anthropic, mặc định), **Gemini** (Google) và **ChatGPT**
+(OpenAI). Mỗi run dùng một nhà cung cấp cho **mọi** agent của nó, không riêng coding: analyst, architect, planner,
+developer, test engineer, reviewer, QA, và các role của workflow content (researcher, strategist, copywriter,
+reviewer, editor, SEO). Riêng stage development có thể giao thêm cho một **engine viết code** (Claude Code hoặc
+Codex, cuối mục này).
 
 Mặc định `config/model-routing.yaml` định tuyến theo model class:
 
@@ -366,7 +372,7 @@ Mặc định `config/model-routing.yaml` định tuyến theo model class:
 
 Agent chạy **trên worker**, nên API key đặt trong `.env` của **máy worker**, không đặt trên máy trung tâm. Một máy
 chỉ nhận run của nhà cung cấp mà nó có key: worker có `ANTHROPIC_API_KEY` thì báo capability `llm-anthropic`, có
-`GEMINI_API_KEY` thì báo `llm-google`. Không máy nào có key cần thiết thì run bị từ chối ngay khi bấm **Start**,
+`GEMINI_API_KEY` thì báo `llm-google`, có `OPENAI_API_KEY` thì báo `llm-openai`. Không máy nào có key cần thiết thì run bị từ chối ngay khi bấm **Start**,
 với lỗi như sau:
 
 ```text
@@ -391,18 +397,29 @@ gói Claude Pro/Max: gói thuê bao không dùng được cho factory.
 3. Gói miễn phí có giới hạn số request và dữ liệu có thể được dùng để cải thiện sản phẩm. Để dùng cho code thật,
    bật billing cho project đó (Google Cloud Console → Billing).
 
+**ChatGPT (OpenAI):**
+
+1. Mở **platform.openai.com**, đăng nhập hoặc đăng ký. Đây là tài khoản **OpenAI API**, tính tiền riêng với gói
+   ChatGPT Plus/Pro: gói ChatGPT không dùng được cho factory.
+2. **Settings → Billing**: nạp credit. Hết credit thì request bị từ chối (`insufficient_quota`) và job fail ngay.
+3. **API keys → Create new secret key**: chọn project, đặt tên (ví dụ `awf-worker-01`), chép key (dạng
+   `sk-proj-...`). Key chỉ hiện **một lần**.
+4. Có thể đặt giới hạn chi tiêu trong **Settings → Limits** của project.
+
 **Đặt key vào worker** (mỗi máy worker):
 
-1. Mở file `.env` trong thư mục repo của máy worker, thêm một hoặc cả hai dòng (bỏ dấu `#` nếu dòng đã có sẵn):
+1. Mở file `.env` trong thư mục repo của máy worker, thêm các dòng của nhà cung cấp bạn dùng (bỏ dấu `#` nếu dòng
+   đã có sẵn):
    ```text
    ANTHROPIC_API_KEY=sk-ant-...
    GEMINI_API_KEY=AIza...
+   OPENAI_API_KEY=sk-proj-...
    ```
 2. Kiểm tra `.env` **không** có dòng `AWF_MODEL_PROVIDER=scripted` (chế độ offline, ghi đè mọi model). Máy trung
    tâm cũng không được đặt dòng này.
 3. Khởi động lại worker: dừng `awf start` (`Ctrl+C`) rồi chạy lại. Nếu đã cài dịch vụ, chạy
    `.\scripts\install-task.ps1 -Restart` (Windows) hoặc `sudo systemctl restart awf` (Linux).
-4. Kiểm tra: `awf doctor` trên worker liệt kê `llm-anthropic` (hoặc `llm-google`) trong capability. Trên dashboard,
+4. Kiểm tra: `awf doctor` trên worker liệt kê `llm-anthropic`, `llm-google` hoặc `llm-openai` trong capability. Trên dashboard,
    trang **Workers** cũng phải thấy capability đó. Sau đó **Start** lại run.
 
 Key chỉ nằm trong `.env` của máy, file này không commit vào git. Factory không gửi key sang máy trung tâm, không
@@ -417,7 +434,8 @@ project: khi ngân sách còn dưới `budget_downgrade_threshold_usd`, router t
 
 ### Gemini
 
-Mỗi run dùng **một** nhà cung cấp cho mọi agent của nó: Claude (`anthropic`, mặc định) hoặc Gemini (`google`).
+Mỗi run dùng **một** nhà cung cấp cho mọi agent của nó: Claude (`anthropic`, mặc định), Gemini (`google`) hoặc
+ChatGPT (`openai`, xem mục ChatGPT bên dưới).
 Bảng `providers.google` trong `config/model-routing.yaml` ánh xạ cùng các class sang model Gemini:
 
 | Class | Gemini |
@@ -430,7 +448,7 @@ Bảng `providers.google` trong `config/model-routing.yaml` ánh xạ cùng các
 
 Chọn nhà cung cấp, theo thứ tự ưu tiên:
 
-1. Khi tạo run: dashboard → **Model**, hoặc API `{"llm": "google"}`.
+1. Khi tạo run: dashboard → **Model**, hoặc API `{"llm": "google"}` (hay `"openai"`).
 2. Mặc định của project: trang project → **Default model** (lưu ở `labels.llm`).
 3. `default_provider` trong `config/model-routing.yaml` (`anthropic`).
 
@@ -449,12 +467,40 @@ nghĩ tính vào output khi ước tính chi phí. 429/5xx thử lại 3 lần r
 retry; bị chặn vì an toàn thì dừng (không retry). Giá trong bảng `pricing` là giá tháng 10/2026; Google tăng
 giá Gemini 4 Argon từ 1/12/2026 và 3.8 Flash từ 1/1/2027 (ghi chú trong file).
 
+### ChatGPT (OpenAI)
+
+Bảng `providers.openai` trong `config/model-routing.yaml` ánh xạ các class sang model của OpenAI (giá tháng 10/2026,
+USD mỗi 1M token vào/ra):
+
+| Class | ChatGPT | Giá |
+|---|---|---|
+| FAST | `gpt-6-luna` (effort low) | 0.10 / 0.50 |
+| BALANCED | `gpt-6.1-sol` (effort medium) | 2 / 10 |
+| REASONING, CODE_SPECIALIST | `gpt-6.1-sol` (effort high) | 2 / 10 |
+| MULTIMODAL | `gpt-6.1-sol` (effort medium) | 2 / 10 |
+| LOCAL_PRIVATE | không đổi: project `restricted` không bao giờ được gửi sang model hosted | |
+
+`gpt-6-astra` (10 / 50) là model mạnh nhất. Muốn dùng cho architect và reviewer thì sửa dòng `REASONING` trong
+`providers.openai`. Chọn ChatGPT cho một run: dashboard → **Model** = ChatGPT, hoặc API `{"llm": "openai"}`. Mặc
+định cho project: **Default model**. Key: `OPENAI_API_KEY` trong `.env` của worker (cách lấy ở trên).
+
+Chi tiết tích hợp (`awf/agent_runtime/adapters/openai_adapter.py`): **Responses API** qua REST (không thêm SDK),
+function calling thủ công qua Policy Engine như Claude/Gemini, `store: false` (OpenAI không giữ hội thoại; cả danh
+sách item được gửi lại mỗi lượt, kể cả reasoning đã mã hoá), `reasoning.effort` theo class. Token suy nghĩ được
+tính vào output. 429/5xx thử lại 3 lần; `insufficient_quota` (hết credit), 400/401/403/404 và từ chối an toàn thì
+không retry.
+
 **Chế độ scripted** (`AWF_MODEL_PROVIDER=scripted` + `AWF_SCRIPTED_RESPONSES=<file.yaml>`): agent không gọi
 model mà phát lại kịch bản; role không có trong kịch bản dùng hành vi tự động từ contract. Phần nền tảng
 (git, sandbox, build/test thật, critic, gate) vẫn chạy thật — dùng để kiểm thử tích hợp repo trước khi tốn
 tiền model. Xem `examples/*/scripted-responses.yaml`.
 
-### Claude Code làm engine cho Developer (`coding_engine: claude-code`)
+### Engine viết code cho Developer: Claude Code hoặc Codex (`coding_engine`)
+
+Có hai engine: `claude-code` (Claude Code của Anthropic) và `codex` (Codex của OpenAI). Phần dưới mô tả Claude
+Code. Codex dùng cùng cách bật và cùng nguyên tắc evidence, khác nhau ở cách giới hạn engine (mục Codex ngay sau).
+
+#### Claude Code (`coding_engine: claude-code`)
 
 Mặc định Developer chạy trên runtime native của factory: dùng các tool có kiểu (`fs.read`, `fs.replace`,
 `build.run`...) với một vòng gọi model. Bật engine `claude-code` thì riêng stage development giao việc sửa code
@@ -505,6 +551,40 @@ Một run Gemini có bật engine vẫn develop bằng Claude Code trên Claude.
 Hạn chế: bên trong workspace, engine đọc và ghi tự do. Phạm vi kiểm soát của nó thô hơn các tool có kiểu, chỉ
 giới hạn ở shell, mạng và git. Lệnh chạy một phần test (ví dụ một file test) bị từ chối nếu không bắt đầu bằng
 đúng lệnh đã cấu hình.
+
+#### Codex (`coding_engine: codex`)
+
+Bật giống Claude Code: dashboard → **Coding engine** = Codex (OpenAI), API `"coding_engine": "codex"`, hoặc
+`labels.coding_engine = "codex"` cho project (ADR-012).
+
+Chuẩn bị máy worker:
+
+1. Cài Node.js (bản LTS mới), rồi cài Codex CLI: `npm i -g @openai/codex`. Lệnh `codex` phải có trên PATH, hoặc đặt
+   `AWF_CODEX_BIN=<đường dẫn>` trong `.env`.
+2. Đặt `OPENAI_API_KEY` trong `.env` của worker. Engine chỉ dùng API key (worker truyền key cho Codex qua
+   `CODEX_API_KEY`), **không dùng đăng nhập ChatGPT** đã lưu trên máy. Chi phí tính vào tài khoản API.
+3. Windows: Codex chạy lệnh trong sandbox riêng của Windows. Nên dùng Windows 11; Windows 10 bản mới (1809 trở
+   lên) chỉ được hỗ trợ ở mức "cố gắng". Một số máy công ty chặn bước cài sandbox. Linux/Jetson không cần gì thêm.
+4. Khởi động lại worker. `awf doctor` và trang **Workers** phải thấy capability `codex` và `llm-openai`. Run dùng
+   engine Codex chỉ được giao cho máy có đủ hai capability này.
+
+Worker làm gì trong một job development:
+
+- Clone repo, rồi chạy `codex exec --json` trong thư mục đó. Prompt (role, quy tắc platform, task, context) đi qua
+  stdin. Model và effort lấy từ bảng `providers.openai`, class `CODE_SPECIALIST` (`gpt-6.1-sol`, effort high).
+- Codex chạy mọi lệnh trong **sandbox của hệ điều hành** (`--sandbox workspace-write`): chỉ ghi được trong
+  workspace, **không có mạng**, không có web search, `approval_policy=never` (không chờ ai duyệt).
+- Codex nhận `CODEX_HOME` trống riêng cho mỗi job cùng `--ignore-user-config --ignore-rules --ephemeral`: không
+  dùng đăng nhập, cấu hình, rule hay lịch sử của máy worker. Lệnh nó chạy chỉ thấy môi trường tối thiểu
+  (`shell_environment_policy.inherit=core`), không thấy API key. Codex tự đọc `AGENTS.md` của repo (nếu có).
+- Engine xong việc thì **worker tự chạy lại build/test/lint**, Critic chấm trên kết quả đó. Engine tự commit thì
+  job fail với `ENGINE_TOUCHED_GIT`.
+- Chi phí ước tính từ số token Codex báo về, theo bảng `pricing`.
+
+Khác Claude Code: Codex **không giới hạn lệnh nào được chạy** bên trong sandbox (Claude Code chỉ cho chạy đúng
+các lệnh build/test/lint đã cấu hình). Giới hạn của Codex là sandbox hệ điều hành: ghi trong workspace, không mạng.
+Một run Claude hoặc Gemini có bật engine Codex vẫn develop bằng Codex trên model OpenAI, nên máy cần cả key của
+nhà cung cấp chính lẫn `OPENAI_API_KEY`.
 
 ## 7. Dashboard
 
@@ -952,7 +1032,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (195 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (210 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -989,6 +1069,9 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |
 | `model provider rejected the request` | Thiếu/sai `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trên worker. |
 | Tạo run lỗi `missing llm-google` (hoặc `llm-anthropic`) | Không máy nào có key của nhà cung cấp đó: đặt key trong `.env` của worker rồi khởi động lại worker. |
+| Tạo run lỗi `missing llm-openai` | Không máy nào có `OPENAI_API_KEY`: đặt key trong `.env` của worker rồi khởi động lại worker (mục 6). |
+| Tạo run lỗi `missing codex` | Run/project chọn engine Codex nhưng không máy nào có lệnh `codex` (`npm i -g @openai/codex`) hoặc `AWF_CODEX_BIN`. |
+| `codex: ... Incorrect API key` / `insufficient_quota` | Sai `OPENAI_API_KEY` hoặc hết credit OpenAI; không retry. |
 | Tạo run lỗi `missing claude-code` | Run/project chọn engine Claude Code nhưng không máy nào có `claude` trên PATH (hoặc `AWF_CLAUDE_CODE_BIN`) và `ANTHROPIC_API_KEY`. Cài Claude Code trên worker rồi khởi động lại worker (mục 6). |
 | `claude-code error_max_turns` / `timed out` | Task quá lớn so với `max_turns`/timeout của contract Developer; chia nhỏ objective hoặc tăng `timeout_policy` trong `agents/contracts/engineering.developer.yaml`. |
 | `ENGINE_TOUCHED_GIT` | Engine tự commit hoặc đổi nhánh; chỉ platform được commit. Không retry: xem log job. |
@@ -1514,7 +1597,7 @@ Factory gọi API bằng `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trong `.env` c�
 |---|---|---|
 | Factory, Claude | Credit của API key (Anthropic Console) | Không, nếu app Claude/Claude Code đăng nhập bằng gói Pro/Max: gói thuê bao và API là hai nguồn riêng |
 | Factory, Gemini | Key từ AI Studio / Google Cloud | Antigravity dùng quota tài khoản Google riêng; chỉ chung khi dùng cùng key hoặc cùng project Google Cloud |
-| Codex | — | Factory không hỗ trợ OpenAI/Codex (chỉ Claude, Gemini, `scripted`) |
+| Factory, ChatGPT / engine Codex | Credit của API key (platform.openai.com) | Không: gói ChatGPT Plus/Pro và OpenAI API là hai nguồn riêng; engine Codex chỉ dùng API key, không dùng đăng nhập ChatGPT trên máy |
 | Factory, engine Claude Code (mục 6) | Credit của API key, như dòng Claude ở trên | Không: engine chạy `--bare`, chỉ dùng API key, không dùng gói đăng nhập của app Claude Code |
 
 - App local dùng **cùng API key / cùng tổ chức** trên Console thì hai bên chung credit và chung rate limit. Dùng

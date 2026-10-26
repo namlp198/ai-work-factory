@@ -28,13 +28,14 @@ class TaskRoute:
 
 
 # Providers whose agents need an API key on the worker (scripted/unavailable need nothing).
-LLM_PROVIDERS = ("anthropic", "google")
+LLM_PROVIDERS = ("anthropic", "google", "openai")
 
 # Coding engines (ADR-011): the provider an engine talks to and what the worker must have installed.
 NATIVE_ENGINE = "native"
 CODING_ENGINES: dict[str, dict[str, Any]] = {
     NATIVE_ENGINE: {},
     "claude-code": {"provider": "anthropic", "capabilities": ["claude-code", "llm-anthropic"]},
+    "codex": {"provider": "openai", "capabilities": ["codex", "llm-openai"]},
 }
 
 

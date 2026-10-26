@@ -139,7 +139,7 @@ def test_router_maps_classes_to_gemini():
     from awf.model_router import RouteRequest
 
     router = ModelRouter.load(ROOT / "config" / "model-routing.yaml")
-    assert router.providers() == ["anthropic", "google"]
+    assert router.providers() == ["anthropic", "google", "openai"]
     route = router.resolve(RouteRequest(profile_class="REASONING", provider="google"))
     assert (route.provider, route.model, route.params) == ("google", "gemini-4-argon", {"effort": "high"})
     assert router.resolve(RouteRequest(profile_class="REASONING")).provider == "anthropic"
@@ -147,7 +147,7 @@ def test_router_maps_classes_to_gemini():
                                              confidentiality="restricted"))
     assert restricted.provider == "unavailable"  # never remapped to a hosted model
     with pytest.raises(ValueError, match="unknown model provider"):
-        router.resolve(RouteRequest(profile_class="FAST", provider="openai"))
+        router.resolve(RouteRequest(profile_class="FAST", provider="mistral"))
     assert router.estimate_cost("gemini-3.8-flash", 1_000_000, 1_000_000) == pytest.approx(4.5)
 
 
@@ -226,5 +226,5 @@ def test_gemini_run_needs_a_machine_with_a_gemini_key(client, platform, orchestr
                      json={"workflow_id": "analyst-only", "llm": "anthropic", "inputs": {"objective": "x"}})
     assert ok.status_code == 201 and ok.json()["llm"] == "anthropic"
     bad = client.post(f"/api/v1/projects/{project['id']}/workflow-runs",
-                      json={"workflow_id": "analyst-only", "llm": "openai", "inputs": {"objective": "x"}})
+                      json={"workflow_id": "analyst-only", "llm": "mistral", "inputs": {"objective": "x"}})
     assert bad.status_code == 422 and "unknown model provider" in bad.json()["detail"]

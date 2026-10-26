@@ -177,7 +177,7 @@ def test_engine_applies_only_where_the_profile_allows_it(router, platform):
                                                                                                "llm-anthropic"}
     assert engine_capabilities(platform.agents, router, roles, "internal", "native") == set()
     with pytest.raises(ValueError, match="unknown coding engine"):
-        engine_capabilities(platform.agents, router, roles, "internal", "codex")
+        engine_capabilities(platform.agents, router, roles, "internal", "aider")
 
 
 def test_runs_with_the_engine_need_a_machine_with_claude_code(client, platform, orchestrator, router,
@@ -196,7 +196,7 @@ def test_runs_with_the_engine_need_a_machine_with_claude_code(client, platform, 
                          json={"coding_engine": "native", "inputs": {"objective": "x"}})
     assert native.status_code == 201 and native.json()["coding_engine"] == "native"
     bad = client.post(f"/api/v1/projects/{project['id']}/workflow-runs",
-                      json={"coding_engine": "codex", "inputs": {"objective": "x"}})
+                      json={"coding_engine": "aider", "inputs": {"objective": "x"}})
     assert bad.status_code == 422 and "unknown coding engine" in bad.json()["detail"]
 
     equipped = WorkerDaemon(ControlPlaneClient(http=client), name="claude-box", workspace_root=tmp_path / "w2",

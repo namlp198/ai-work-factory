@@ -197,8 +197,9 @@ def _target(tool_input: dict[str, Any]) -> str:
 
 
 def run_engine(argv: list[str], prompt: str, cwd: Path, timeout: int, log: Callable[[str, str], None],
-               env: dict[str, str] | None = None) -> EngineResult:
-    parser = StreamParser(log)
+               env: dict[str, str] | None = None, parser: Any = None, name: str = ENGINE) -> EngineResult:
+    """Run an engine CLI with the prompt on stdin, folding its JSON-lines stdout through `parser` (feed/finish)."""
+    parser = parser or StreamParser(log)
     stderr_lines: list[str] = []
     try:
         proc = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -206,7 +207,7 @@ def run_engine(argv: list[str], prompt: str, cwd: Path, timeout: int, log: Calla
                                 text=True, encoding="utf-8", errors="replace",
                                 start_new_session=sys.platform != "win32")
     except FileNotFoundError:
-        return EngineResult(error=f"claude-code executable not found: {argv[0]}", retryable=False)
+        return EngineResult(error=f"{name} executable not found: {argv[0]}", retryable=False)
 
     def read_stdout() -> None:
         for line in proc.stdout:  # type: ignore[union-attr]
@@ -235,12 +236,12 @@ def run_engine(argv: list[str], prompt: str, cwd: Path, timeout: int, log: Calla
             t.join(5)
         res = parser.finish(-1, "")
         res.status, res.retryable = "failed", True
-        res.error = f"claude-code timed out after {timeout}s"
+        res.error = f"{name} timed out after {timeout}s"
         return res
     for t in readers:
         t.join(10)
     res = parser.finish(code, redact("".join(stderr_lines)))
-    log(f"[claude-code] finished in {int(time.monotonic() - started)}s: {res.status}, {res.turns} turns"
+    log(f"[{name}] finished in {int(time.monotonic() - started)}s: {res.status}, {res.turns} turns"
         + (f", ${res.cost_usd:.4f}" if res.cost_usd is not None else ""), "system")
     return res
 

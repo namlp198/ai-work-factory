@@ -26,6 +26,10 @@ def get_adapter(provider: str) -> ModelAdapter:
         from awf.agent_runtime.adapters.gemini_adapter import GeminiAdapter
 
         return GeminiAdapter()
+    if provider == "openai":
+        from awf.agent_runtime.adapters.openai_adapter import OpenAIAdapter
+
+        return OpenAIAdapter()
     raise ModelError(f"model provider '{provider}' is not available on this worker", retryable=False)
 
 
