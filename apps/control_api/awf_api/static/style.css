@@ -140,3 +140,7 @@ a.btn { display: inline-block; background: var(--accent); color: #fff; border-ra
 /* ---------------------------------------------------------------- language picker */
 .lang-select { width: auto; padding: 4px 6px; font-size: 13px; border-radius: 6px; }
 @media (max-width: 640px) { .lang-select { font-size: 12px; padding: 3px 4px; } }
+
+.activity { display: grid; gap: 8px; margin-bottom: 12px; }
+.activity .card { display: grid; gap: 4px; }
+.activity code { white-space: pre-wrap; word-break: break-word; }

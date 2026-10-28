@@ -1,4 +1,10 @@
-"""Claude Code as a coding engine (ADR-011): `claude --bare -p` drives the edit loop inside the job workspace.
+"""Claude Code as a coding engine (ADR-011, ADR-014): `claude -p` drives the edit loop inside the job workspace.
+
+Two ways to pay (AWF_CLAUDE_CODE_AUTH on the worker):
+- `api-key` (default when ANTHROPIC_API_KEY is set): `--bare`, billed to the API account;
+- `login`: the account signed in once with `claude` (a Claude Pro or Max plan). Bare mode never reads a login,
+  so it is off; user settings and MCP servers are still not loaded (`--setting-sources local`,
+  `--strict-mcp-config`), so the user's own permission rules cannot widen what the engine may run.
 
 The engine only edits files. Everything the platform relies on stays outside it:
 - the prompt and the model come from the control plane (role prompt, context builder, model router);
@@ -34,8 +40,10 @@ TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash"]
 # Read-only git commands are useful for orientation; anything that writes history stays denied.
 READ_ONLY_RULES = ["Bash(git status *)", "Bash(git status)", "Bash(git diff *)", "Bash(git diff)",
                    "Bash(git log *)", "Bash(git show *)"]
-# The engine authenticates with the API key only (bare mode never reads a subscription login).
+# Credentials passed through in api-key mode (bare mode never reads a subscription login).
 CREDENTIAL_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
+AUTH_ENV = "AWF_CLAUDE_CODE_AUTH"
+LOGIN, API_KEY = "login", "api-key"
 REPO_INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md")
 REPO_INSTRUCTIONS_MAX_CHARS = 20_000
 
@@ -62,6 +70,20 @@ def claude_code_bin() -> list[str] | None:
     return [found] if found else None
 
 
+def auth_mode() -> str:
+    """`login` (signed-in Claude Pro/Max plan) or `api-key`. Default: api-key when ANTHROPIC_API_KEY is set."""
+    mode = os.environ.get(AUTH_ENV, "").strip().lower()
+    if mode in (LOGIN, API_KEY):
+        return mode
+    return API_KEY if os.environ.get("ANTHROPIC_API_KEY") else LOGIN
+
+
+def login_model(route_model: str) -> str:
+    """The model in login mode: AWF_CLAUDE_CODE_MODEL (e.g. `sonnet`, when the plan has no access to the routed
+    model), else the routed one."""
+    return os.environ.get("AWF_CLAUDE_CODE_MODEL", "").strip() or route_model
+
+
 def command_text(argv: list[str]) -> str:
     return " ".join(f'"{a}"' if " " in a else a for a in argv)
 
@@ -76,24 +98,29 @@ def bash_rules(commands: list[list[str]]) -> list[str]:
 
 
 def build_argv(base: list[str], *, model: str, effort: str | None, max_turns: int, allowed: list[str],
-               system_prompt_file: Path, max_budget_usd: float | None = None) -> list[str]:
-    argv = [*base, "--bare", "-p", "--output-format", "stream-json", "--verbose",
+               system_prompt_file: Path, max_budget_usd: float | None = None, auth: str = API_KEY,
+               read_only: bool = False) -> list[str]:
+    tools = [t for t in TOOLS if not (read_only and t in ("Edit", "Write"))]
+    file_tools = [t for t in ("Read", "Edit", "Write", "Glob", "Grep") if t in tools]
+    mode = ["--bare"] if auth == API_KEY else ["--setting-sources", "local", "--strict-mcp-config"]
+    argv = [*base, *mode, "-p", "--output-format", "stream-json", "--verbose",
             "--model", model, "--max-turns", str(max_turns),
             "--permission-mode", "dontAsk", "--no-session-persistence",
-            "--tools", ",".join(TOOLS),
-            "--allowedTools", ",".join(["Read", "Edit", "Write", "Glob", "Grep", *allowed]),
+            "--tools", ",".join(tools),
+            "--allowedTools", ",".join([*file_tools, *allowed]),
             "--append-system-prompt-file", str(system_prompt_file)]
     if effort:
         argv += ["--effort", effort]
-    if max_budget_usd:
+    if max_budget_usd and auth == API_KEY:
         argv += ["--max-budget-usd", f"{max_budget_usd:g}"]
     return argv
 
 
-def engine_env() -> dict[str, str]:
-    """The worker's environment without credentials, plus only what the engine needs to reach Claude."""
+def engine_env(auth: str = API_KEY) -> dict[str, str]:
+    """The worker's environment without credentials, plus only what the engine needs to reach Claude. In login
+    mode no API key is passed, so the CLI uses the signed-in plan (it prefers a key when it sees one)."""
     env = sanitized_env()
-    for name in CREDENTIAL_ENV:
+    for name in CREDENTIAL_ENV if auth == API_KEY else ():
         if os.environ.get(name):
             env[name] = os.environ[name]
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"

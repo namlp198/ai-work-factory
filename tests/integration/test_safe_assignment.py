@@ -137,6 +137,7 @@ def test_visual_studio_capabilities_from_vswhere():
 
 def test_extra_capabilities_add_to_detection(monkeypatch):
     monkeypatch.setattr(worker_module, "detect_capabilities", lambda: ["dotnet", "git"])
+    monkeypatch.setattr(worker_module, "llm_capabilities", set)  # this machine's API keys must not leak in
     assert resolve_capabilities(None, "robo-station-sdk, realsense") == ["dotnet", "git", "realsense", "robo-station-sdk"]
     assert resolve_capabilities("git,python", "realsense") == ["git", "python", "realsense"]  # override replaces
     assert resolve_capabilities("", None) == ["dotnet", "git"]

@@ -19,6 +19,7 @@ from awf.agent_runtime.adapters.base import (
     ModelAdapter,
     ModelError,
     ModelSession,
+    REQUEST_TIMEOUT_S,
     ModelTurn,
     ToolCall,
     ToolDef,
@@ -29,6 +30,25 @@ from awf.agent_runtime.providers import PROVIDERS, Provider
 
 _NO_RETRY_CODES = {"insufficient_quota", "insufficient_balance", "billing_hard_limit_reached", "invalid_api_key",
                    "Arrearage", "account_overdue"}
+
+
+def classify_error(name: str, resp: httpx.Response) -> tuple[str, str]:
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {}
+    err = payload.get("error") if isinstance(payload.get("error"), dict) else payload
+    code = str((err or {}).get("code") or (err or {}).get("type") or "")
+    message = f"{name} API {resp.status_code} {code}: {str((err or {}).get('message', resp.text))[:500]}"
+    if code == "invalid_api_key":
+        return message, "fail"
+    if code in _NO_RETRY_CODES or resp.status_code == 402:
+        return message, "billing"
+    if resp.status_code in (429, 500, 502, 503, 504):
+        return message, "retry"
+    if resp.status_code in (400, 401, 403, 404):
+        return message, "fail"
+    return message, "other"
 
 
 class ChatCompletionsSession(ModelSession):
@@ -45,39 +65,15 @@ class ChatCompletionsSession(ModelSession):
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         name = self.provider.label
-        for attempt in range(1, 5):
-            try:
-                resp = self.http.post(f"{self.base}/chat/completions", json=body,
-                                      headers={"Authorization": f"Bearer {self.key}"})
-            except httpx.HTTPError:
-                if attempt == 4:
-                    raise ModelError(f"could not reach the {name} API", retryable=True) from None
-                self.sleep(2 ** attempt)
-                continue
-            if resp.status_code == 200:
-                data = resp.json()
-                # Some gateways answer 200 with an error body (MiniMax base_resp, DashScope code).
-                base_resp = data.get("base_resp") or {}
-                if base_resp.get("status_code") not in (None, 0):
-                    raise ModelError(f"{name} API error {base_resp.get('status_code')}: "
-                                     f"{str(base_resp.get('status_msg', ''))[:500]}", retryable=False)
-                return data
-            try:
-                payload = resp.json()
-            except ValueError:
-                payload = {}
-            err = payload.get("error") if isinstance(payload.get("error"), dict) else payload
-            code = str((err or {}).get("code") or (err or {}).get("type") or "")
-            message = f"{name} API {resp.status_code} {code}: {str((err or {}).get('message', resp.text))[:500]}"
-            if code in _NO_RETRY_CODES or resp.status_code == 402:
-                raise ModelError(f"model provider rejected the request: {message}", retryable=False)
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt < 4:
-                self.sleep(2 ** attempt)
-                continue
-            if resp.status_code in (400, 401, 403, 404):
-                raise ModelError(f"model provider rejected the request: {message}", retryable=False)
-            raise ModelError(message, retryable=resp.status_code == 429 or resp.status_code >= 500)
-        raise ModelError(f"{name} API unavailable", retryable=True)
+        data = self.post_json(self.http, f"{self.base}/chat/completions", body,
+                              {"Authorization": f"Bearer {self.key}"}, provider=self.provider.id, name=name,
+                              classify=lambda resp: classify_error(name, resp))
+        # Some gateways answer 200 with an error body (MiniMax base_resp, DashScope code).
+        base_resp = data.get("base_resp") or {}
+        if base_resp.get("status_code") not in (None, 0):
+            raise ModelError(f"{name} API error {base_resp.get('status_code')}: "
+                             f"{str(base_resp.get('status_msg', ''))[:500]}", retryable=False)
+        return data
 
     def send(self, tool_outcomes: list[ToolOutcome] | None = None, user_text: str | None = None) -> ModelTurn:
         self.messages.extend(self._pending)
@@ -138,7 +134,7 @@ class ChatCompletionsAdapter(ModelAdapter):
                  base: str | None = None, sleep=time.sleep):
         self.spec = PROVIDERS[provider]
         self.provider = provider
-        self.http = http or httpx.Client(timeout=900)
+        self.http = http or httpx.Client(timeout=REQUEST_TIMEOUT_S)
         self.key = key if key is not None else self.spec.key()
         self.base = (base or self.spec.endpoint()).rstrip("/")
         self.sleep = sleep

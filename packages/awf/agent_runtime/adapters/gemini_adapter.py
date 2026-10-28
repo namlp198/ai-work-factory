@@ -19,6 +19,7 @@ from awf.agent_runtime.adapters.base import (
     ModelAdapter,
     ModelError,
     ModelSession,
+    REQUEST_TIMEOUT_S,
     ModelTurn,
     ToolCall,
     ToolDef,
@@ -35,6 +36,27 @@ _REFUSALS = {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", 
 
 def api_key() -> str:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+
+
+def classify_error(resp: httpx.Response) -> tuple[str, str]:
+    """Gemini answers 429 RESOURCE_EXHAUSTED both for "slow down" (per-minute limits) and for "this key cannot
+    use this model" (a daily quota used up, or a limit of 0 on the free tier): only the first is worth a retry."""
+    try:
+        err = resp.json().get("error") or {}
+    except ValueError:
+        err = {}
+    text = str(err.get("message", ""))
+    message = f"Gemini API {resp.status_code} {err.get('status', '')}: {text[:500]}"
+    if resp.status_code == 429:
+        quota_ids = [str(v.get("quotaId", "")) for d in err.get("details") or [] for v in d.get("violations") or []]
+        if "limit: 0" in text or any("PerDay" in q for q in quota_ids):
+            return message, "billing"
+        return message, "retry"
+    if resp.status_code in (500, 502, 503, 504):
+        return message, "retry"
+    if resp.status_code in (400, 401, 403, 404):
+        return message, "fail"
+    return message, "other"
 
 
 def gemini_schema(schema: Any) -> Any:
@@ -102,29 +124,8 @@ class GeminiSession(ModelSession):
         return config
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.base}/models/{self.model}:generateContent"
-        for attempt in range(1, 5):
-            try:
-                resp = self.http.post(url, json=body, headers={"x-goog-api-key": self.key})
-            except httpx.HTTPError:
-                if attempt == 4:
-                    raise ModelError("could not reach the Gemini API", retryable=True) from None
-                self.sleep(2 ** attempt)
-                continue
-            if resp.status_code == 200:
-                return resp.json()
-            try:
-                err = resp.json().get("error") or {}
-            except ValueError:
-                err = {}
-            message = f"Gemini API {resp.status_code} {err.get('status', '')}: {str(err.get('message', ''))[:500]}"
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt < 4:
-                self.sleep(2 ** attempt)
-                continue
-            if resp.status_code in (400, 401, 403, 404):
-                raise ModelError(f"model provider rejected the request: {message}", retryable=False)
-            raise ModelError(message, retryable=resp.status_code == 429 or resp.status_code >= 500)
-        raise ModelError("Gemini API unavailable", retryable=True)
+        return self.post_json(self.http, f"{self.base}/models/{self.model}:generateContent", body,
+                              {"x-goog-api-key": self.key}, provider="google", name="Gemini", classify=classify_error)
 
     def send(self, tool_outcomes: list[ToolOutcome] | None = None, user_text: str | None = None) -> ModelTurn:
         parts: list[dict[str, Any]] = list(self._pending)
@@ -188,7 +189,7 @@ class GeminiAdapter(ModelAdapter):
 
     def __init__(self, http: httpx.Client | None = None, key: str | None = None, base: str | None = None,
                  sleep=time.sleep):
-        self.http = http or httpx.Client(timeout=600)
+        self.http = http or httpx.Client(timeout=REQUEST_TIMEOUT_S)
         self.key = key if key is not None else api_key()
         self.base = base or os.environ.get("AWF_GEMINI_API_BASE") or API_BASE
         self.sleep = sleep

@@ -227,6 +227,8 @@ class RunIn(BaseModel):
     llm: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{1,30}$")
     # Coding engine for the roles that support one (ADR-011): native or claude-code; default: project/native.
     coding_engine: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{1,30}$")
+    # Which roles use that engine: coding (the Developer) or all (every role, e.g. on a signed-in Pro plan).
+    engine_scope: Literal["coding", "all"] | None = None
 
 
 @router.post("/projects/{project_id}/workflow-runs", status_code=201)
@@ -236,7 +238,8 @@ def start_run(project_id: str, body: RunIn, state: AppState = Depends(get_state)
     try:
         run = state.orchestrator.start_run(session, project, body.workflow_id, body.inputs, actor=actor,
                                            worker_name=body.placement.worker if body.placement else None,
-                                           llm=body.llm, coding_engine=body.coding_engine)
+                                           llm=body.llm, coding_engine=body.coding_engine,
+                                           engine_scope=body.engine_scope)
     except (OrchestratorError, KeyError) as exc:
         raise HTTPException(422, str(exc)) from None
     return ser.run(run, worker=None)
@@ -257,7 +260,36 @@ def get_run(run_id: str, state: AppState = Depends(get_state), session: Session 
     worker = session.get(Worker, run.assigned_worker_id) if run.assigned_worker_id else None
     data = ser.run(run, state.orchestrator.stage_overview(session, run), worker=worker)
     data["cost_usd"] = float(cost or 0)
+    data["activity"] = run_activity(session, run_id)
     return data
+
+
+_ACTIVE_TASK_STATES = (TaskState.READY, TaskState.RUNNING, TaskState.WAITING)
+
+
+def run_activity(session: Session, run_id: str) -> list[dict[str, Any]]:
+    """What each unfinished task is doing now: its latest job, the last platform note from the worker (model
+    retries, engine progress) and the error of the previous attempt, so a run stuck at 0% says why."""
+    out = []
+    tasks = session.scalars(select(Task).where(Task.workflow_run_id == run_id, Task.state.in_(_ACTIVE_TASK_STATES))
+                            .order_by(Task.created_at))
+    for task in tasks:
+        job = session.scalars(select(Job).where(Job.task_id == task.id).order_by(Job.created_at.desc())).first()
+        note = None
+        if job:
+            note = session.scalars(select(JobLog).where(JobLog.job_id == job.id,
+                                                        JobLog.stream.in_(("system", "stderr")))
+                                   .order_by(JobLog.id.desc())).first()
+        out.append({
+            "task_id": task.id, "title": task.title, "state": task.state,
+            "attempt": task.attempt, "max_attempts": task.max_attempts,
+            "job_state": job.state if job else None,
+            "started_at": job.started_at.isoformat() if job and job.started_at else None,
+            "previous_error": job.error if job and job.error else None,
+            "note": note.line[:500] if note else None,
+            "note_at": note.created_at.isoformat() if note else None,
+        })
+    return out
 
 
 @router.post("/workflow-runs/{run_id}/reassign")

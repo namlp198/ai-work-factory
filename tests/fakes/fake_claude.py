@@ -1,7 +1,9 @@
 """Stand-in for the `claude` CLI in tests: speaks `--output-format stream-json` and edits the workspace.
 
 FAKE_CLAUDE_MODE picks the behaviour; FAKE_CLAUDE_RECORD names a file that receives the argv, the stdin prompt
-and the appended system prompt, so tests can assert what the worker asked for.
+and the appended system prompt, so tests can assert what the worker asked for (one JSON line per call).
+`review` answers a read-only role with the `awf-result` block in FAKE_CLAUDE_RESULT and edits nothing;
+`review_bad_first` forgets the block on its first call.
 """
 
 import json
@@ -21,12 +23,25 @@ def main() -> int:
     system = Path(argv[argv.index("--append-system-prompt-file") + 1]).read_text(encoding="utf-8")
     mode = os.environ.get("FAKE_CLAUDE_MODE", "ok")
     record = os.environ.get("FAKE_CLAUDE_RECORD")
+    calls = 0
     if record:
-        Path(record).write_text(json.dumps({"argv": argv, "prompt": prompt, "system": system,
-                                            "env_has_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
-                                            "env_has_awf_token": bool(os.environ.get("AWF_API_TOKEN"))}),
-                                encoding="utf-8")
+        path = Path(record)
+        calls = len(path.read_text(encoding="utf-8").splitlines()) if path.exists() else 0
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"argv": argv, "prompt": prompt, "system": system,
+                                 "env_has_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
+                                 "env_has_awf_token": bool(os.environ.get("AWF_API_TOKEN"))}) + "\n")
     emit({"type": "system", "subtype": "init", "session_id": "s-1", "model": argv[argv.index("--model") + 1]})
+    if mode in ("review", "review_bad_first"):
+        block = os.environ.get("FAKE_CLAUDE_RESULT", "{}")
+        text = "Reviewed the change." if mode == "review_bad_first" and calls == 0 else \
+            f"Reviewed the change.\n\n```awf-result\n{block}\n```"
+        emit({"type": "assistant", "parent_tool_use_id": None, "message": {"content": [
+            {"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": "README.md"}}]}})
+        emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2, "result": text,
+              "total_cost_usd": 0.05, "usage": {"input_tokens": 100, "output_tokens": 50}, "session_id": "s-1",
+              "permission_denials": []})
+        return 0
     if mode == "crash":
         print("boom: something went wrong", file=sys.stderr)
         return 3

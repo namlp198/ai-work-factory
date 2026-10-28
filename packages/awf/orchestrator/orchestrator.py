@@ -58,7 +58,7 @@ from awf.orchestrator import placement
 from awf.orchestrator.jobs import expire_leases, mismatch_reasons, requeue_or_fail, requirements_met
 from awf.orchestrator.context import ContextBuilder, task_meta
 from awf.orchestrator.critic import CHANGES_REQUIRED, Critic, CriticResult
-from awf.orchestrator.task_router import NATIVE_ENGINE, TaskRouter, engine_capabilities, llm_capabilities, slug
+from awf.orchestrator.task_router import NATIVE_ENGINE, TaskRouter, run_capabilities, slug
 from awf.platform import Platform
 from awf.workflow_engine import LoadedWorkflow, StageSpec
 
@@ -153,12 +153,13 @@ class Orchestrator:
 
     def start_run(self, session: Session, project: Project, workflow_id: str, inputs: dict[str, Any],
                   actor: str = "admin", worker_name: str | None = None, llm: str | None = None,
-                  coding_engine: str | None = None) -> WorkflowRun:
+                  coding_engine: str | None = None, engine_scope: str | None = None) -> WorkflowRun:
         """Start a run. With run placement (the default) `worker_name` pins it to that machine; otherwise
         the orchestrator picks the least loaded matching machine at the first dispatch. `llm` chooses the model
         provider for every agent of the run (default: the project's labels.llm, then default_provider).
         `coding_engine` runs the roles that support it on another engine, e.g. claude-code (default: the project's
-        labels.coding_engine, else native)."""
+        labels.coding_engine, else native). `engine_scope` `all` runs every role on that engine, e.g. to use a
+        signed-in subscription plan instead of API keys (default: labels.engine_scope, else `coding`)."""
         if project.status == PROJECT_ARCHIVED:
             raise OrchestratorError("project is archived; restore it before starting a run")
         workflow = self.p.workflows.get(workflow_id)
@@ -177,11 +178,12 @@ class Orchestrator:
             raise OrchestratorError(f"unknown model provider '{provider}' (configured: "
                                     f"{', '.join(self.p.router.providers())})")
         engine = coding_engine or (project.labels or {}).get("coding_engine") or NATIVE_ENGINE
+        scope = engine_scope or (project.labels or {}).get("engine_scope") or "coding"
+        if scope == "all" and engine == NATIVE_ENGINE:
+            raise OrchestratorError("engine scope 'all' needs a coding engine (e.g. claude-code or antigravity)")
         try:
-            llm_caps = llm_capabilities(self.p.agents, self.p.router, workflow.spec.roles(),
-                                        project.confidentiality, provider)
-            llm_caps |= engine_capabilities(self.p.agents, self.p.router, workflow.spec.roles(),
-                                            project.confidentiality, engine)
+            llm_caps = run_capabilities(self.p.agents, self.p.router, workflow.spec.roles(),
+                                        project.confidentiality, provider, engine, scope)
         except ValueError as exc:
             raise OrchestratorError(str(exc)) from None
         placed = workflow.spec.placement == placement.RUN
@@ -201,7 +203,7 @@ class Orchestrator:
             status=RunStatus.RUNNING, input_json=inputs, started_at=utcnow(),
             context_json={"stage_iteration": {}, "fix_loops": {}, "integration_branch": f"awf/run-{run_id[:8]}",
                           "placement": {"mode": workflow.spec.placement, "worker": worker_name, "wait": None},
-                          "llm": provider, "coding_engine": engine},
+                          "llm": provider, "coding_engine": engine, "engine_scope": scope},
             requirements=requirements,
         )
         session.add(run)
@@ -216,7 +218,8 @@ class Orchestrator:
                                                       "version": workflow.spec.version,
                                                       "placement": workflow.spec.placement,
                                                       "requirements": requirements, "worker": worker_name,
-                                                      "llm": provider, "coding_engine": engine})
+                                                      "llm": provider, "coding_engine": engine,
+                                                      "engine_scope": scope})
         return run
 
     @staticmethod

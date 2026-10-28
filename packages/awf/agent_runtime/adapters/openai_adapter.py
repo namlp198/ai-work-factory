@@ -20,6 +20,7 @@ from awf.agent_runtime.adapters.base import (
     ModelAdapter,
     ModelError,
     ModelSession,
+    REQUEST_TIMEOUT_S,
     ModelTurn,
     ToolCall,
     ToolDef,
@@ -36,6 +37,22 @@ def api_key() -> str:
     return os.environ.get("OPENAI_API_KEY") or ""
 
 
+def classify_error(resp: httpx.Response) -> tuple[str, str]:
+    try:
+        err = resp.json().get("error") or {}
+    except ValueError:
+        err = {}
+    code = err.get("code") or err.get("type") or ""
+    message = f"OpenAI API {resp.status_code} {code}: {str(err.get('message', ''))[:500]}"
+    if code in _NO_RETRY_CODES:
+        return message, "billing"
+    if resp.status_code in (429, 500, 502, 503, 504):
+        return message, "retry"
+    if resp.status_code in (400, 401, 403, 404):
+        return message, "fail"
+    return message, "other"
+
+
 class OpenAISession(ModelSession):
     def __init__(self, http: httpx.Client, *, system: str, user_message: str, tools: list[ToolDef], model: str,
                  params: dict[str, Any], key: str, base: str = API_BASE, sleep=time.sleep):
@@ -49,32 +66,8 @@ class OpenAISession(ModelSession):
         self._pending: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.base}/responses"
-        for attempt in range(1, 5):
-            try:
-                resp = self.http.post(url, json=body, headers={"Authorization": f"Bearer {self.key}"})
-            except httpx.HTTPError:
-                if attempt == 4:
-                    raise ModelError("could not reach the OpenAI API", retryable=True) from None
-                self.sleep(2 ** attempt)
-                continue
-            if resp.status_code == 200:
-                return resp.json()
-            try:
-                err = resp.json().get("error") or {}
-            except ValueError:
-                err = {}
-            code = err.get("code") or err.get("type") or ""
-            message = f"OpenAI API {resp.status_code} {code}: {str(err.get('message', ''))[:500]}"
-            if code in _NO_RETRY_CODES:
-                raise ModelError(f"model provider rejected the request: {message}", retryable=False)
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt < 4:
-                self.sleep(2 ** attempt)
-                continue
-            if resp.status_code in (400, 401, 403, 404):
-                raise ModelError(f"model provider rejected the request: {message}", retryable=False)
-            raise ModelError(message, retryable=resp.status_code == 429 or resp.status_code >= 500)
-        raise ModelError("OpenAI API unavailable", retryable=True)
+        return self.post_json(self.http, f"{self.base}/responses", body, {"Authorization": f"Bearer {self.key}"},
+                              provider="openai", name="OpenAI", classify=classify_error)
 
     def send(self, tool_outcomes: list[ToolOutcome] | None = None, user_text: str | None = None) -> ModelTurn:
         self.items.extend(self._pending)
@@ -142,7 +135,7 @@ class OpenAIAdapter(ModelAdapter):
 
     def __init__(self, http: httpx.Client | None = None, key: str | None = None, base: str | None = None,
                  sleep=time.sleep):
-        self.http = http or httpx.Client(timeout=900)
+        self.http = http or httpx.Client(timeout=REQUEST_TIMEOUT_S)
         self.key = key if key is not None else api_key()
         self.base = base or os.environ.get("AWF_OPENAI_API_BASE") or API_BASE
         self.sleep = sleep

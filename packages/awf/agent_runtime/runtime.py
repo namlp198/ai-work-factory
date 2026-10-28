@@ -38,6 +38,7 @@ class AgentResult:
     output_tokens: int = 0
     error: str | None = None
     retryable: bool = True
+    error_code: str | None = None  # MODEL_BILLING, MODEL_TIMEOUT
     duration_ms: int = 0
 
 
@@ -64,11 +65,15 @@ class AgentRuntime:
         try:
             session = adapter.start(system=system_prompt + RUNTIME_RULES, user_message=user_message,
                                     tools=self.tool_defs(contract), model=model, params=params, meta=meta)
+            # Every request and retry wait stays inside the contract's time limit; retries show in the job log.
+            session.deadline = deadline
+            session.notify = lambda note: tool_ctx.emit(f"[model] {note}", "system")
             outcomes: list[ToolOutcome] | None = None
             nudge: str | None = None
             for turn_no in range(1, max_turns + 1):
                 if time.monotonic() > deadline:
                     result.error = f"timeout after {contract.timeout_policy.seconds}s"
+                    result.error_code = "MODEL_TIMEOUT"
                     break
                 turn = session.send(outcomes, nudge)
                 result.turns = turn_no
@@ -104,5 +109,6 @@ class AgentRuntime:
         except ModelError as exc:
             result.error = str(exc)
             result.retryable = exc.retryable
+            result.error_code = exc.code
         result.duration_ms = int((time.monotonic() - started) * 1000)
         return result

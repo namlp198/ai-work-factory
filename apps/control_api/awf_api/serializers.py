@@ -47,6 +47,7 @@ def run(r: WorkflowRun, stages: list[dict[str, Any]] | None = None, worker: Work
             "requirements": r.requirements or {},
             "llm": ctx.get("llm"),
             "coding_engine": ctx.get("coding_engine") or "native",
+            "engine_scope": ctx.get("engine_scope") or "coding",
             "assigned_worker": ({"id": worker.id, "name": worker.name, "status": worker.status} if worker
                                 else {"id": r.assigned_worker_id} if r.assigned_worker_id else None),
             "assigned_at": _ts(r.assigned_at),

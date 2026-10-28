@@ -11,9 +11,12 @@ from typing import Any
 import anthropic
 
 from awf.agent_runtime.adapters.base import (
+    TIMEOUT,
     ModelAdapter,
     ModelError,
+    billing_error,
     ModelSession,
+    REQUEST_TIMEOUT_S,
     ModelTurn,
     ToolCall,
     ToolDef,
@@ -25,6 +28,8 @@ _FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "cl
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
 # Models that do not accept output_config.effort.
 _NO_EFFORT_MODELS = {"claude-haiku-4-5"}
+# Phrases of a 400 that means the account cannot pay (prepaid credit used up), not a malformed request.
+_BILLING_PHRASES = ("credit balance", "billing", "purchase credits")
 
 
 class AnthropicSession(ModelSession):
@@ -66,9 +71,15 @@ class AnthropicSession(ModelSession):
             kwargs["fallbacks"] = "default"
 
         try:
-            response = self.client.beta.messages.create(**kwargs)
+            # The SDK retries busy answers itself; the timeout keeps each try inside the agent's deadline.
+            response = self.client.beta.messages.create(**kwargs, timeout=self.request_timeout())
         except anthropic.BadRequestError as exc:
+            if any(p in str(exc.message).lower() for p in _BILLING_PHRASES):
+                raise billing_error("anthropic", str(exc.message)[:500]) from exc
             raise ModelError(f"bad request: {exc.message}", retryable=False) from exc
+        except anthropic.APITimeoutError as exc:
+            raise ModelError("Claude did not answer in time (model busy or overloaded)", retryable=True,
+                             code=TIMEOUT) from exc
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError, anthropic.NotFoundError) as exc:
             raise ModelError(f"model provider rejected the request: {exc.message}", retryable=False) from exc
         except anthropic.RateLimitError as exc:
@@ -110,7 +121,7 @@ class AnthropicAdapter(ModelAdapter):
     def client(self) -> anthropic.Anthropic:
         if self._client is None:
             # Credentials resolve from the environment (ANTHROPIC_API_KEY, auth token or profile).
-            self._client = anthropic.Anthropic(max_retries=4, timeout=600)
+            self._client = anthropic.Anthropic(max_retries=2, timeout=REQUEST_TIMEOUT_S)
         return self._client
 
     def start(self, *, system: str, user_message: str, tools: list[ToolDef], model: str,

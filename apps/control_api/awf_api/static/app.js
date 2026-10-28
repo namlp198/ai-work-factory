@@ -313,6 +313,7 @@ async function viewProject(id) {
       <label>${t("field.machine")}${machineSelect(workers)}</label>
       <label>${t("field.model")}<select name="llm">${llmOptions(models, "", t("common.project_default", { value: llmName(p.labels?.llm || models.default_provider) }))}</select></label>
       <label>${t("field.coding_engine")}<select name="coding_engine">${engineOptions("", t("common.project_default", { value: engineName(p.labels?.coding_engine || "native") }, true))}</select></label>
+      <label>${t("field.engine_scope")}<select name="engine_scope">${scopeOptions("", t("common.project_default", { value: t(`engine_scope.${p.labels?.engine_scope || "coding"}`) }, true))}</select></label>
       <label class="full">${t("field.objective")}<textarea name="objective" rows="3" required></textarea></label>
       <div class="full row"><button>${t("run.start")}</button></div><div class="full" id="run-error"></div></form>`}
     <h2>${t("project.runs")}</h2><div class="table-wrap"><table><tr><th>${t("common.run")}</th><th>${t("field.workflow")}</th><th>${t("field.status")}</th><th>${t("field.objective")}</th><th>${t("field.created")}</th></tr>${rows || `<tr><td colspan="5" class="muted">${t("project.no_runs")}</td></tr>`}</table></div>
@@ -370,6 +371,9 @@ function runErrorHint(message) {
     }
   }
   if (/platform is /.test(message)) hints.push(t("hint.platform"));
+  const billing = message.match(/no credit or quota left on the (\w+) API account/);
+  if (billing) hints.push(t("hint.billing", { provider: LLM_NAMES[billing[1]] || billing[1] }));
+  if (/did not answer|overloaded|high demand|time limit was reached|timeout after/i.test(message)) hints.push(t("hint.model_busy"));
   return `<span class="error">${esc(message)}</span>${[...new Set(hints)].map((h) => `<span class="hint-fix">${h}</span>`).join("")}`;
 }
 
@@ -387,6 +391,7 @@ function projectMachines(p, models) {
         placeholder="dotnet-windowsdesktop, msbuild"></label>
       <label>${t("where.default_model")}<select name="llm">${llmOptions(models, p.labels?.llm || "")}</select></label>
       <label>${t("where.default_engine")}<select name="coding_engine">${engineOptions(p.labels?.coding_engine || "")}</select></label>
+      <label>${t("where.default_engine_scope")}<select name="engine_scope">${scopeOptions(p.labels?.engine_scope || "coding")}</select></label>
       <div class="full row"><button class="ghost">${t("common.save")}</button><span id="project-edit-error" class="error"></span>
         <span class="muted">${t("where.note")}</span></div></form>
     <div class="table-wrap"><table><tr><th>${t("field.machine")}</th><th>${t("field.status")}</th><th>${t("field.platform")}</th><th>${t("where.can_run")}</th></tr>
@@ -440,6 +445,7 @@ function bindProject(id) {
       const labels = { ...(p.labels || {}), platform: f.get("platform") };
       if (f.get("llm")) labels.llm = f.get("llm"); else delete labels.llm;
       if (f.get("coding_engine")) labels.coding_engine = f.get("coding_engine"); else delete labels.coding_engine;
+      if (f.get("engine_scope") === "all") labels.engine_scope = "all"; else delete labels.engine_scope;
       const body = { labels };
       if (p.repository?.url) body.repository = { ...p.repository, required_capabilities: capList(f.get("required_capabilities")) };
       await api(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -456,6 +462,7 @@ function bindProject(id) {
       if (f.get("worker")) body.placement = { worker: f.get("worker") };
       if (f.get("llm")) body.llm = f.get("llm");
       if (f.get("coding_engine")) body.coding_engine = f.get("coding_engine");
+      if (f.get("engine_scope")) body.engine_scope = f.get("engine_scope");
       const r = await api(`/projects/${id}/workflow-runs`, { method: "POST", body: JSON.stringify(body) });
       location.hash = `#/runs/${r.id}`;
     } catch (err) { $("#run-error").innerHTML = runErrorHint(err.message); }
@@ -478,11 +485,29 @@ async function viewRun(id) {
       ${run.input?.repository ? `<div>${t("run.integration_branch")}</div><div><code>${esc(run.integration_branch)}</code></div>` : ""}
       <div>${t("run.fix_loops")}</div><div>${esc(JSON.stringify(run.fix_loops))}</div>
       <div>${t("run.llm_cost")}</div><div>${money(run.cost_usd)}</div>
-      ${run.error ? `<div>${t("common.error")}</div><div class="error">${esc(run.error)}</div>` : ""}</div>
+      ${run.error ? `<div>${t("common.error")}</div><div>${runErrorHint(run.error)}</div>` : ""}</div>
+    ${run.status === "RUNNING" && run.activity?.length ? `<h2>${t("run.now")}</h2>${runActivity(run.activity)}` : ""}
     ${mine.length ? `<h2>${t("overview.waiting_title")}</h2>${approvalTable(mine)}` : ""}
     <h2>${t("field.workflow")}</h2><div class="pipeline">${pipeline}</div>
     <h2>${t("run.tasks")}</h2><div class="table-wrap"><table><tr><th>${t("run.stage")}</th><th>${t("run.task")}</th><th>${t("run.role")}</th><th>${t("run.state")}</th><th>${t("run.iter")}</th><th>${t("run.attempt")}</th><th>${t("run.critic")}</th></tr>${rows}</table></div>
     <h2>${t("run.artifacts")}</h2><div id="run-artifacts" class="muted">${t("common.loading")}</div>`;
+}
+
+// Which roles the run's engine is used for: "" (project default, only in the run form), coding or all.
+function scopeOptions(selected, defaultLabel) {
+  const head = defaultLabel ? `<option value="">${defaultLabel}</option>` : "";
+  return head + ["coding", "all"].map((v) => `<option value="${v}" ${v === selected ? "selected" : ""}>${t(`engine_scope.${v}`)}</option>`).join("");
+}
+
+// What each unfinished task is waiting for: the worker's latest note (model retries) and the previous error.
+function runActivity(items) {
+  return `<div class="activity">${items.map((a) => `<div class="card">
+    <div class="row"><b>${esc(a.title)}</b> ${pill(a.job_state || a.state)} <span class="muted">${t("task.attempt_n", { n: `${a.attempt}/${a.max_attempts}` })}</span>
+      ${a.started_at ? `<span class="muted">${t("run.since", { time: when(a.started_at) })}</span>` : ""}</div>
+    ${a.job_state ? "" : `<div class="muted">${t("run.activity_no_job")}</div>`}
+    ${a.note ? `<div>${t("run.activity_note")} <span class="muted">(${when(a.note_at)})</span>: <code>${esc(a.note)}</code></div>` : ""}
+    ${a.previous_error ? `<div>${t("run.activity_previous")} ${runErrorHint(a.previous_error)}</div>` : ""}
+  </div>`).join("")}</div>`;
 }
 
 function placementRows(run, workers) {
@@ -497,7 +522,7 @@ function placementRows(run, workers) {
       ${run.placement.wait ? `<div class="error">${esc(run.placement.wait)}</div>` : ""}${move}</div>
     <div>${t("run.requirements")}</div><div>${t("field.platform")} <code>${esc(req.platform || "any")}</code> · ${t("run.capabilities")} <code>${esc((req.capabilities || []).join(", "))}</code></div>
     ${run.llm ? `<div>${t("field.model")}</div><div>${esc(llmName(run.llm))}</div>` : ""}
-    ${run.coding_engine && run.coding_engine !== "native" ? `<div>${t("field.coding_engine")}</div><div>${engineName(run.coding_engine)}</div>` : ""}`;
+    ${run.coding_engine && run.coding_engine !== "native" ? `<div>${t("field.coding_engine")}</div><div>${engineName(run.coding_engine)} · ${t(`engine_scope.${run.engine_scope || "coding"}`)}</div>` : ""}`;
 }
 
 async function bindRun(id) {

@@ -356,17 +356,19 @@ Factory dùng model theo **hai tầng**:
 
 1. **API của nhà cung cấp, cho mọi agent.** Mỗi run chọn một nhà cung cấp, và **mọi** agent của run đó gọi API
    của nhà cung cấp ấy, không riêng coding: analyst, architect, planner, developer, test engineer, reviewer, QA,
-   cùng các role của workflow content (researcher, strategist, copywriter, reviewer, editor, SEO). Tầng này **luôn
-   cần API key** của nhà cung cấp, đặt trên máy worker.
-2. **Engine viết code, chỉ cho stage development (tuỳ chọn).** Một CLI coding agent chạy headless trên worker
-   (Claude Code, Codex, Antigravity...) sửa code thay cho runtime native. Platform vẫn tự chạy build/test, Critic
-   chấm trên kết quả đó, và platform tự commit.
+   cùng các role của workflow content (researcher, strategist, copywriter, reviewer, editor, SEO). Tầng này **cần
+   API key** của nhà cung cấp, đặt trên máy worker.
+2. **Engine (tuỳ chọn).** Một CLI coding agent chạy headless trên worker (Claude Code, Codex, Antigravity...).
+   Mặc định nó chỉ làm stage development (sửa code thay cho runtime native). Đặt **Engine dùng cho = Mọi role**
+   (`engine_scope: all`) thì nó làm **mọi role** của run, và cả run có thể chạy bằng **gói thuê bao** (Claude
+   Pro/Max, Google AI Pro) thay cho API key: xem "Chạy cả run bằng gói Pro" ở dưới. Platform vẫn tự chạy
+   build/test, Critic chấm trên kết quả đó, và platform tự commit.
 
 ### Bảng tổng hợp (tháng 10/2026)
 
 | Nhà cung cấp | `llm` | API key trên worker | Lấy key ở | Engine viết code | Engine dùng gói thuê bao? |
 |---|---|---|---|---|---|
-| Claude (Anthropic) | `anthropic` (mặc định) | `ANTHROPIC_API_KEY` | platform.claude.com | **Claude Code** (`claude-code`) | Không: chỉ API key |
+| Claude (Anthropic) | `anthropic` (mặc định) | `ANTHROPIC_API_KEY` | platform.claude.com | **Claude Code** (`claude-code`) | **Có** (`AWF_CLAUDE_CODE_AUTH=login`): đăng nhập Claude Pro/Max một lần; hoặc API key |
 | Gemini (Google) | `google` | `GEMINI_API_KEY` | aistudio.google.com | **Antigravity CLI** (`antigravity`) | **Có**: đăng nhập Google một lần, dùng quota gói Google AI Pro/Ultra; hoặc API key |
 | ChatGPT (OpenAI) | `openai` | `OPENAI_API_KEY` | platform.openai.com | **Codex** (`codex`) | Không: chỉ API key |
 | Qwen (Alibaba) | `qwen` | `DASHSCOPE_API_KEY` | modelstudio.console.alibabacloud.com | **Qwen Code** (`qwen-code`) | Không: chỉ API key |
@@ -387,8 +389,43 @@ coding agent. Factory chạy bản **CLI** headless của nó: `agy -p`. Gói **
 - **không** dùng được cho **tầng API** (các role khác chạy trên Gemini): tầng này cần `GEMINI_API_KEY` từ AI Studio,
   tính tiền riêng (hoặc gói miễn phí giới hạn, chỉ model Flash).
 
-Cách phối hợp hợp lý khi có gói Google AI Pro: chạy run với `llm` là nhà cung cấp bạn có API key (ví dụ Claude),
-và đặt **Coding engine = Antigravity**. Stage development khi đó dùng quota Gemini Pro; các role khác dùng API key.
+Hai cách dùng gói Google AI Pro: (1) chạy run với `llm` là nhà cung cấp bạn có API key (ví dụ Claude), đặt
+**Coding engine = Antigravity**: stage development dùng quota Gemini Pro, các role khác dùng API key; hoặc (2) đặt
+thêm **Engine dùng cho = Mọi role**: cả run dùng quota gói, không cần API key nào (mục kế tiếp).
+
+### Chạy cả run bằng gói Pro (engine cho mọi role)
+
+Gói thuê bao (Claude Pro/Max, Google AI Pro/Ultra) **không** trả tiền cho API key: hai bên tính tiền riêng, kể cả
+khi cùng email. Nhưng CLI của hãng (Claude Code, Antigravity) đăng nhập được bằng tài khoản gói. Bật **engine
+cho mọi role** thì factory giao mọi role của run cho CLI đó, nên cả run chạy bằng gói (ADR-014):
+
+| Bước | Claude Pro/Max | Google AI Pro/Ultra |
+|---|---|---|
+| 1. Cài CLI trên worker | Claude Code (`claude`) | Antigravity CLI (`agy`) |
+| 2. Đăng nhập một lần, bằng đúng tài khoản hệ điều hành chạy worker | chạy `claude`, chọn đăng nhập bằng tài khoản Claude | chạy `agy`, đăng nhập Google |
+| 3. `.env` của worker | `AWF_CLAUDE_CODE_AUTH=login` (bắt buộc nếu `.env` có `ANTHROPIC_API_KEY`, kể cả key hết credit) | không cần gì thêm |
+| 4. Khởi động lại worker | trang **Workers** thấy capability `claude-code` | thấy `antigravity` |
+| 5. Bắt đầu run | **Coding engine** = Claude Code, **Engine dùng cho** = Mọi role | **Coding engine** = Antigravity, **Engine dùng cho** = Mọi role |
+
+API: `"coding_engine": "claude-code", "engine_scope": "all"`. Mặc định cho project: trang project → **Engine mặc
+định dùng cho**, hoặc `labels.engine_scope = "all"`. Run khi đó **không cần API key nào**: nó chỉ đòi máy có
+capability của engine.
+
+Khác với runtime native:
+
+- Role chỉ đọc (analyst, architect, planner, reviewer, QA) không được sửa file. Với Claude Code, các tool Edit và
+  Write bị gỡ hẳn; với engine khác, đây là quy tắc trong prompt, và file bị đổi sẽ bị huỷ.
+- Role cần trả **quyết định** (reviewer: APPROVE/CHANGES_REQUIRED) hoặc nhiều output (architect) kết thúc bằng
+  một khối JSON `awf-result`. Platform kiểm tra khối đó theo contract, giống `submit_result` của runtime native.
+  Sai thì engine được làm lại **một lần** với danh sách lỗi; sai tiếp thì job fail (`engine result rejected`).
+- Mỗi role là một lần chạy CLI riêng. Run chậm hơn runtime native, và mỗi role tốn vài lượt của gói.
+- Chi phí ghi là `0` (`billing: subscription`): gói đã trả. Ngân sách `budget_usd` không bị trừ.
+- Gói có giới hạn theo khung giờ (Claude Pro: theo phiên 5 giờ; Google AI Pro: theo chu kỳ của gói). Hết lượt thì
+  job fail với lỗi của CLI. Chờ gói hồi rồi chạy lại.
+- Model: Claude Code dùng model của route (ví dụ `claude-opus-5-5` cho architect). Nếu gói không có model đó, đặt
+  `AWF_CLAUDE_CODE_MODEL=sonnet` trên worker. Antigravity tự chọn model, trừ khi đặt `AWF_ANTIGRAVITY_MODEL`.
+- Trong chế độ `login`, Claude Code không đọc settings, quyền và MCP server của tài khoản bạn trên máy worker
+  (`--setting-sources local`, `--strict-mcp-config`), nên các quyền bạn tự cấp cho Claude Code không áp vào job.
 
 Mặc định `config/model-routing.yaml` định tuyến theo model class:
 
@@ -414,7 +451,8 @@ worker 'DESKTOP-...' does not meet platform windows, capabilities [git, llm-anth
 ```
 
 Nghĩa là máy đó chưa có API key của Claude. Đây là key của **Claude API**, không phải tài khoản app Claude hay
-gói Claude Pro/Max: gói thuê bao không dùng được cho factory.
+gói Claude Pro/Max: gói thuê bao không trả tiền cho API key. Muốn chạy bằng gói, xem "Chạy cả run bằng gói Pro" ở
+trên.
 
 **Claude (Anthropic):**
 
@@ -606,7 +644,8 @@ Có bảy engine, mỗi nhà cung cấp một engine:
 | `minimax-code` | MiniMax | `mcode` | `npm i -g @minimax-ai/code` | `mcode login`, hoặc API key lưu bằng `mcode provider set-minimax-key` | Lỏng: `--permission full` |
 
 Bật engine giống nhau cho mọi engine: dashboard → **Coding engine**, API `"coding_engine": "<engine>"`, hoặc
-`labels.coding_engine` cho project. Engine chỉ áp cho stage development, và luôn đi kèm model của nhà cung cấp
+`labels.coding_engine` cho project. Mặc định engine chỉ áp cho stage development (**Engine dùng cho = Mọi role**
+thì áp cho mọi role, xem "Chạy cả run bằng gói Pro"), và luôn đi kèm model của nhà cung cấp
 của nó (một run Claude bật engine Antigravity vẫn develop bằng Gemini). Project `restricted` và chế độ `scripted`
 luôn dùng runtime native.
 
@@ -634,15 +673,17 @@ Chuẩn bị máy worker:
 
 1. Cài Claude Code (code.claude.com). Lệnh `claude` phải có trên PATH, hoặc đặt `AWF_CLAUDE_CODE_BIN=<đường dẫn>`
    trong `.env`.
-2. Đặt `ANTHROPIC_API_KEY` trong `.env` của worker. Engine chạy ở chế độ `--bare`, chỉ dùng API key, **không dùng
-   gói đăng nhập Claude Pro/Max**. Chi phí tính vào tài khoản API.
-3. Khởi động lại worker. `awf doctor` và trang **Workers** phải thấy capability `claude-code` (và `llm-anthropic`).
-   Run dùng engine chỉ được giao cho máy có đủ hai capability này. Không có máy nào như vậy thì run bị từ chối
-   ngay khi tạo.
+2. Chọn cách trả tiền bằng `AWF_CLAUDE_CODE_AUTH` trong `.env` của worker:
+   - `api-key` (mặc định khi có `ANTHROPIC_API_KEY`): engine chạy `--bare`, chỉ dùng API key, chi phí tính vào
+     tài khoản API;
+   - `login` (mặc định khi không có key): engine dùng tài khoản đã đăng nhập bằng `claude` (gói Claude Pro/Max),
+     không nhận API key. Đăng nhập một lần bằng đúng tài khoản hệ điều hành chạy worker.
+3. Khởi động lại worker. `awf doctor` và trang **Workers** phải thấy capability `claude-code`. Run dùng engine chỉ
+   được giao cho máy có capability này. Không có máy nào như vậy thì run bị từ chối ngay khi tạo.
 
 Worker làm gì trong một job development:
 
-- Clone repo như bình thường, rồi chạy `claude --bare -p` trong thư mục đó, với cùng prompt và context mà runtime
+- Clone repo như bình thường, rồi chạy `claude -p` (thêm `--bare` ở chế độ `api-key`) trong thư mục đó, với cùng prompt và context mà runtime
   native sẽ nhận. Model và effort lấy từ `config/model-routing.yaml` (class `CODE_SPECIALIST`).
 - Engine chỉ có các tool Read/Edit/Write/Glob/Grep/Bash. Bash **chỉ chạy được** các lệnh build/test/lint đã cấu
   hình cho project và các lệnh git chỉ đọc. Lệnh khác, mạng, commit và push đều bị từ chối. Các lần bị từ chối
@@ -653,12 +694,11 @@ Worker làm gì trong một job development:
 - Engine xong việc thì **worker tự chạy lại build/test/lint**. Critic chấm trên kết quả đó, giống hệt runtime
   native. Engine báo "đã xong" mà code không build được thì task vẫn `COMPLETION_RULE_FAILED` và đi vào fix loop.
 - Worker tự commit và integrate. Engine tự commit thì job fail với `ENGINE_TOUCHED_GIT`.
-- Chi phí của agent run là ước tính `total_cost_usd` do Claude Code báo về.
+- Chi phí của agent run là ước tính `total_cost_usd` do Claude Code báo về (chế độ `login`: `0`, gói đã trả).
 
 Không áp dụng cho:
 
-- các role khác: analyst, architect, planner, reviewer, QA vẫn chạy native. Reviewer và QA cần trả về quyết định
-  có cấu trúc;
+- các role khác, trừ khi **Engine dùng cho = Mọi role**: analyst, architect, planner, reviewer, QA chạy native;
 - project `restricted`: engine không bao giờ gửi code ra model hosted;
 - chế độ `scripted`.
 
@@ -812,10 +852,10 @@ soát chặt, dùng `claude-code` hoặc `codex`.
 | Trang | Nội dung |
 |---|---|
 | Overview | card số liệu (run đang chạy, chờ duyệt, worker online, chi phí, task lỗi, project; card đổi màu khi cần bạn xử lý), yêu cầu đang chờ duyệt, run đang chạy (tiến độ, stage hiện tại, máy), run vừa kết thúc |
-| Projects | danh sách (project đã lưu trữ nằm trong mục *Archived projects*), tạo project, chi tiết project, bắt đầu run |
+| Projects | danh sách (project đã lưu trữ nằm trong mục *Archived projects*), tạo project, chi tiết project, bắt đầu run (máy, model, coding engine, **Engine dùng cho**: chỉ viết code hoặc mọi role) |
 | Project → Settings | sửa tên, URL repository, base branch, lệnh build/test/lint, confidentiality, budget (để trống = không giới hạn), mô tả. Run đã bắt đầu giữ cấu hình lúc nó bắt đầu |
 | Project → Danger zone | project **chưa có run**: *Delete project* (xoá hẳn, audit vẫn ghi lại). Project **đã có run**: *Archive project* (ẩn khỏi danh sách, chặn run mới; run, artifact, audit vẫn xem được; *Restore project* để dùng lại). Run đang chạy phải huỷ trước khi lưu trữ |
-| Run | pipeline stage (iteration, trạng thái), bảng task (critic decision + verdict), approval chờ, artifact |
+| Run | pipeline stage (iteration, trạng thái), khối **Đang làm gì** khi run đang chạy (lần thử, tin mới nhất từ worker như model đang thử lại, lỗi của lần thử trước kèm gợi ý sửa), bảng task (critic decision + verdict), approval chờ, artifact |
 | Task (click dòng) | tiêu chí chấp nhận, feedback, agent run (model, route reason, token, chi phí, critic findings, tool calls), log job |
 | Artifact (click dòng) | nội dung, checksum, quan hệ trace, impact analysis |
 | Approvals | hàng đợi duyệt + lịch sử |
@@ -1251,7 +1291,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (236 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (254 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -1287,6 +1327,11 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `INTEGRATION_CONFLICT` | Hai task song song sửa cùng chỗ; Planner nên đặt `depends_on`. |
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |
 | `model provider rejected the request` | Thiếu/sai `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trên worker. |
+| `no credit or quota left on the <nhà cung cấp> API account` | Tài khoản API hết credit (Claude: "credit balance is too low"), hết quota ngày, hoặc key free tier không được dùng model đó (Gemini: `limit: 0`, thường gặp với `gemini-4-argon`). Job fail ngay, không thử lại. Nạp credit hoặc bật billing cho key; gói Pro/Plus **không** trả tiền cho API key. Hoặc chạy cả run bằng gói (mục 6, "Chạy cả run bằng gói Pro"). |
+| Run đứng ở 0%, stage đầu `active` rất lâu | Mở trang run, xem khối **Đang làm gì**: nó hiện lần thử của task, tin mới nhất từ worker (ví dụ `[model] Gemini API 503 ... high demand; retrying in 4s`) và lỗi của lần thử trước. |
+| `... did not answer within 240s (model busy or overloaded)` / `high demand` / `no time left for another attempt` | Model đang quá tải, không trả lời. Mỗi request chờ tối đa 240 giây; mọi lần thử lại nằm trong giới hạn thời gian của agent (mặc định 900 giây), rồi job được xếp chạy lại. Lặp lại nhiều lần: đổi model/nhà cung cấp, hoặc chờ hãng hết quá tải. |
+| `engine result rejected: ...` | Engine chạy một role chỉ đọc (Engine dùng cho = Mọi role) nhưng khối `awf-result` thiếu hoặc sai contract, cả sau lần làm lại. Job được chạy lại; lặp lại thì dùng engine hoặc model khác cho run đó. |
+| Engine Claude Code ở chế độ `login` báo `Not logged in` / `Invalid API key` | Chưa đăng nhập `claude` bằng đúng tài khoản hệ điều hành chạy worker; hoặc thiếu `AWF_CLAUDE_CODE_AUTH=login` nên engine vẫn dùng API key trong `.env`. |
 | Tạo run lỗi `missing llm-google` (hoặc `llm-anthropic`) | Không máy nào có key của nhà cung cấp đó: đặt key trong `.env` của worker rồi khởi động lại worker. |
 | Tạo run lỗi `missing llm-qwen` / `llm-kimi` / `llm-deepseek` / `llm-minimax` | Không máy nào có `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY` / `DEEPSEEK_API_KEY` / `MINIMAX_API_KEY` (mục 6). |
 | Tạo run lỗi `missing antigravity` / `qwen-code` / `kimi-code` / `deepseek-harness` / `minimax-code` | Chưa cài CLI tương ứng (`agy`, `qwen`, `kimi`, `dsh`, `mcode`) trên worker, hoặc chưa khởi động lại worker sau khi cài (mục 6). |
@@ -1297,7 +1342,8 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | Tạo run lỗi `missing llm-openai` | Không máy nào có `OPENAI_API_KEY`: đặt key trong `.env` của worker rồi khởi động lại worker (mục 6). |
 | Tạo run lỗi `missing codex` | Run/project chọn engine Codex nhưng không máy nào có lệnh `codex` (`npm i -g @openai/codex`) hoặc `AWF_CODEX_BIN`. |
 | `codex: ... Incorrect API key` / `insufficient_quota` | Sai `OPENAI_API_KEY` hoặc hết credit OpenAI; không retry. |
-| Tạo run lỗi `missing claude-code` | Run/project chọn engine Claude Code nhưng không máy nào có `claude` trên PATH (hoặc `AWF_CLAUDE_CODE_BIN`) và `ANTHROPIC_API_KEY`. Cài Claude Code trên worker rồi khởi động lại worker (mục 6). |
+| Tạo run lỗi `missing claude-code` | Run/project chọn engine Claude Code nhưng không máy nào có `claude` trên PATH (hoặc `AWF_CLAUDE_CODE_BIN`). Cài Claude Code trên worker, đăng nhập hoặc đặt `ANTHROPIC_API_KEY`, rồi khởi động lại worker (mục 6). |
+| Tạo run lỗi `engine scope 'all' needs a coding engine` | Đã chọn **Engine dùng cho = Mọi role** mà **Coding engine** vẫn là Native. Chọn Claude Code hoặc Antigravity. |
 | `claude-code error_max_turns` / `timed out` | Task quá lớn so với `max_turns`/timeout của contract Developer; chia nhỏ objective hoặc tăng `timeout_policy` trong `agents/contracts/engineering.developer.yaml`. |
 | `ENGINE_TOUCHED_GIT` | Engine tự commit hoặc đổi nhánh; chỉ platform được commit. Không retry: xem log job. |
 | `git push ... rejected` vào repo cục bộ | Không đẩy vào nhánh đang checkout; dùng bare mirror. |
@@ -1843,11 +1889,12 @@ Factory gọi API bằng `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trong `.env` c�
 | Factory, ChatGPT / engine Codex | Credit của API key (platform.openai.com) | Không: gói ChatGPT Plus/Pro và OpenAI API là hai nguồn riêng; engine Codex chỉ dùng API key, không dùng đăng nhập ChatGPT trên máy |
 | Engine Antigravity (Gemini) | Quota gói Google AI Pro/Ultra nếu `agy` đăng nhập bằng tài khoản Google; credit API nếu dùng API key | **Có**, khi đăng nhập Google: chung quota với Antigravity bạn dùng trên máy cá nhân cùng tài khoản |
 | Factory, Qwen / Kimi / DeepSeek / MiniMax | Số dư API của từng hãng | Không: API key riêng. Engine Kimi Code dùng API key Kimi đã `/login`; engine MiniMax Code dùng tài khoản `mcode login` hoặc key đã lưu |
-| Factory, engine Claude Code (mục 6) | Credit của API key, như dòng Claude ở trên | Không: engine chạy `--bare`, chỉ dùng API key, không dùng gói đăng nhập của app Claude Code |
+| Factory, engine Claude Code (mục 6) | `api-key`: credit của API key, như dòng Claude ở trên. `login`: gói Claude Pro/Max đã đăng nhập bằng `claude` | `api-key`: không. `login`: **có**, chung lượt dùng với Claude Code bạn dùng trên máy cùng tài khoản |
 
 - App local dùng **cùng API key / cùng tổ chức** trên Console thì hai bên chung credit và chung rate limit. Dùng
-  nặng cùng lúc có thể bị giới hạn tốc độ. Factory tự thử lại (SDK Claude thử 4 lần, Gemini thử lại khi gặp
-  429/5xx, job lỗi tạm thời được chạy lại); app local thì có thể chậm hoặc báo lỗi.
+  nặng cùng lúc có thể bị giới hạn tốc độ. Factory tự thử lại (tối đa 4 lần mỗi request khi gặp 429/5xx hoặc
+  quá 240 giây không trả lời, luôn trong giới hạn thời gian của agent; job lỗi tạm thời được chạy lại); app local
+  thì có thể chậm hoặc báo lỗi.
 - **Hết hẳn credit API:** provider từ chối, factory coi là lỗi không thử lại được, nên job **fail ngay**, không
   đứng chờ. Nạp credit rồi chạy lại. `budget_usd` của project là ngân sách **cộng dồn cho mọi run** của project: khi còn ít, router tự hạ xuống model rẻ hơn (mục 6).
 - Worker clone repo vào `var/workspaces/<job_id>` và xoá sau khi xong. Nó **không động vào thư mục repo** bạn

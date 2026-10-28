@@ -136,15 +136,20 @@ def system_load() -> dict[str, Any]:
 
 
 class _LogBuffer:
-    def __init__(self, client: ControlPlaneClient, job_id: str, flush_every: int = 25):
-        self.client, self.job_id, self.flush_every = client, job_id, flush_every
+    """Ships job log lines in batches. Platform notes (stream "system": workspace ready, model retries) and
+    errors go out at once, so the dashboard shows what a long-running job is waiting for."""
+
+    def __init__(self, client: ControlPlaneClient, job_id: str, flush_every: int = 25, max_delay: float = 10.0):
+        self.client, self.job_id, self.flush_every, self.max_delay = client, job_id, flush_every, max_delay
         self.lines: list[dict[str, str]] = []
         self.lock = threading.Lock()
+        self.last_flush = time.monotonic()
 
     def __call__(self, line: str, stream: str = "stdout") -> None:
         with self.lock:
             self.lines.append({"stream": stream, "line": line[:4000]})
-            if len(self.lines) >= self.flush_every:
+            if (len(self.lines) >= self.flush_every or stream in ("system", "stderr")
+                    or time.monotonic() - self.last_flush >= self.max_delay):
                 self._flush_locked()
 
     def flush(self) -> None:
@@ -153,6 +158,9 @@ class _LogBuffer:
 
     def _flush_locked(self) -> None:
         lines, self.lines = self.lines, []
+        self.last_flush = time.monotonic()
+        if not lines:
+            return
         try:
             self.client.log(self.job_id, lines)
         except Exception as exc:  # logging must never kill the job

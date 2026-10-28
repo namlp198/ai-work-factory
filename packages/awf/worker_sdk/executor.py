@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -10,7 +11,8 @@ from typing import Any, Callable
 from awf.agent_runtime import AgentContract, AgentRuntime
 from awf.agent_runtime.adapters import ModelAdapter, ModelError, get_adapter
 from awf.agent_runtime.runtime import AgentResult
-from awf.agent_runtime.validation import has_section
+from awf.agent_runtime.definitions import submit_tool_schema
+from awf.agent_runtime.validation import has_section, validate_submission
 from awf.policy import PolicyEngine
 from awf.security import redact, redact_obj
 from awf.tool_sdk import ToolContext, ToolRegistry
@@ -126,6 +128,8 @@ class JobExecutor:
             "error": res.error,
             "retryable": res.retryable,
         }
+        if res.error_code:
+            result["error_code"] = res.error_code
         if res.status != "succeeded":
             return result
 
@@ -150,13 +154,18 @@ class JobExecutor:
                 result["outputs"][out.name] = json.dumps(_public_evidence(ctx.evidence), indent=2)
         return result
 
-    # ------------------------------------------------------------------ coding engines (ADR-011, -012, -013)
+    # ------------------------------------------------------------------ engines (ADR-011, -012, -013, -014)
     def _run_engine(self, engine: str, payload: dict[str, Any], contract: AgentContract, route: dict[str, Any],
                     ws: Workspace, ctx: ToolContext, log: LogFn) -> tuple[AgentResult, dict[str, Any]]:
-        """A coding engine edits the workspace; the platform then verifies, commits and reports."""
-        usage: dict[str, Any] = {"engine": engine}
+        """An engine does the role's work in the workspace; the platform then verifies, commits and reports.
+        Coding roles edit files; read-only roles (analyst, architect, reviewer, QA: engine scope `all`) may only
+        read. A contract the final Markdown message cannot carry (a decision, several or JSON outputs) is answered
+        with an `awf-result` JSON block, validated like a native submission (one corrected attempt)."""
+        usage: dict[str, Any] = {"engine": engine, "cost_usd": None}  # None: estimated from tokens
+        auth = None
         if engine == claude_code.ENGINE:
             base, hint = self.claude_code_bin or claude_code.claude_code_bin(), "Claude Code or set AWF_CLAUDE_CODE_BIN"
+            auth = claude_code.auth_mode()
         elif engine == codex.ENGINE:
             base, hint = self.codex_bin or codex.codex_bin(), "Codex (npm i -g @openai/codex) or set AWF_CODEX_BIN"
         else:
@@ -166,14 +175,14 @@ class JobExecutor:
         if not base:
             return AgentResult(status="failed", error=f"{engine} is not installed on this worker (install {hint})",
                                retryable=False), usage
-        if contract.decision or any(o.type != "markdown" for o in contract.agent_outputs()):
-            return AgentResult(status="failed", error=f"engine {engine} cannot produce the outputs of "
-                               f"{contract.id}; use the native engine", retryable=False), usage
+        writes = bool(payload.get("workspace", {}).get("write"))
+        structured = needs_result_block(contract)
 
         commands = []
-        for key in ("build_command", "test_command", "lint_command"):
+        for key, tool in (("build_command", "build.run"), ("test_command", "test.run"), ("lint_command", "lint.run")):
             argv = configured_command(ctx, key)
-            if argv and self.policy.command_allowed(argv) and "," not in " ".join(argv):
+            if (argv and (writes or tool in contract.allowed_tools) and self.policy.command_allowed(argv)
+                    and "," not in " ".join(argv)):
                 commands.append(argv)
         template = {claude_code.ENGINE: claude_code.ENGINE_RULES, codex.ENGINE: codex.ENGINE_RULES}.get(
             engine, cli_engines.ENGINE_RULES)
@@ -182,59 +191,95 @@ class JobExecutor:
             commands=", ".join(f"`{claude_code.command_text(c)}`" for c in commands) or "none",
             sections=", ".join(f"`## {s}`" for s in (s for o in contract.agent_outputs() for s in o.required_sections))
             or "a short summary")
+        if not writes:
+            rules += READ_ONLY_RULES
+        if structured:
+            rules += RESULT_RULES.format(schema=json.dumps(submit_tool_schema(contract), separators=(",", ":")))
         head_before = _head(ws)
         params = route.get("params") or {}
         timeout = contract.timeout_policy.seconds
-        if engine == claude_code.ENGINE:
-            prompt_file = ws.root / "claude-code-system.md"
-            prompt_file.write_text(payload["agent"]["system_prompt"] + rules + claude_code.repository_instructions(ws.repo),
-                                   encoding="utf-8")
-            if ws.is_git:  # local engine state must never end up in the commit
-                with (ws.repo / ".git" / "info" / "exclude").open("a", encoding="utf-8") as fh:
-                    fh.write("\n.claude/settings.local.json\n")
-            argv = claude_code.build_argv(
-                base, model=route["model"], effort=params.get("effort"), max_turns=contract.timeout_policy.max_turns,
-                allowed=claude_code.bash_rules(commands) + claude_code.READ_ONLY_RULES, system_prompt_file=prompt_file,
-                max_budget_usd=params.get("max_budget_usd"))
-            er = claude_code.run_engine(argv, payload["context"]["user_message"], ws.repo, timeout, log)
-        elif engine in cli_engines.ENGINES:
-            # The prompt goes in a task file the CLI is pointed at (removed before the platform commits).
-            text = f"{payload['agent']['system_prompt']}{rules}\n\n# Your task\n\n{payload['context']['user_message']}\n"
-            stdin = cli_engines.uses_stdin(engine)
-            task = None if stdin else cli_engines.write_task(ws.repo, text, ws.is_git)
-            argv = cli_engines.build_argv(engine, base, model=route["model"], max_turns=contract.timeout_policy.max_turns,
-                                          timeout=timeout)
-            try:
-                er = claude_code.run_engine(argv, text if stdin else "", ws.repo, timeout + 60, log,
-                                            env=cli_engines.engine_env(engine, route["model"]),
-                                            parser=cli_engines.make_parser(engine, log), name=engine)
-            finally:
-                if task:
-                    task.unlink(missing_ok=True)
-        else:
+        model = claude_code.login_model(route["model"]) if auth == claude_code.LOGIN else route["model"]
+
+        def invoke(task_text: str) -> claude_code.EngineResult:
+            if engine == claude_code.ENGINE:
+                prompt_file = ws.root / "claude-code-system.md"
+                prompt_file.write_text(payload["agent"]["system_prompt"] + rules
+                                       + claude_code.repository_instructions(ws.repo), encoding="utf-8")
+                if ws.is_git:  # local engine state must never end up in the commit
+                    with (ws.repo / ".git" / "info" / "exclude").open("a", encoding="utf-8") as fh:
+                        fh.write("\n.claude/settings.local.json\n")
+                argv = claude_code.build_argv(
+                    base, model=model, effort=params.get("effort"), max_turns=contract.timeout_policy.max_turns,
+                    allowed=claude_code.bash_rules(commands) + claude_code.READ_ONLY_RULES,
+                    system_prompt_file=prompt_file, max_budget_usd=params.get("max_budget_usd"), auth=auth,
+                    read_only=not writes)
+                return claude_code.run_engine(argv, task_text, ws.repo, timeout, log, env=claude_code.engine_env(auth))
+            if engine in cli_engines.ENGINES:
+                # The prompt goes in a task file the CLI is pointed at (removed before the platform commits).
+                text = f"{payload['agent']['system_prompt']}{rules}\n\n# Your task\n\n{task_text}\n"
+                stdin = cli_engines.uses_stdin(engine)
+                task = None if stdin else cli_engines.write_task(ws.repo, text, ws.is_git)
+                argv = cli_engines.build_argv(engine, base, model=route["model"],
+                                              max_turns=contract.timeout_policy.max_turns, timeout=timeout)
+                try:
+                    return claude_code.run_engine(argv, text if stdin else "", ws.repo, timeout + 60, log,
+                                                  env=cli_engines.engine_env(engine, route["model"]),
+                                                  parser=cli_engines.make_parser(engine, log), name=engine)
+                finally:
+                    if task:
+                        task.unlink(missing_ok=True)
             # Codex reads the repository's AGENTS.md itself; the role prompt and rules lead the stdin prompt.
-            prompt = f"{payload['agent']['system_prompt']}{rules}\n\n# Your task\n\n{payload['context']['user_message']}"
+            prompt = f"{payload['agent']['system_prompt']}{rules}\n\n# Your task\n\n{task_text}"
             argv = codex.build_argv(base, model=route["model"], effort=params.get("effort"))
-            er = claude_code.run_engine(argv, prompt, ws.repo, timeout, log, env=codex.engine_env(ws.root / "codex-home"),
-                                        parser=codex.CodexParser(log), name=codex.ENGINE)
-        usage.update({"cost_usd": er.cost_usd, "session_id": er.session_id})
-        ctx.calls.extend(er.tool_calls)
-        res = AgentResult(status=er.status, turns=er.turns, input_tokens=er.input_tokens,
-                          output_tokens=er.output_tokens, error=er.error, retryable=er.retryable)
+            return claude_code.run_engine(argv, prompt, ws.repo, timeout, log, env=codex.engine_env(ws.root / "codex-home"),
+                                          parser=codex.CodexParser(log), name=codex.ENGINE)
+
+        task_text = payload["context"]["user_message"]
+        submission: dict[str, Any] | None = None
+        res = AgentResult(status="failed")
+        for attempt in (1, 2):
+            er = invoke(task_text)
+            ctx.calls.extend(er.tool_calls)
+            res.turns += er.turns
+            res.input_tokens += er.input_tokens
+            res.output_tokens += er.output_tokens
+            if er.cost_usd is not None:
+                usage["cost_usd"] = (usage["cost_usd"] or 0) + er.cost_usd
+            usage["session_id"] = er.session_id
+            res.status, res.error, res.retryable = er.status, er.error, er.retryable
+            if er.status != "succeeded" or not structured:
+                break
+            submission, problems = parse_result_block(contract, er.text)
+            if not problems:
+                break
+            res.status, res.retryable = "failed", True
+            res.error = "engine result rejected: " + "; ".join(problems)
+            log(f"[platform] {res.error}", "system")
+            task_text = (f"{payload['context']['user_message']}\n\n# Your previous answer was rejected\n\n"
+                         + "\n".join(f"- {p}" for p in problems)
+                         + "\n\nDo the task again and end with one complete, corrected `awf-result` block.")
+        if engine in SIGNED_IN_ENGINES or auth == claude_code.LOGIN:
+            usage.update({"billing": "subscription", "cost_usd": 0.0})  # paid by the plan, not per token
         if head_before and _head(ws) != head_before:
             res.status, res.retryable = "failed", False
             res.error = "ENGINE_TOUCHED_GIT: the engine changed git history; only the platform may commit"
             return res, usage
-        if er.status != "succeeded":
+        if res.status != "succeeded":
             return res, usage
 
         # Evidence comes from the platform, never from the engine's own runs: build and test again here.
-        log("[platform] verifying the engine's changes", "system")
+        log("[platform] verifying the engine's work", "system")
         for tool in ("build.run", "test.run", "lint.run"):
             if tool in contract.allowed_tools:
                 self.registry.execute(tool, {}, ctx, allowed=contract.allowed_tools)
-        res.outputs = engine_outputs(contract, er.text)
-        res.summary = next((ln.strip("# ").strip() for ln in er.text.splitlines() if ln.strip()), "")[:300]
+        if submission is not None:
+            res.summary = str(submission.get("summary", ""))[:300]
+            res.outputs = submission.get("outputs", {})
+            res.decision = submission.get("decision")
+            res.findings = list(submission.get("findings") or [])
+        else:
+            res.outputs = engine_outputs(contract, er.text)
+            res.summary = next((ln.strip("# ").strip() for ln in er.text.splitlines() if ln.strip()), "")[:300]
         if er.denials:
             res.findings.append({"severity": "INFO", "code": "ENGINE_DENIED",
                                  "message": f"{len(er.denials)} engine tool call(s) were denied "
@@ -272,6 +317,45 @@ class JobExecutor:
             "error": None if res.status == "ok" else res.message,
             "retryable": False,
         }
+
+
+# Engines that sign in with the user's own account: their work is paid by the plan, not billed per token here.
+SIGNED_IN_ENGINES = {"antigravity", "kimi-code", "minimax-code"}
+
+READ_ONLY_RULES = """- This role is read-only: do not create, edit or delete any file. Read the code, run the allowed commands,
+  and put everything you produce in your final message.
+"""
+
+RESULT_RULES = """- End your final message with your result as JSON in one fenced code block tagged `awf-result`, for example
+  ```awf-result
+  {{"summary": "...", "outputs": {{"<name>": "<markdown text>"}}}}
+  ```
+  Each Markdown output is one JSON string containing its required `##` sections. The JSON must match this schema:
+  {schema}
+"""
+
+_RESULT_BLOCK = re.compile(r"```awf-result[ \t]*\r?\n(.*?)\r?\n```", re.DOTALL)
+
+
+def needs_result_block(contract: AgentContract) -> bool:
+    """True when the engine's final Markdown message cannot carry the contract on its own."""
+    outputs = contract.agent_outputs()
+    return bool(contract.decision) or len(outputs) > 1 or any(o.type not in ("markdown", "text") for o in outputs)
+
+
+def parse_result_block(contract: AgentContract, text: str) -> tuple[dict[str, Any] | None, list[str]]:
+    """The last `awf-result` block of an engine's final message, validated against the contract."""
+    blocks = _RESULT_BLOCK.findall(text or "")
+    if not blocks:
+        return None, ["the final message has no ```awf-result block"]
+    try:
+        submission = json.loads(blocks[-1])
+    except json.JSONDecodeError as exc:
+        return None, [f"the awf-result block is not valid JSON ({exc.msg} at line {exc.lineno})"]
+    if not isinstance(submission, dict):
+        return None, ["the awf-result block must be a JSON object"]
+    problems = validate_submission(contract, submission)
+    return submission, [f"[{p.code}] {p.message}" for p in problems]
 
 
 def engine_outputs(contract: AgentContract, text: str) -> dict[str, Any]:

@@ -66,7 +66,7 @@ def _critic(platform, result):
 def test_engine_edits_and_the_platform_verifies(platform, repository_config, tmp_path, fake_claude, demo_repo):
     result, lines = _execute(platform, tmp_path, _payload(platform, repository_config))
     assert result["status"] == "succeeded", result.get("error")
-    call = json.loads(fake_claude.read_text(encoding="utf-8"))
+    call = json.loads(fake_claude.read_text(encoding="utf-8").splitlines()[-1])
     argv = call["argv"]
     for flag in ("--bare", "-p", "--no-session-persistence"):
         assert flag in argv
@@ -164,7 +164,7 @@ def _route(router, platform, role, engine, confidentiality="internal", provider=
 
 def test_engine_applies_only_where_the_profile_allows_it(router, platform):
     engine, route = _route(router, platform, DEVELOPER, "claude-code")
-    assert engine == "claude-code" and route.provider == "anthropic" and route.reason.endswith("engine claude-code")
+    assert engine == "claude-code" and route.provider == "anthropic" and "engine claude-code" in route.reason
     assert _route(router, platform, "product.analyst", "claude-code")[0] == "native"
     # A Gemini run still develops with Claude Code, on Claude.
     engine, route = _route(router, platform, DEVELOPER, "claude-code", provider="google")
@@ -173,8 +173,8 @@ def test_engine_applies_only_where_the_profile_allows_it(router, platform):
     assert _route(router, platform, DEVELOPER, "claude-code", confidentiality="restricted")[0] == "native"
     assert _route(platform.router, platform, DEVELOPER, "claude-code")[0] == "native"  # scripted override
     roles = platform.workflows.get("software-development").spec.roles()
-    assert engine_capabilities(platform.agents, router, roles, "internal", "claude-code") == {"claude-code",
-                                                                                               "llm-anthropic"}
+    # Claude Code signs in itself (API key or a Claude Pro/Max login, ADR-014): only the CLI is required.
+    assert engine_capabilities(platform.agents, router, roles, "internal", "claude-code") == {"claude-code"}
     assert engine_capabilities(platform.agents, router, roles, "internal", "native") == set()
     with pytest.raises(ValueError, match="unknown coding engine"):
         engine_capabilities(platform.agents, router, roles, "internal", "aider")
