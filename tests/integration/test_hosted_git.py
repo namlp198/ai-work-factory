@@ -103,14 +103,18 @@ def test_pc_and_workers_share_the_repository(server, platform, orchestrator, dem
     state = api.get(f"/workflow-runs/{run['id']}").json()
     assert state["status"] == "COMPLETED", state.get("error")
 
-    # main moved only through the approved merge job, as a fast-forward of the rebased integration branch.
-    _git(demo_repo, "fetch", "-q", "factory")
-    integration = state["integration_branch"]
-    assert _git(demo_repo, "rev-parse", "factory/main") == _git(demo_repo, "rev-parse", f"factory/{integration}")
-    history = _git(demo_repo, "log", "--merges", "--oneline", "factory/main")
-    assert history == ""  # rebased: a linear history, no merge commits
+    # develop moved only through the approved merge job, as a fast-forward of the rebased integration branch;
+    # the run's branches are gone, and main waits for a Release (ADR-017).
+    _git(demo_repo, "fetch", "-q", "--prune", "factory")
+    main_before = _git(demo_repo, "rev-parse", "main")
+    assert _git(demo_repo, "rev-parse", "factory/main") == main_before
+    assert _git(demo_repo, "log", "--merges", "--oneline", "factory/develop") == ""  # linear history
+    orchestrator.run_until_idle()  # housekeeping prunes whatever the workers left
+    assert sorted(githost.branches(githost.repo_path(platform.settings.git_root, "shared"))) == ["develop", "main"]
+    done = api.post(f"/projects/{project['id']}/release", json={}).json()
+    assert done["released"] == _git(demo_repo, "rev-parse", "factory/develop") and not done["merge_commit"]
     _git(demo_repo, "pull", "-q", "--ff-only", "factory", "main")
-    assert (demo_repo / "perception_service").exists()
+    assert _git(demo_repo, "rev-parse", "main") != main_before and (demo_repo / "perception_service").exists()
 
     # A worker's token cannot move main by itself.
     token = worker.client.worker_token
@@ -192,7 +196,7 @@ def test_the_run_follows_main_and_merges_by_fast_forward(tmp_path, bare, demo_re
     assert d.sync_with_base()["updated"]
     assert _git(bare, "merge-base", "--is-ancestor", "main", "awf/run-1", check=False) == ""
     merged = _workspace(tmp_path, bare, "m").merge_to_base()
-    assert merged["merged"] == _git(bare, "rev-parse", "main") == _git(bare, "rev-parse", "awf/run-1")
+    assert merged["merged"] == _git(bare, "rev-parse", "main") and merged["deleted_branches"] == ["awf/run-1"]
     assert _git(bare, "log", "--format=%s", "main").splitlines()[:2] == ["feature", "hotfix"]
 
 

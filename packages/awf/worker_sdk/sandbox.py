@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from awf.tool_sdk.base import REFERENCES_DIR
 from awf.tool_sdk.command import GitError, git
 from awf.tool_sdk.git_tools import diff_stats
 
@@ -109,6 +110,26 @@ class Workspace:
             git(["checkout", "--quiet", "-B", task_branch], self.repo)
         self.start_sha = git(["rev-parse", "HEAD"], self.repo).stdout.strip()
 
+    def add_references(self, refs: list[dict]) -> list[str]:
+        """Clone read-only references (other repositories or branches) into .awf-refs/<name>, shallow and without
+        their .git; the platform never commits them (info/exclude). Returns one note per reference."""
+        notes = []
+        if not refs:
+            return notes
+        with (self.repo / ".git" / "info" / "exclude").open("a", encoding="utf-8") as fh:
+            fh.write(f"/{REFERENCES_DIR}/\n")
+        for ref in refs:
+            target = self.repo / REFERENCES_DIR / ref["name"]
+            env = self.git_env if ref.get("hosted") else None  # this worker's token goes to the control plane only
+            result = git(["clone", "--quiet", "--depth", "1", "--single-branch", "--branch", ref.get("branch") or "main",
+                          ref["url"], str(target)], self.root, timeout=900, check=False, env=env)
+            if result.ok:
+                _rmtree(target / ".git")
+                notes.append(f"{REFERENCES_DIR}/{ref['name']}: {ref.get('label') or ref['url']} ({ref.get('branch') or 'main'})")
+            else:
+                notes.append(f"{REFERENCES_DIR}/{ref['name']}: NOT AVAILABLE ({result.stderr.strip()[-200:]})")
+        return notes
+
     def _remote_branch_exists(self, branch: str) -> bool:
         result = git(["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], self.repo, check=False)
         return result.ok
@@ -149,7 +170,7 @@ class Workspace:
             sha = self._git(["rev-parse", "HEAD"]).stdout.strip()
             push = self._git(["push", "--quiet", "origin", f"HEAD:refs/heads/{self.integration_branch}"], check=False)
             if push.ok:
-                self._git(["push", "--quiet", "--force", "origin", f"HEAD:refs/heads/{self.task_branch}"], check=False)
+                self.delete_remote_branches([self.task_branch])  # its commits are on the integration branch now
                 return sha
             if attempt == attempts:
                 raise GitError(f"push of {self.integration_branch} rejected: {push.stderr[-1000:]}")
@@ -191,7 +212,9 @@ class Workspace:
             head = self._git(["rev-parse", "HEAD"]).stdout.strip()
             push = self._git(["push", "--quiet", "origin", f"{head}:refs/heads/{self.base_branch}"], check=False)
             if push.ok:
-                return {"merged": head, "rebased": synced["updated"], "base_before": synced["base"]}
+                deleted = self.delete_remote_branches([self.integration_branch, *self.run_branches()])
+                return {"merged": head, "rebased": synced["updated"], "base_before": synced["base"],
+                        "deleted_branches": deleted}
             if attempt == 3:
                 raise GitError(f"push of {self.base_branch} rejected: {push.stderr[-1000:]}")
         raise GitError("merge failed")
@@ -230,8 +253,26 @@ class Workspace:
             if not push.ok:
                 raise GitError(f"{branch} moved while the conflict was being resolved; trying again "
                                f"({push.stderr.strip()[-300:]})")
+        if res.get("kind") == "task" and str(res.get("source", "")).startswith("awf/tasks/"):
+            self.delete_remote_branches([res["source"]])
         return CommitInfo(has_changes=True, sha=sha, task_branch=None, integration_branch=branch, integrated=True,
                           diff=diff, **stats)
+
+    def delete_remote_branches(self, names: list[str]) -> list[str]:
+        """Delete `awf/*` branches on the remote (best effort: a branch that is already gone is fine)."""
+        names = [n for n in names if n and n.startswith("awf/")]
+        if not names:
+            return []
+        result = self._git(["push", "--quiet", "origin", *[f":refs/heads/{n}" for n in names]], check=False)
+        return names if result.ok else []
+
+    def run_branches(self) -> list[str]:
+        """The task branches of this run still on the remote (awf/tasks/<run>/...)."""
+        if not self.integration_branch or not self.integration_branch.startswith("awf/run-"):
+            return []
+        prefix = f"awf/tasks/{self.integration_branch[len('awf/run-'):]}/"
+        out = self._git(["ls-remote", "--heads", "origin", f"refs/heads/{prefix}*"], check=False).stdout
+        return [line.split("refs/heads/", 1)[1] for line in out.splitlines() if "refs/heads/" in line]
 
     def export_patch(self) -> dict:
         target = self.integration_branch or "HEAD"
@@ -250,10 +291,14 @@ class Workspace:
 
     def cleanup(self) -> None:
         if self.root.exists():
-            if sys.version_info >= (3, 12):
-                shutil.rmtree(self.root, onexc=_force_remove)
-            else:
-                shutil.rmtree(self.root, onerror=_force_remove)
+            _rmtree(self.root)
+
+
+def _rmtree(path: Path) -> None:
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_force_remove)
+    else:
+        shutil.rmtree(path, onerror=_force_remove)
 
 
 def _force_remove(func, path, _exc) -> None:

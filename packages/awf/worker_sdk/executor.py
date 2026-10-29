@@ -26,6 +26,42 @@ TOOL_JOB_PERMISSIONS = {"filesystem": {"read": True}, "git": {"read": True}, "bu
 
 LogFn = Callable[[str, str], None]
 
+# Files a project's tests leave behind (repository.test_artifacts, ADR-017), and what a job may send of them.
+ATTACHMENTS_DIR = ".awf-artifacts"
+TEST_ARTIFACT_LIMITS = {"files": 20, "file_bytes": 2_000_000, "total_bytes": 10_000_000}
+_TEXT_TYPES = ("text/", "application/json", "application/xml", "image/svg+xml")
+
+
+def collect_test_artifacts(repo: Path, patterns: list[str], since: float) -> list[dict[str, Any]]:
+    """Files matching the project's globs, written during this job (older ones are part of the repository), within
+    TEST_ARTIFACT_LIMITS. Text files are redacted; everything travels base64-encoded."""
+    import base64
+    import mimetypes
+
+    found: dict[str, Path] = {}
+    for pattern in patterns:
+        pattern = str(pattern).replace("\\", "/").lstrip("/")
+        if not pattern or ".." in pattern.split("/"):
+            continue
+        for path in sorted(repo.glob(pattern)):
+            rel = path.relative_to(repo).as_posix()
+            if path.is_file() and rel.split("/")[0] not in (".git", ".awf-refs", ATTACHMENTS_DIR):
+                found.setdefault(rel, path)
+    out, total = [], 0
+    for rel, path in found.items():
+        size = path.stat().st_size
+        if path.stat().st_mtime < since - 2 or size > TEST_ARTIFACT_LIMITS["file_bytes"]:
+            continue
+        if len(out) >= TEST_ARTIFACT_LIMITS["files"] or total + size > TEST_ARTIFACT_LIMITS["total_bytes"]:
+            break
+        media = mimetypes.guess_type(rel)[0] or "application/octet-stream"
+        data = path.read_bytes()
+        if media.startswith(_TEXT_TYPES) or rel.endswith((".trx", ".log")):
+            data = redact(data.decode("utf-8", errors="replace")).encode("utf-8")
+        total += size
+        out.append({"path": rel, "media_type": media, "data": base64.b64encode(data).decode("ascii")})
+    return out
+
 
 class JobExecutor:
     def __init__(self, workspace_root: Path, policy: PolicyEngine, registry: ToolRegistry | None = None,
@@ -43,8 +79,12 @@ class JobExecutor:
         self.keep_workspaces = keep_workspaces
 
     def execute(self, job_id: str, payload: dict[str, Any], log: LogFn | None = None,
-                on_state: Callable[[str], None] | None = None) -> dict[str, Any]:
+                on_state: Callable[[str], None] | None = None,
+                fetch: Callable[[str], bytes] | None = None) -> dict[str, Any]:
+        """`fetch` downloads an input artifact by id (the job's attachments: test screenshots for a reviewer)."""
         started = time.monotonic()
+        wall_start = time.time()
+        attachments: list[dict[str, Any]] = []
         log = log or (lambda line, stream="stdout": None)
         notify = on_state or (lambda state: None)
         ws = Workspace(self.workspace_root, job_id, git_env=payload.get("_git_env"))
@@ -63,6 +103,9 @@ class JobExecutor:
                 else:
                     log(f"workspace ready at {ws.repo} (branch {wsp.get('task_branch') or wsp.get('integration_branch')})",
                         "system")
+                for note in ws.add_references(payload.get("references") or []):
+                    log(f"reference {note}", "system")
+                self._put_attachments(payload, ws, fetch, log)
             elif payload.get("job_type") == "agent" and not wsp.get("write"):
                 ws.prepare_scratch()  # content/research runs without a repository: an empty working directory
                 log(f"empty workspace at {ws.repo} (no repository)", "system")
@@ -73,6 +116,12 @@ class JobExecutor:
                 result = self._run_tool_job(payload, ws, log)
             else:
                 result = self._run_agent_job(payload, ws, log)
+            patterns = repo.get("test_artifacts") or []
+            if patterns and ws.is_git and (result.get("evidence") or {}).get("test"):
+                attachments = collect_test_artifacts(ws.repo, patterns, wall_start)
+                if attachments:
+                    log(f"[platform] {len(attachments)} test file(s) kept: "
+                        + ", ".join(a["path"] for a in attachments[:10]), "system")
             notify("UPLOADING_RESULT")
         except IntegrationConflict as exc:
             result = {"status": "failed", "error": str(exc), "retryable": False, "error_code": "INTEGRATION_CONFLICT",
@@ -86,7 +135,27 @@ class JobExecutor:
                 except OSError as exc:
                     log(f"workspace cleanup failed: {exc}", "stderr")
         result["duration_ms"] = int((time.monotonic() - started) * 1000)
-        return redact_obj(result)
+        result = redact_obj(result)
+        if attachments:  # images are not text to redact; text reports were redacted when collected
+            result["attachments"] = attachments
+        return result
+
+    @staticmethod
+    def _put_attachments(payload: dict[str, Any], ws: Workspace, fetch, log: LogFn) -> None:
+        """Input screenshots go to .awf-artifacts/ for the role to look at (never committed)."""
+        items = payload.get("attachments") or []
+        if not items or fetch is None or not ws.is_git:
+            return
+        folder = ws.repo / ATTACHMENTS_DIR
+        folder.mkdir(exist_ok=True)
+        with (ws.repo / ".git" / "info" / "exclude").open("a", encoding="utf-8") as fh:
+            fh.write(f"/{ATTACHMENTS_DIR}/\n")
+        for item in items:
+            try:
+                (folder / item["file"]).write_bytes(fetch(item["id"]))
+            except Exception as exc:  # a missing screenshot must not fail the review
+                log(f"attachment {item['file']} not available: {exc}", "stderr")
+        log(f"{len(items)} input file(s) in {ATTACHMENTS_DIR}/", "system")
 
     # ------------------------------------------------------------------ agent jobs
     def _run_agent_job(self, payload: dict[str, Any], ws: Workspace, log: LogFn) -> dict[str, Any]:
@@ -328,6 +397,7 @@ class JobExecutor:
         """After approve_merge: fast-forward the base branch of a hosted repository to the run's work. Other
         repositories (GitHub...) are left to their own review: the result says so."""
         if not (payload.get("repository") or {}).get("hosted"):
+            ws.delete_remote_branches(ws.run_branches())  # the run branch stays: it is the pull request's source
             return {"status": "succeeded", "summary": f"not hosted on the control plane: merge "
                     f"{ws.integration_branch} into {ws.base_branch} yourself (pull request)", "outputs": {},
                     "evidence": {}, "tool_calls": [{"tool": "git.merge_to_base", "status": "ok"}]}
@@ -335,7 +405,8 @@ class JobExecutor:
         if synced.get("status") == "failed":
             return synced
         merged = ws.merge_to_base()
-        log(f"[platform] {ws.base_branch} fast-forwarded to {merged['merged'][:10]}", "system")
+        log(f"[platform] {ws.base_branch} fast-forwarded to {merged['merged'][:10]}; deleted "
+            f"{', '.join(merged['deleted_branches']) or 'no branches'}", "system")
         return {"status": "succeeded", "summary": f"{ws.base_branch} is now {merged['merged'][:10]}"
                 + (" (rebased onto the latest base first)" if merged["rebased"] else ""),
                 "outputs": {}, "evidence": {"merge": merged}, "tool_calls": [{"tool": "git.merge_to_base", "status": "ok"}]}

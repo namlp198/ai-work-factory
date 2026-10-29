@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -55,7 +56,7 @@ from awf.domain.models import (
 from awf.domain.state_machine import can_transition_task, check_task_transition
 from awf.logging import get_logger
 from awf.model_router import COMPLEXITY_LEVELS
-from awf.orchestrator import audit
+from awf.orchestrator import audit, hosted
 from awf.orchestrator import placement
 from awf.orchestrator.jobs import expire_leases, mismatch_reasons, requeue_or_fail, requirements_met
 from awf.orchestrator.context import ContextBuilder, task_meta
@@ -102,6 +103,7 @@ EFFORT_APPROVAL = "approve_effort"
 CONFLICT_APPROVAL = "resolve_conflict"
 CONFLICT_ROLE = "engineering.developer"
 MAX_CONFLICT_TASKS = 6  # per run: beyond this, something keeps colliding and a person should look
+HOUSEKEEPING_SECONDS = 120  # branch cleanup and mirror pushes of hosted repositories (ADR-017)
 
 
 class OrchestratorError(Exception):
@@ -116,6 +118,7 @@ class Orchestrator:
                                  platform.settings.default_worker_platform)
         self.context = ContextBuilder(platform.artifacts, platform.settings.knowledge_dir,
                                       platform.settings.context_max_chars_per_artifact)
+        self._care_at = 0.0  # last hosted-repository housekeeping (monotonic seconds)
 
     # ================================================================== commands
     def update_project(self, session: Session, project: Project, changes: dict[str, Any], actor: str = "admin") -> Project:
@@ -200,9 +203,13 @@ class Orchestrator:
         if githost.is_hosted(repo.get("url")):
             base = repo.get("base_branch") or "main"
             path = githost.repo_path(self.p.settings.git_root, githost.hosted_slug(repo["url"]))
+            release = repo.get("release_branch")
+            if path.exists() and release and release != base and githost.ensure_branch(path, base, release):
+                audit.record(session, EventType.PROJECT_UPDATED, actor_type="system", actor_id="orchestrator",
+                             project_id=project.id, payload={"created_branch": base, "from": release})
             if not path.exists() or not githost.branch_sha(path, base):
                 raise OrchestratorError(f"the project's repository on the control plane has no '{base}' branch yet: "
-                                        f"push your code first (git push factory {base})")
+                                        f"push your code first (git push factory {release or base})")
         provider = llm or (project.labels or {}).get("llm") or self.p.router.default_provider
         if provider not in self.p.router.providers():
             raise OrchestratorError(f"unknown model provider '{provider}' (configured: "
@@ -357,6 +364,13 @@ class Orchestrator:
                         changed |= self._advance_run(session, run)
             except Exception:
                 logger.exception("failed to advance run %s", run_id)
+        if time.monotonic() - self._care_at >= HOUSEKEEPING_SECONDS:
+            self._care_at = time.monotonic()
+            try:
+                with self.p.db.transaction() as session:
+                    hosted.housekeeping(session, self.p.settings)
+            except Exception:
+                logger.exception("hosted repository housekeeping failed")
         return changed
 
     def run_until_idle(self, max_ticks: int = 100) -> int:
@@ -600,6 +614,7 @@ class Orchestrator:
             if earlier:
                 critic.findings.append(Finding("INFO", "CHANGES_FROM_EARLIER_ATTEMPT", "no new changes; this task's "
                                                f"work is already in the run branch (commit {earlier[:10]})"))
+        artifact_ids += self._store_attachments(session, run, task, job, result.get("attachments") or [])
         if agent_run:
             agent_run.critic_json = critic.as_dict()
         self._merge_output(task, critic=critic.as_dict(), artifact_ids=artifact_ids, summary=result.get("summary"),
@@ -608,6 +623,31 @@ class Orchestrator:
         self._apply_critic(session, run, stage, task, critic, artifact_ids, definition, result)
         if result.get("integration_conflict") and task.state in (TaskState.DONE, TaskState.APPROVAL_REQUIRED):
             self._spawn_resolve(session, run, stage, task, result["integration_conflict"])
+
+    def _store_attachments(self, session: Session, run: WorkflowRun, task: Task, job: Job,
+                           attachments: list[dict[str, Any]]) -> list[str]:
+        """Screenshots and reports the tests left (repository.test_artifacts, ADR-017) become artifacts; the job's
+        stored result keeps only their names."""
+        import base64
+
+        ids = []
+        for att in attachments[:50]:
+            try:
+                data = base64.b64decode(att["data"], validate=True)
+            except (KeyError, ValueError):
+                continue
+            media = str(att.get("media_type") or "application/octet-stream")
+            path = str(att.get("path") or "file").replace("\\", "/").lstrip("/")
+            art = self.p.artifacts.create(
+                session, project_id=run.project_id, workflow_run_id=run.id, task_id=task.id,
+                agent_run_id=job.agent_run_id, stage_id=task.stage_id,
+                name=f"runs/{run.id[:8]}/{task.stage_id}/{slug(task.task_key, 60)}/tests/{path}",
+                type="test_screenshot" if media.startswith("image/") else "test_report", media_type=media,
+                content=data, metadata={"source_path": path, "iteration": task.iteration, "attempt": task.attempt})
+            ids.append(art.id)
+        if attachments:
+            job.result = {**(job.result or {}), "attachments": [a.get("path") for a in attachments]}
+        return ids
 
     @staticmethod
     def _integrated_commit(session: Session, task: Task, job: Job) -> str | None:
@@ -839,6 +879,7 @@ class Orchestrator:
         run.status = status
         run.error = reason if status != RunStatus.COMPLETED else None
         run.finished_at = utcnow()
+        self._care_at = 0.0  # prune the run's branches (and mirror a merge) on the next tick
         for task in self._tasks(session, run):
             if (task.output_json or {}).get("superseded"):
                 continue  # keep fix-loop history as it was (CHANGES_REQUIRED)
@@ -1062,6 +1103,7 @@ class Orchestrator:
             "context": {"user_message": built.user_message, "objective": run.input_json.get("objective", ""),
                         "trace_summary": self._trace_summary(session, run)},
             "input_artifact_ids": built.input_artifact_ids,
+            "attachments": built.attachments,
         }
         if route.definition is not None:
             lease = route.definition.contract.timeout_policy.seconds + LEASE_MARGIN_SECONDS

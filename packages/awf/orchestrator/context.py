@@ -26,6 +26,8 @@ DEFAULT_INCLUDE = ["objective", "task", "acceptance_criteria", "upstream", "feed
 class BuiltContext:
     user_message: str
     input_artifact_ids: list[str] = field(default_factory=list)
+    # Images among the inputs (test screenshots): the worker puts them in .awf-artifacts/<file>.
+    attachments: list[dict[str, str]] = field(default_factory=list)
 
 
 def _clip(text: str, limit: int) -> str:
@@ -62,6 +64,7 @@ class ContextBuilder:
                    else DEFAULT_INCLUDE)
         parts: list[str] = []
         input_ids: list[str] = []
+        images: list[dict[str, str]] = []
 
         objective = run.input_json.get("objective", "")
         if "objective" in include:
@@ -87,6 +90,12 @@ class ContextBuilder:
                 parts += ["# Input artifacts", ""]
                 for art in arts:
                     input_ids.append(art.id)
+                    if art.media_type.startswith("image/") and len(images) < 20:
+                        file = f"{len(images) + 1:02d}-{Path(art.name).name}"
+                        images.append({"id": art.id, "file": file, "name": art.name})
+                        parts += [f"## {art.name} (v{art.version}, image, stage `{art.stage_id}`)", "",
+                                  f"Open `.awf-artifacts/{file}` in the workspace to look at it.", ""]
+                        continue
                     body = self.artifacts.read_text(art) if art.size_bytes < 5_000_000 else "(binary/large artifact)"
                     parts += [f"## {art.name} (v{art.version}, type `{art.type}`, stage `{art.stage_id}`)", "",
                               _clip(body, self.max_chars), ""]
@@ -116,8 +125,16 @@ class ContextBuilder:
                       f"- Build command configured: {'yes' if repo.get('build_command') else 'no'}",
                       f"- Test command configured: {'yes' if repo.get('test_command') else 'no'}",
                       f"- Lint command configured: {'yes' if repo.get('lint_command') else 'no'}", ""]
+            refs = repo.get("references") or []
+            if refs:
+                parts += ["## Read-only references", "",
+                          "Other repositories or branches to read for this task. Read them like any file; never edit "
+                          "them (they are not part of this repository and are never committed).", ""]
+                parts += [f"- `.awf-refs/{r['name']}/`: {r.get('url') or 'this repository'}, branch "
+                          f"`{r.get('branch') or 'main'}`" for r in refs] + [""]
 
-        return BuiltContext(user_message="\n".join(parts).strip() + "\n", input_artifact_ids=list(dict.fromkeys(input_ids)))
+        return BuiltContext(user_message="\n".join(parts).strip() + "\n", input_artifact_ids=list(dict.fromkeys(input_ids)),
+                            attachments=images)
 
     @staticmethod
     def _upstream_stages(include: list[str], workflow: LoadedWorkflow, stage_id: str) -> set[str]:

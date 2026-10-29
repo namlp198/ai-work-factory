@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from awf import githost
-from awf.domain.enums import AgentRunStatus, ApprovalState, RunStatus, TaskState, WorkerStatus
+from awf.domain.enums import AgentRunStatus, ApprovalState, EventType, RunStatus, TaskState, WorkerStatus
 from awf.domain.models import (
     AgentRun,
     Approval,
@@ -27,7 +27,7 @@ from awf.domain.models import (
     WorkflowRun,
 )
 from awf.orchestrator import jobs as job_service
-from awf.orchestrator import placement
+from awf.orchestrator import audit, hosted, placement
 from awf.orchestrator.orchestrator import OrchestratorError
 from awf.tool_sdk.command import GitError
 from awf_api import serializers as ser
@@ -44,13 +44,47 @@ def _get(session: Session, model, obj_id: str):
 
 
 # ---------------------------------------------------------------------------- projects
+BRANCH = r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$"  # develop, release/1.2
+
+
+class ReferenceIn(BaseModel):
+    """A read-only repository or branch the agents may read (ADR-017): workers clone it into `.awf-refs/<name>`."""
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,59}$")
+    url: str = Field(default="", max_length=2000)  # empty: this project's own repository
+    branch: str = Field(default="main", pattern=BRANCH)
+
+
 class RepositoryIn(BaseModel):
     url: str
-    base_branch: str = "main"
+    base_branch: str = Field(default="main", pattern=BRANCH)  # runs work on and merge into it (develop)
+    release_branch: str | None = Field(default=None, pattern=BRANCH)  # changes only on Release (main)
     build_command: list[str] | str | None = None
     test_command: list[str] | str | None = None
     lint_command: list[str] | str | None = None
     required_capabilities: list[str] = Field(default_factory=list)
+    references: list[ReferenceIn] = Field(default_factory=list, max_length=10)
+    # Files tests leave behind that reviewers should see: screenshots, reports (globs, e.g. TestResults/**/*.png).
+    test_artifacts: list[str] = Field(default_factory=list, max_length=20)
+    # GitHub (or any git server) the control plane mirrors the release and base branches and tags to.
+    mirror: dict[str, Any] | None = None
+
+    @field_validator("references")
+    @classmethod
+    def _unique_refs(cls, v):
+        names = [r.name for r in v]
+        if len(names) != len(set(names)):
+            raise ValueError("reference names must be unique")
+        return v
+
+    @field_validator("mirror")
+    @classmethod
+    def _mirror(cls, v):
+        if not v or not v.get("url"):
+            return None
+        url = str(v["url"]).strip()
+        if not re.match(r"^(https://[^\s@]+|ssh://\S+|git@[\w.-]+:\S+)$", url):
+            raise ValueError("mirror.url must be an https:// or ssh URL without a password in it")
+        return {**v, "url": url}
 
 
 PLATFORM_PATTERN = re.compile(r"^(any|[a-z][a-z0-9]*(-[a-z0-9_]+)?)$")
@@ -126,37 +160,98 @@ def list_projects(archived: bool = False, session: Session = Depends(get_session
 class HostedRepoIn(BaseModel):
     # A URL or a path on the control plane to copy from (GitHub, a folder...); empty: a new empty repository.
     import_from: str | None = Field(default=None, max_length=2000)
+    # Runs work on develop and main changes only on Release (ADR-017); false: runs merge into the one base branch.
+    develop: bool = True
 
 
 def _git_info(state: AppState, project: Project) -> dict[str, Any]:
     from awf_api.routes.git import git_token
 
-    root = state.platform.settings.git_root
-    repo = project.repository or {}
-    path = githost.repo_path(root, project.slug)
-    base = repo.get("base_branch") or "main"
-    return {"hosted": True, "path": f"/git/{project.slug}.git", "base_branch": base,
-            "base_sha": githost.branch_sha(path, base), "branches": githost.branches(path),
-            "token": git_token(root)}
+    settings = state.platform.settings
+    path = hosted.repo_of(settings, project)
+    base, release = hosted.branches_of(project)
+    info = {"hosted": True, "path": f"/git/{githost.hosted_slug(project.repository['url'])}.git", "base_branch": base,
+            "release_branch": release, "base_sha": None, "branches": [], "token": git_token(settings.git_root),
+            "mirror": hosted.mirror_state(project), "mirror_token_set": bool(settings.mirror_token)}
+    if path is not None:
+        info.update(base_sha=githost.branch_sha(path, base) or githost.branch_sha(path, release),
+                    branches=githost.branches(path))
+        if release != base:
+            info["release"] = githost.release_plan(path, base, release).as_dict()
+    return info
 
 
 @router.post("/projects/{project_id}/git")
 def host_repository(project_id: str, body: HostedRepoIn, state: AppState = Depends(get_state),
                     session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
     """Keep the project's repository on this control plane (ADR-016): new and empty (push it from your PC), or a
-    copy of `import_from`. Workers then clone it from here, and your PC uses it as the `factory` remote."""
+    copy of `import_from`. Workers then clone it from here, and your PC uses it as the `factory` remote. With
+    `develop` (the default) runs work on develop, created from the main branch, and main changes only on Release."""
     project = _get(session, Project, project_id)
     repo = dict(project.repository or {})
     if githost.is_hosted(repo.get("url")):
         raise HTTPException(409, "this project's repository is already hosted on the control plane")
-    base = repo.get("base_branch") or "main"
+    main = repo.get("release_branch") or repo.get("base_branch") or "main"
+    base = "develop" if body.develop and main != "develop" else main
     try:
-        githost.create_repo(state.platform.settings.git_root, project.slug, base, (body.import_from or "").strip() or None)
+        path = githost.create_repo(state.platform.settings.git_root, project.slug, main,
+                                   (body.import_from or "").strip() or None)
+        if base != main:
+            githost.ensure_branch(path, base, main)
     except (githost.GitHostError, GitError) as exc:
         raise HTTPException(422, str(exc)) from None
-    project.repository = {**repo, "url": f"{githost.HOSTED_SCHEME}{project.slug}", "base_branch": base}
+    project.repository = {**repo, "url": f"{githost.HOSTED_SCHEME}{project.slug}", "base_branch": base,
+                          "release_branch": main}
     session.flush()
     return _git_info(state, project)
+
+
+def _hosted_path(state: AppState, project: Project):
+    path = hosted.repo_of(state.platform.settings, project)
+    if path is None:
+        raise HTTPException(409, "this project's repository is not hosted on the control plane")
+    return path
+
+
+class ReleaseIn(BaseModel):
+    tag: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+@router.post("/projects/{project_id}/release")
+def release_project(project_id: str, body: ReleaseIn, state: AppState = Depends(get_state),
+                    session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
+    """Bring the base branch (develop) into the release branch (main): a fast-forward, else a merge commit when
+    they merge cleanly; optionally tag it. Then the mirror is pushed."""
+    project = _get(session, Project, project_id)
+    path = _hosted_path(state, project)
+    base, release = hosted.branches_of(project)
+    if base == release:
+        raise HTTPException(409, f"runs merge straight into '{base}': set a release branch (main) and a base branch "
+                                 "(develop) in the project's settings first")
+    try:
+        done = githost.release(path, base, release, body.tag)
+    except githost.ReleaseConflict as exc:
+        raise HTTPException(409, f"{exc}. Resolve it on your PC: git fetch factory; git switch {release}; "
+                                 f"git merge factory/{base}; git push factory {release}") from None
+    except (githost.GitHostError, GitError) as exc:
+        raise HTTPException(409, str(exc)) from None
+    audit.record(session, EventType.PROJECT_UPDATED, actor_type="human", actor_id=actor, project_id=project.id,
+                 payload={"release": {k: done[k] for k in ("source", "target", "released", "merge_commit", "tag")}})
+    if hosted.mirror_state(project).get("url"):
+        done["mirror"] = hosted.mirror(state.platform.settings, project)
+    return done
+
+
+@router.post("/projects/{project_id}/mirror")
+def push_mirror(project_id: str, state: AppState = Depends(get_state),
+                session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
+    """Push the mirror now (it is also pushed after every change to main, develop or a tag)."""
+    project = _get(session, Project, project_id)
+    _hosted_path(state, project)
+    try:
+        return hosted.mirror(state.platform.settings, project)
+    except githost.GitHostError as exc:
+        raise HTTPException(409, str(exc)) from None
 
 
 @router.get("/projects/{project_id}/git")
@@ -200,6 +295,9 @@ def update_project(project_id: str, body: ProjectPatch, state: AppState = Depend
             raise HTTPException(422, f"{key} cannot be null")
     if "repository" in changes:
         changes["repository"] = body.repository.model_dump()
+        old, new = hosted.mirror_state(project), changes["repository"].get("mirror") or {}
+        if new:  # the push status is the control plane's; a new URL starts again
+            changes["repository"]["mirror"] = {**old, "url": new["url"]} if old.get("url") == new["url"] else {"url": new["url"]}
     state.orchestrator.update_project(session, project, changes, actor=actor)
     return {**ser.project(project), **_machines(session, project)}
 

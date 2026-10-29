@@ -147,3 +147,13 @@ a.btn { display: inline-block; background: var(--accent); color: #fff; border-ra
 button.copy, button.dismiss { padding: 1px 8px; font-size: 12px; margin-left: 6px; vertical-align: middle; }
 .errlog { margin-top: 8px; }
 .errlog pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; }
+
+/* Test screenshots (ADR-017) */
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin: 8px 0 16px; }
+.gallery figure { margin: 0; border: 1px solid var(--border, #d0d7de); border-radius: 6px; overflow: hidden; background: var(--panel, transparent); }
+.gallery img { display: block; width: 100%; height: 120px; object-fit: cover; object-position: top; }
+.gallery figcaption { padding: 4px 6px; font-size: 12px; overflow-wrap: anywhere; }
+img.shot { max-width: 100%; border: 1px solid var(--border, #d0d7de); border-radius: 6px; }
+ul.commits { max-height: 220px; overflow: auto; margin: 4px 0 8px; }
+label.check { display: flex; gap: 6px; align-items: center; }
+label.check input { width: auto; }

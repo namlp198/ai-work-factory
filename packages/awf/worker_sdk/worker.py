@@ -235,7 +235,8 @@ class Worker:
 
         try:
             result = self.executor.execute(job_id, self.with_git_access(job["payload"]), log=buffer,
-                                           on_state=on_state)
+                                           on_state=on_state,
+                                           fetch=lambda artifact_id: self.client.attachment(job_id, artifact_id))
         except Exception as exc:  # executor bugs must still produce a reportable failure
             logger.exception("job %s crashed", job_id)
             result = {"status": "failed", "error": f"worker crash: {type(exc).__name__}: {exc}", "retryable": True}
@@ -251,20 +252,29 @@ class Worker:
         (and the merge ticket of an approved merge) reach git through GIT_CONFIG_* variables of the git calls only:
         never a command line, a log or an engine's environment."""
         repo = payload.get("repository") or {}
-        if not githost.is_hosted(repo.get("url")):
-            return payload
         base = str(self.client.http.base_url).rstrip("/")
+        hosted_url = lambda url: f"{base}/git/{githost.hosted_slug(url)}.git"  # noqa: E731
+        refs = []
+        for ref in repo.get("references") or []:  # read-only references (ADR-017); "" is this repository
+            url = ref.get("url") or repo.get("url") or ""
+            refs.append({**ref, "label": ref.get("url") or "this repository", "hosted": githost.is_hosted(url),
+                         "url": hosted_url(url) if githost.is_hosted(url) else url})
+        if refs:
+            payload = {**payload, "references": refs}
+        if not githost.is_hosted(repo.get("url")) and not any(r["hosted"] for r in refs):
+            return payload
         headers = [f"Authorization: Bearer {self.client.worker_token}"]
         if payload.get("merge_ticket"):
             headers.append(f"X-AWF-Merge-Ticket: {payload['merge_ticket']}")
-        settings = [("http.extraHeader", h) for h in headers]
+        settings = [(f"http.{base}/git/.extraHeader", h) for h in headers]  # sent to the control plane only
         if os.environ.get("AWF_CA_BUNDLE"):
             settings.append(("http.sslCAInfo", os.environ["AWF_CA_BUNDLE"]))
         env = {"GIT_CONFIG_COUNT": str(len(settings))}
         for i, (key, value) in enumerate(settings):
             env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
-        url = f"{base}/git/{githost.hosted_slug(repo['url'])}.git"
-        return {**payload, "repository": {**repo, "url": url, "hosted": True}, "_git_env": env}
+        if not githost.is_hosted(repo.get("url")):
+            return {**payload, "_git_env": env}
+        return {**payload, "repository": {**repo, "url": hosted_url(repo["url"]), "hosted": True}, "_git_env": env}
 
     def _submit(self, job_id: str, result: dict[str, Any]) -> None:
         """Deliver the result, retrying through network outages (see ControlPlaneClient.result_retry_seconds).

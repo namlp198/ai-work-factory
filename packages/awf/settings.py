@@ -58,6 +58,8 @@ class Settings:
     context_max_chars_per_artifact: int
     default_worker_platform: str
     git_root: Path = Path("var/git")  # hosted project repositories (ADR-016)
+    mirror_token: str = ""  # GitHub token the control plane pushes mirrors with (ADR-017)
+    stale_branch_days: int = 14  # awf/run-* branches of failed or cancelled runs are kept this long
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -132,6 +134,8 @@ def build_settings(home: Path | None = None) -> Settings:
         context_max_chars_per_artifact=int(orch.get("context_max_chars_per_artifact", 60000)),
         default_worker_platform=raw.get("routing", {}).get("default_worker", "linux"),
         git_root=_resolve_path(home, env.get("AWF_GIT_ROOT") or "./var/git"),
+        mirror_token=env.get("AWF_MIRROR_TOKEN", ""),
+        stale_branch_days=int(env.get("AWF_STALE_BRANCH_DAYS") or 14),
         raw=raw,
     )
 

@@ -5,14 +5,14 @@ from __future__ import annotations
 import hmac
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from awf.orchestrator import jobs as job_service
 from awf_api import serializers as ser
 from awf_api.deps import AppState, get_session, get_state, require_job_worker, require_worker
-from awf.domain.models import Worker
+from awf.domain.models import Artifact, Job, Worker
 
 router = APIRouter(prefix="/api/v1")
 
@@ -92,6 +92,19 @@ def log(job_id: str, body: LogIn, worker: Worker = Depends(require_job_worker)):
     except job_service.JobConflict as exc:
         raise HTTPException(409, str(exc)) from None
     return {"accepted": count}
+
+
+@router.get("/jobs/{job_id}/attachments/{artifact_id}")
+def attachment(job_id: str, artifact_id: str, state: AppState = Depends(get_state),
+               worker: Worker = Depends(require_job_worker)):
+    """An input image of a job this worker holds (a test screenshot for a reviewer, ADR-017)."""
+    session = object_session(worker)
+    job = session.get(Job, job_id)
+    allowed = [a.get("id") for a in ((job.payload or {}).get("attachments") or [])] if job is not None else []
+    if job is None or job.worker_id != worker.id or artifact_id not in allowed:
+        raise HTTPException(404, "no such attachment for this job")
+    artifact = session.get(Artifact, artifact_id)
+    return Response(content=state.platform.artifacts.read_bytes(artifact), media_type=artifact.media_type)
 
 
 @router.post("/jobs/{job_id}/complete")

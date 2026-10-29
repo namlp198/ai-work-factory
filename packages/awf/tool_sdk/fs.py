@@ -53,7 +53,7 @@ def fs_read(inp: dict, ctx: ToolContext) -> ToolResult:
 
 
 def fs_write(inp: dict, ctx: ToolContext) -> ToolResult:
-    path = resolve_in_workspace(ctx.workspace, inp["path"])
+    path = resolve_in_workspace(ctx.workspace, inp["path"], write=True)
     content = inp.get("content", "")
     max_bytes = _limits(ctx, "file_write_max_bytes", 400_000)
     encoded = content.encode("utf-8")
@@ -66,7 +66,7 @@ def fs_write(inp: dict, ctx: ToolContext) -> ToolResult:
 
 
 def fs_replace(inp: dict, ctx: ToolContext) -> ToolResult:
-    path = resolve_in_workspace(ctx.workspace, inp["path"])
+    path = resolve_in_workspace(ctx.workspace, inp["path"], write=True)
     if not path.is_file():
         raise ToolError(f"file not found: {inp['path']}")
     # Bytes in/out so line endings are preserved exactly (no platform newline translation).

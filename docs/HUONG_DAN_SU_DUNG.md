@@ -251,17 +251,25 @@ dùng được.
 
 Máy trung tâm giữ một **bare repo** cho mỗi project, phục vụ git qua HTTPS, cùng địa chỉ với dashboard
 (`https://<máy trung tâm>/git/<project>.git`). PC của bạn thêm repo đó làm remote `factory`. Worker ở mọi máy
-clone từ đó và đẩy nhánh của chúng lên đó (ADR-016).
+clone từ đó và đẩy nhánh của chúng lên đó (ADR-016, ADR-017).
+
+**Hai nhánh chính** (mặc định cho project mới):
+
+| Nhánh | Ý nghĩa | Đổi khi nào |
+|---|---|---|
+| `develop` (nhánh chính của run, *base branch*) | Nơi run làm việc | Sau khi bạn duyệt `approve_merge` của một run |
+| `main` (nhánh release) | Code đã hoàn thành thật sự | Chỉ khi bạn bấm **Release develop → main** |
 
 | Ai | Được làm gì |
 |---|---|
-| Bạn (PC) | fetch, pull, push mọi nhánh, kể cả `main` |
-| Worker | chỉ ghi nhánh `awf/*`. Chỉ ghi `main` trong **job merge**, sau khi bạn duyệt `approve_merge` |
+| Bạn (PC) | fetch, pull, push mọi nhánh, kể cả `main` và `develop` |
+| Worker | chỉ ghi nhánh `awf/*`. Chỉ ghi `develop` trong **job merge**, sau khi bạn duyệt `approve_merge`. Không bao giờ ghi `main` |
 
 **Tạo project:**
 
 1. Dashboard → **Projects → New project** → **Repository** = *Repo mới trên máy trung tâm* (hoặc *Chép vào máy
-   trung tâm từ một URL hoặc đường dẫn*: bản sao có sẵn toàn bộ nhánh, kể cả `main`).
+   trung tâm từ một URL hoặc đường dẫn*: bản sao có sẵn toàn bộ nhánh, kể cả `main`). Giữ dấu chọn *Run làm việc
+   trên develop; main chỉ đổi khi bạn release*.
 2. Mở trang project, mục **Git remote**: ở đó có URL remote, token đăng nhập (nút *Hiện* / *Sao chép*) và lệnh.
 3. Trong repo trên PC của bạn, làm một lần:
    ```powershell
@@ -271,12 +279,16 @@ clone từ đó và đẩy nhánh của chúng lên đó (ADR-016).
    Lần đầu git hỏi đăng nhập: **tên người dùng tuỳ ý**, **mật khẩu là token** ở mục Git remote. Credential
    Manager của Git for Windows lưu lại, nên không phải nhập lại. Token là `AWF_GIT_TOKEN` trong `.env` của máy
    trung tâm; nếu không đặt, máy trung tâm tự sinh một token và lưu trong `var/git/.token`.
-4. Run chỉ bắt đầu được sau lần push `main` đầu tiên. Trước đó, nút Start báo "push your code first".
+4. Run chỉ bắt đầu được sau lần push `main` đầu tiên. Trước đó, nút Start báo "push your code first". Nếu chưa có
+   `develop`, run đầu tiên tự tạo `develop` từ `main`.
 
 **Project cũ (repo ở GitHub hay thư mục):** không cần tạo lại. Mở trang project, mục **Repo chung** → **Chuyển lên
 máy trung tâm**. Máy trung tâm chép repo từ URL cũ (để trống ô này nếu muốn tạo repo trống rồi push từ PC). Các
 cài đặt khác giữ nguyên. Các mặc định mới (engine, phạm vi engine, độ khó) sửa ở mục **Chạy ở đâu**; build, test
 và ngân sách sửa ở mục **Cài đặt**. Run đã chạy vẫn giữ cấu hình lúc nó bắt đầu.
+
+**Project đang dùng một nhánh `main` (tạo trước 29/10/2026):** mở **Cài đặt**, đặt *Nhánh chính (base)* =
+`develop` và *Nhánh release* = `main`, rồi **Lưu cài đặt**. Run tiếp theo tự tạo `develop` từ `main`.
 
 **Tạo lại project trùng tên:** project đã có run thì chỉ **lưu trữ** được, không xoá được (để giữ lịch sử), và nó
 vẫn giữ slug. Project mới cùng tên sẽ nhận slug kế tiếp (`internal-file-server-2`). Muốn dùng lại chính project
@@ -286,12 +298,73 @@ cũ: mở danh sách *Đã lưu trữ* ở trang Projects → **Khôi phục**, 
 
 - Mỗi task viết code làm việc trên nhánh `awf/tasks/<run>/<task>`. Xong việc, nó được **rebase** lên nhánh tích
   hợp `awf/run-<id>`, rồi nhánh tích hợp được fast-forward. Lịch sử thẳng, không có commit merge.
-- Bước *Prepare pull request*: nếu trong lúc run chạy bạn đã push gì lên `main`, nhánh tích hợp được **rebase lên
-  `main` mới nhất**, rồi platform build và test lại.
-- Bạn duyệt **approve_merge**, stage *Merge into the base branch* fast-forward `main` tới nhánh tích hợp. Không
-  bao giờ có force push lên `main`. Nếu `main` lại vừa đổi, nhánh tích hợp được rebase thêm một lần nữa trước khi
-  merge.
-- Sau đó, trên PC: `git pull factory main`.
+- Bước *Prepare pull request*: nếu trong lúc run chạy bạn đã push gì lên `develop`, nhánh tích hợp được **rebase
+  lên `develop` mới nhất**, rồi platform build và test lại. `main` không liên quan tới run.
+- Bạn duyệt **approve_merge**, stage *Merge into the base branch* fast-forward `develop` tới nhánh tích hợp. Không
+  bao giờ có force push. Nếu `develop` lại vừa đổi, nhánh tích hợp được rebase thêm một lần nữa trước khi merge.
+- Sau đó, trên PC: `git pull factory develop`.
+
+**Dọn nhánh (tự động):**
+
+| Nhánh | Bị xoá khi |
+|---|---|
+| `awf/tasks/<run>/…` | Ngay sau khi task đã gộp vào nhánh run. Nhánh của task gặp conflict được giữ tới khi conflict được giải |
+| `awf/run-<id>` | Ngay sau khi đã merge vào `develop` |
+| `awf/run-<id>` của run fail, bị huỷ, hoặc chưa merge | Sau 14 ngày (`AWF_STALE_BRANCH_DAYS`), để bạn kịp xem lại. Nhánh không có commit riêng thì xoá ngay |
+
+Máy trung tâm kiểm tra mỗi 2 phút và mỗi khi một run kết thúc. Trên PC, dùng `git fetch --prune factory` để bỏ các
+nhánh đã xoá. Repo ở GitHub (không phải repo chung): worker vẫn xoá nhánh task, nhưng nhánh run được giữ lại vì
+nó là nhánh nguồn của pull request.
+
+**Release develop → main** (khi đã hoàn thành thật sự):
+
+1. Trang project, mục **Git remote** → **Release develop → main**: danh sách commit sắp lên `main`, và cho biết
+   đó là fast-forward hay merge commit.
+2. Tuỳ chọn: nhập **tag** (ví dụ `v1.2.0`), rồi bấm nút và xác nhận.
+3. Nếu `main` có hotfix riêng, máy trung tâm tạo một merge commit, *nếu không có conflict*. Có conflict thì không
+   gì thay đổi; dashboard in lệnh để bạn merge trên PC (`git switch main`, `git merge factory/develop`,
+   `git push factory main`).
+4. Mirror được đẩy ngay sau đó. Trên PC: `git pull factory main`.
+
+**Mirror lên GitHub** (để code không chỉ nằm trên máy trung tâm):
+
+1. Tạo repo trống trên GitHub (không có README).
+2. Tạo **fine-grained token**: GitHub → *Settings → Developer settings → Personal access tokens → Fine-grained
+   tokens → Generate new token*. Chọn *Only select repositories* (các repo cần mirror), mục *Repository
+   permissions → Contents: Read and write*. Đặt hạn sử dụng, rồi sao chép token.
+3. Trên **máy trung tâm**, thêm vào `.env`: `AWF_MIRROR_TOKEN=github_pat_...`, rồi khởi động lại. Token chỉ nằm
+   trên máy trung tâm, và chỉ được gửi tới đúng URL mirror dưới dạng header: không nằm trong URL, log hay
+   dashboard.
+4. Trang project, mục **Mirror (GitHub)**: nhập `https://github.com/<bạn>/<repo>.git` → **Lưu**. Lần đẩy đầu
+   tiên chạy ngay.
+5. Từ đó, mỗi lần `main`, `develop` hoặc một tag đổi (run merge, Release, hay bạn push từ PC), máy trung tâm đẩy
+   lên GitHub. Nhánh `awf/*` không lên GitHub. Không bao giờ force: nếu ai đó push thẳng lên GitHub làm hai bên
+   khác nhau, mirror báo lỗi trên dashboard và cứ 5 phút thử lại. Hãy đưa commit đó vào repo chung
+   (`git pull` từ GitHub trên PC rồi `git push factory`).
+6. Muốn dùng SSH thay token: URL `git@github.com:<bạn>/<repo>.git`, và thêm khoá SSH của máy trung tâm làm
+   *deploy key* (có quyền ghi) cho repo đó.
+
+**Repo tham khảo (chỉ đọc):** mục **Cài đặt → Repo tham khảo**, mỗi dòng `tên | URL | nhánh`, ví dụ:
+
+```text
+ui-kit | awf-git:ui-kit | feature/grid
+old-api | | release/1.0
+```
+
+`awf-git:<project>` là một repo khác trên máy trung tâm; để trống URL là chính repo này (một nhánh khác). Worker
+clone nông vào `.awf-refs/<tên>/`, không kèm `.git`. Agent đọc được như file thường (công cụ `fs.read` hoặc
+engine), không ghi được (`fs.write` bị từ chối), và platform không bao giờ commit thư mục này. Trong objective, có
+thể viết: "làm giống `.awf-refs/ui-kit`".
+
+**Ảnh chụp màn hình và báo cáo của test:** mục **Cài đặt → File test cần giữ**, ví dụ
+`TestResults/**/*.png, playwright-report/**/*.html, **/*.trx`.
+
+- Sau mỗi job có chạy test, worker gom các file khớp mẫu mà test vừa tạo: tối đa 20 file, mỗi file 2 MB, tổng
+  10 MB. File văn bản (báo cáo) được che secret trước khi gửi.
+- Mỗi file thành một artifact: `test_screenshot` (ảnh) hoặc `test_report`. Trang run hiện ảnh dạng lưới; bấm vào để
+  xem cỡ lớn.
+- Reviewer và QA nhận ảnh trong `.awf-artifacts/` của workspace (không commit). Engine như Claude Code mở và xem
+  được ảnh. Runtime native chỉ thấy tên file.
 
 **Khi có conflict:**
 
@@ -304,11 +377,14 @@ cũ: mở danh sách *Đã lưu trữ* ở trang Projects → **Khôi phục**, 
    **Approve**, run chạy tiếp. **Reject** thì run fail.
 4. Trên 6 lần conflict trong một run: run dừng, vì có thể các task đang chồng chéo nhau. Hãy xem lại kế hoạch.
 
-**Xem việc của một run trên PC:** `git fetch factory`, rồi `git switch -c review factory/awf/run-<id>`. Không nên
-commit lên các nhánh `awf/*` trong lúc run còn chạy, vì platform rebase chúng.
+**Xem việc của một run trên PC:** `git fetch factory`, rồi `git switch -c review factory/awf/run-<id>` (trong lúc
+run chạy; sau khi merge, nhánh run đã bị xoá và công việc nằm trên `develop`). Không nên commit lên các nhánh
+`awf/*` trong lúc run còn chạy, vì platform rebase chúng.
 
 **Sao lưu:** `awf db backup` sao lưu cả các repo này, mỗi repo một file `var/backups/git-<project>-*.bundle`.
-Khôi phục bằng `git clone --bare <file .bundle> var/git/<project>.git`.
+Khôi phục bằng `git clone --bare <file .bundle> var/git/<project>.git`. Mirror trên GitHub là bản thứ hai, ở nơi
+khác: mất máy trung tâm, bạn vẫn có `main`, `develop` và các tag. Muốn dựng lại repo chung từ GitHub: tạo project
+mới với *Chép vào máy trung tâm từ một URL* = URL GitHub.
 
 Ví dụ thực tế: `D:\src\ai-workspace\06_Repositories\InternalFileServer` (.NET 8). Báo cáo đầy đủ của lần
 chạy thử: [`docs/trials/internal-file-server.md`](trials/internal-file-server.md).
@@ -1521,6 +1597,10 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `NO_CHANGES` | Developer không tạo thay đổi nào (thường do `fs.replace` không khớp). |
 | `critic blocked: ... credential-like material in <file>` | Diff thêm một khoá có định dạng thật vào `<file>`. Gỡ khoá khỏi repo, dùng biến môi trường, rồi bấm **Chạy lại run**. Bản cũ (trước 29/10/2026) chặn cả việc xoá mật khẩu cũ và mật khẩu mẫu trong test: cập nhật máy trung tâm rồi bấm **Chạy lại run**. |
 | Chạy lại run thì task báo `[MAJOR/NO_CHANGES] task requires source changes but none were committed` | Lần chạy trước của task đã đưa code vào nhánh run, nên lần này không còn gì để sửa. Từ 29/10/2026, platform tính phần code đó là thay đổi của task (ghi chú `CHANGES_FROM_EARLIER_ATTEMPT`). Cập nhật máy trung tâm rồi bấm **Chạy lại run**. |
+| Mirror báo `rejected` / `fetch first` | Ai đó đã push thẳng lên GitHub. Trên PC: `git pull <github> main`, rồi `git push factory main`. Mirror tự thử lại sau 5 phút, hoặc bấm **Đẩy ngay**. |
+| Mirror báo `401` / `403` / `Authentication failed` | `AWF_MIRROR_TOKEN` trên máy trung tâm thiếu, hết hạn hoặc không có quyền *Contents: write* với repo đó. Sửa `.env` rồi khởi động lại. |
+| Release báo `conflict in: …` | `main` có hotfix chạm cùng chỗ với `develop`. Merge trên PC theo lệnh dashboard in ra, rồi push `main` lên factory. |
+| `reference .awf-refs/<tên>: NOT AVAILABLE` trong log job | URL hoặc nhánh của repo tham khảo sai, hoặc worker không có quyền đọc repo đó. Repo trên GitHub cần worker tự có quyền (SSH key hoặc credential của máy đó). |
 | Run fail, các task còn lại `CANCELLED` | Bấm **Chạy lại run** trên trang run: task fail chạy lại, các task bị huỷ chạy tiếp. |
 | `INTEGRATION_CONFLICT` | Hai task song song sửa cùng chỗ; Planner nên đặt `depends_on`. |
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |

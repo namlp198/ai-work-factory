@@ -357,6 +357,7 @@ async function viewProjects() {
         <option value="none">${t("repo_source.none")}</option></select></label>
       <label>${t("field.repository_url")}<input name="url" placeholder="${t("projects.url_placeholder")}"></label>
       <p class="full muted">${t("projects.repo_source_help")}</p>
+      <label class="full check"><input type="checkbox" name="develop" checked> ${t("projects.develop_flow")}</label>
       <label>${t("field.base_branch")}<input name="base_branch" value="main"></label>
       <label>${t("field.platform")}<select name="platform" required>${platformOptions(d.platform)}</select></label>
       <label>${t("field.required_capabilities")}<input name="required_capabilities" placeholder="dotnet-windowsdesktop, msbuild"></label>
@@ -395,7 +396,8 @@ function bindProjects() {
     try {
       const p = await api("/projects", { method: "POST", body: JSON.stringify(body) });
       if (source === "hosted" || source === "import") {
-        await api(`/projects/${p.id}/git`, { method: "POST", body: JSON.stringify(source === "import" ? { import_from: f.get("url") } : {}) });
+        const develop = f.get("develop") === "on";
+        await api(`/projects/${p.id}/git`, { method: "POST", body: JSON.stringify(source === "import" ? { import_from: f.get("url"), develop } : { develop }) });
       }
       clearError("project-error"); location.hash = `#/projects/${p.id}`;
     }
@@ -420,17 +422,51 @@ function gitPanel(p, g) {
   }
   const url = `${location.origin}${g.path}`;
   const base = g.base_branch || "main";
-  const setup = [`git remote add factory ${url}`, `git push factory ${base}`].join("\n");
+  const main = g.release_branch || base;
+  const setup = [`git remote add factory ${url}`, `git push factory ${main}`].join("\n");
   const daily = [`git fetch factory`, `git switch -c review factory/awf/run-<id>   # look at a run's work`,
-    `git pull factory ${base}                    # after you approved a merge`].join("\n");
+    `git pull factory ${base}                 # after you approved a merge`,
+    ...(main !== base ? [`git pull factory ${main}                 # after a release`] : [])].join("\n");
   return `<h2>${t("git.title")}</h2><div class="kv">
     <div>${t("git.remote")}</div><div><code>${esc(url)}</code>${copyButton(url)}</div>
     <div>${t("git.login")}</div><div>${t("git.login_text")} <code class="secret" data-secret="${esc(g.token)}">••••••••</code>
       <button type="button" class="ghost copy" data-reveal>${t("git.show")}</button>${copyButton(g.token)}</div>
     <div>${t("git.base")}</div><div>${g.base_sha ? `<code>${esc(base)}</code> @ <code>${esc(g.base_sha.slice(0, 10))}</code>` : `<span class="error">${t("git.empty", { base: esc(base) })}</span>`}</div>
     <div>${t("git.branches")}</div><div>${(g.branches || []).map((b) => `<code>${esc(b)}</code>`).join(" ") || "—"}</div></div>
+    <p class="muted">${main !== base ? t("git.flow", { base: esc(base), main: esc(main) }) : t("git.flow_single", { base: esc(base) })}</p>
     <p class="muted">${t("git.setup")}</p><pre>${esc(setup)}</pre>${copyButton(setup)}
-    <p class="muted">${t("git.daily")}</p><pre>${esc(daily)}</pre>`;
+    <p class="muted">${t("git.daily")}</p><pre>${esc(daily)}</pre>
+    ${releasePanel(p, g)}${mirrorPanel(p, g)}`;
+}
+
+// develop -> main when the work is really done (ADR-017).
+function releasePanel(p, g) {
+  const r = g.release;
+  if (!r || p.status === "ARCHIVED") return "";
+  const list = r.commits.length ? `<ul class="commits">${r.commits.slice(0, 30).map((c) => `<li><code>${esc(c)}</code></li>`).join("")}</ul>`
+    + (r.commits.length > 30 ? `<p class="muted">${t("release.more", { n: r.commits.length - 30 })}</p>` : "") : "";
+  return `<h3>${t("release.title", { base: esc(r.source), main: esc(r.target) })}</h3>
+    ${r.commits.length ? `<p>${tn("release.pending", r.commits.length, { base: esc(r.source), main: esc(r.target) })} ${r.fast_forward ? t("release.ff") : t("release.merge")}</p>${list}
+      <form class="row" id="release-form"><label>${t("release.tag")}<input name="tag" placeholder="v1.0.0" pattern="[A-Za-z0-9][A-Za-z0-9._-]*"></label>
+        <button>${t("release.button", { base: esc(r.source), main: esc(r.target) })}</button></form><div id="release-error"></div>`
+      : `<p class="muted">${t("release.nothing", { base: esc(r.source), main: esc(r.target) })}</p>`}`;
+}
+
+// The copy on GitHub, so the code does not depend on this control plane alone (ADR-017).
+function mirrorPanel(p, g) {
+  const m = g.mirror || {};
+  const tokenMissing = m.url && m.url.startsWith("https://") && !g.mirror_token_set;
+  const status = !m.url ? `<span class="muted">${t("mirror.none")}</span>`
+    : m.error ? `<span class="error">${t("mirror.failed", { time: when(m.at) })}</span> ${runErrorHint(m.error)}`
+    : m.ok_at ? `<span class="pill s-PASS">${t("mirror.ok")}</span> <span class="muted">${t("mirror.ok_at", { time: when(m.ok_at) })}</span>`
+    : `<span class="muted">${t("mirror.pending")}</span>`;
+  return `<h3>${t("mirror.title")}</h3>
+    <form class="grid" id="mirror-form"><label class="full">${t("mirror.url")}<input name="url" value="${esc(m.url || "")}" placeholder="https://github.com/you/repo.git"></label>
+      <div class="full row"><button class="ghost">${t("common.save")}</button>${m.url ? `<button type="button" class="ghost" id="mirror-now">${t("mirror.push_now")}</button>` : ""}
+        <span id="mirror-error" class="error"></span></div></form>
+    <div class="kv"><div>${t("field.status")}</div><div>${status}</div></div>
+    ${tokenMissing ? `<p class="error">${t("mirror.token_missing")}</p>` : ""}
+    <p class="muted">${t("mirror.help")}</p>`;
 }
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-reveal]");
@@ -477,11 +513,16 @@ function projectSettings(p) {
       <label>${t("field.name")}<input name="name" value="${esc(p.name)}" required></label>
       <label>${t("field.repository_url")}<input name="url" value="${esc(r.url || "")}" placeholder="https://… , ssh://… , D:/src/repo"></label>
       <label>${t("field.base_branch")}<input name="base_branch" value="${esc(r.base_branch || "main")}"></label>
+      <label>${t("field.release_branch")}<input name="release_branch" value="${esc(r.release_branch || "")}" placeholder="main"></label>
+      <p class="full muted">${t("settings.branches_help")}</p>
       <label>${t("field.build_command")}<input name="build_command" value="${esc(argvText(r.build_command))}" placeholder="dotnet build App.csproj -nologo"></label>
       <label>${t("field.test_command")}<input name="test_command" value="${esc(argvText(r.test_command))}" placeholder="dotnet test tests/App.Tests"></label>
       <label>${t("field.lint_command")}<input name="lint_command" value="${esc(argvText(r.lint_command))}" placeholder="${t("common.optional")}"></label>
       <label>${t("field.confidentiality")}<select name="confidentiality">${confidentialityOptions(p.confidentiality)}</select></label>
       <label>${t("settings.budget")}<input name="budget_usd" type="number" step="0.01" min="0" value="${p.budget_usd ?? ""}"></label>
+      <label class="full">${t("field.test_artifacts")}<input name="test_artifacts" value="${esc((r.test_artifacts || []).join(", "))}" placeholder="TestResults/**/*.png, playwright-report/**/*.html"></label>
+      <label class="full">${t("field.references")}<textarea name="references" rows="3" placeholder="ui-kit | awf-git:ui-kit | main&#10;old-api | | release/1.0">${esc((r.references || []).map((x) => `${x.name} | ${x.url || ""} | ${x.branch || "main"}`).join("\n"))}</textarea></label>
+      <p class="full muted">${t("settings.references_help")}</p>
       <label class="full">${t("field.description")}<textarea name="description" rows="2">${esc(p.description || "")}</textarea></label>
       <div class="full row"><button>${t("settings.save")}</button><span id="settings-msg" class="muted"></span><span id="settings-error" class="error"></span>
         <span class="muted">${t("settings.note")}</span></div></form>`;
@@ -549,6 +590,10 @@ function projectMachines(p, models) {
       ${rows || `<tr><td colspan="4" class="muted">${t("workers.none")}</td></tr>`}</table></div>`;
 }
 
+// "name | url | branch" per line; an empty url is this project's own repository.
+const referenceList = (text) => String(text || "").split("\n").map((line) => line.split("|").map((x) => x.trim()))
+  .filter((x) => x[0]).map(([name, url, branch]) => ({ name, url: url || "", branch: branch || "main" }));
+
 function bindProject(id) {
   const settings = $("#project-settings-form");
   if (settings) settings.onsubmit = async (e) => {
@@ -559,7 +604,9 @@ function bindProject(id) {
       const body = { name: f.get("name"), description: f.get("description") || "", confidentiality: f.get("confidentiality"),
                      budget_usd: f.get("budget_usd") === "" ? null : Number(f.get("budget_usd")) };
       if (f.get("url")) {
-        const repo = { ...(p.repository || {}), url: f.get("url"), base_branch: f.get("base_branch") || "main" };
+        const repo = { ...(p.repository || {}), url: f.get("url"), base_branch: f.get("base_branch") || "main",
+                       release_branch: f.get("release_branch").trim() || null, test_artifacts: capList(f.get("test_artifacts")),
+                       references: referenceList(f.get("references")) };
         for (const k of ["build_command", "test_command", "lint_command"]) {
           // An untouched field keeps its stored value exactly; an edited one is parsed into argv.
           if (f.get(k) === argvText(p.repository?.[k])) continue;
@@ -588,6 +635,32 @@ function bindProject(id) {
   const restore = $("#restore-project");
   if (restore) restore.onclick = async () => { await api(`/projects/${id}/restore`, { method: "POST" }); render(); };
 
+  const rel = $("#release-form");
+  if (rel) rel.onsubmit = async (e) => {
+    e.preventDefault();
+    const tag = new FormData(rel).get("tag").trim();
+    if (!confirm(t("release.confirm", {}, true))) return;
+    try {
+      await api(`/projects/${id}/release`, { method: "POST", body: JSON.stringify(tag ? { tag } : {}) });
+      clearError("release-error"); render();
+    } catch (err) { showError("release-error", err.message); }
+  };
+  const mirror = $("#mirror-form");
+  if (mirror) mirror.onsubmit = async (e) => {
+    e.preventDefault();
+    const url = new FormData(mirror).get("url").trim();
+    try {
+      const p = await api(`/projects/${id}`);
+      await api(`/projects/${id}`, { method: "PATCH", body: JSON.stringify({ repository: { ...p.repository, mirror: url ? { url } : null } }) });
+      if (url) await api(`/projects/${id}/mirror`, { method: "POST" });
+      clearError("mirror-error"); render();
+    } catch (err) { showError("mirror-error", err.message); }
+  };
+  const mirrorNow = $("#mirror-now");
+  if (mirrorNow) mirrorNow.onclick = async () => {
+    try { await api(`/projects/${id}/mirror`, { method: "POST" }); clearError("mirror-error"); render(); }
+    catch (err) { showError("mirror-error", err.message); }
+  };
   const move = $("#git-move-form");
   if (move) move.onsubmit = async (e) => {
     e.preventDefault();
@@ -718,7 +791,7 @@ async function bindRun(id) {
   bindApprovalButtons();
   const run = await api(`/workflow-runs/${id}`);
   const arts = await api(`/projects/${run.project_id}/artifacts?run_id=${id}`);
-  $("#run-artifacts").outerHTML = artifactTable(arts);
+  $("#run-artifacts").outerHTML = screenshotGallery(arts) + artifactTable(arts);
   bindArtifactLinks();
 }
 
@@ -728,19 +801,30 @@ function artifactTable(arts) {
   return `<div class="table-wrap"><table><tr><th>${t("artifact.type")}</th><th>${t("field.name")}</th><th>${t("artifact.version")}</th><th>${t("run.stage")}</th><th>${t("artifact.checksum")}</th><th>${t("artifact.bytes")}</th></tr>${rows || `<tr><td colspan="6" class="muted">${t("common.none")}</td></tr>`}</table></div>`;
 }
 
-function bindArtifactLinks() { document.querySelectorAll("tr[data-artifact]").forEach((tr) => (tr.onclick = () => openArtifact(tr.dataset.artifact))); }
+// Test screenshots of a run as thumbnails (repository.test_artifacts, ADR-017); a click opens the artifact.
+function screenshotGallery(arts) {
+  const shots = arts.filter((a) => a.type === "test_screenshot");
+  if (!shots.length) return "";
+  return `<h3>${tn("run.screenshots", shots.length)}</h3><div class="gallery">${shots.map((a) =>
+    `<figure data-artifact="${a.id}" class="click"><img loading="lazy" src="${API}/artifacts/${a.id}/content" alt="${esc(a.name)}">
+      <figcaption><code>${esc(a.name.split("/tests/").pop())}</code></figcaption></figure>`).join("")}</div>`;
+}
+
+function bindArtifactLinks() { document.querySelectorAll("tr[data-artifact], figure[data-artifact]").forEach((tr) => (tr.onclick = () => openArtifact(tr.dataset.artifact))); }
 
 async function openArtifact(id) {
-  const [a, content, rel, impact] = await Promise.all([api(`/artifacts/${id}`), api(`/artifacts/${id}/content`), api(`/artifacts/${id}/relations`), api(`/artifacts/${id}/impact`)]);
+  const [a, rel, impact] = await Promise.all([api(`/artifacts/${id}`), api(`/artifacts/${id}/relations`), api(`/artifacts/${id}/impact`)]);
+  const content = a.media_type?.startsWith("image/") ? "" : await api(`/artifacts/${id}/content`);
   const relRows = [...rel.outgoing.map((r) => `<li>${esc(r.relation_type)} → <code>${short(r.to_artifact_id)}</code></li>`),
     ...rel.incoming.map((r) => `<li><code>${short(r.from_artifact_id)}</code> ${esc(r.relation_type)} → ${t("artifact.this")}</li>`)].join("");
+  const image = a.media_type?.startsWith("image/");
   drawer(`<h2>${esc(a.name)} <span class="muted">v${a.version}</span></h2>
     <div class="kv"><div>${t("artifact.type")}</div><div>${esc(a.type)}</div><div>${t("artifact.checksum")}</div><div><code>${esc(a.checksum)}</code></div>
     <div>${t("artifact.storage")}</div><div><code>${esc(a.storage_backend)}</code> ${esc(a.uri)}</div><div>${t("run.task")}</div><div><code>${short(a.task_id)}</code></div></div>
     <h3>${t("artifact.traceability")}</h3><ul>${relRows || `<li class='muted'>${t("common.none")}</li>`}</ul>
     <h3>${t("artifact.impact", { n: impact.impacted_artifacts.length })}</h3>
     <ul>${impact.impacted_artifacts.map((x) => `<li>${esc(x.type)} <code>${esc(x.name)}</code> (${t("artifact.depth", { n: x.depth })}, ${esc(x.via)})</li>`).join("")}</ul>
-    <h3>${t("artifact.content")}</h3><pre>${esc(content)}</pre>`);
+    <h3>${t("artifact.content")}</h3>${image ? `<img class="shot" src="${API}/artifacts/${a.id}/content" alt="${esc(a.name)}">` : `<pre>${esc(content)}</pre>`}`);
 }
 
 async function openTask(id) {

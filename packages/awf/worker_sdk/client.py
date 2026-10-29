@@ -118,6 +118,13 @@ class ControlPlaneClient:
         if lines:
             self._call("POST", f"/api/v1/jobs/{job_id}/log", retry_for=5, json={"lines": lines})
 
+    def attachment(self, job_id: str, artifact_id: str) -> bytes:
+        """An input artifact of this job as bytes (a test screenshot for a reviewer, ADR-017)."""
+        resp = self.http.get(f"/api/v1/jobs/{job_id}/attachments/{artifact_id}", headers=self._headers())
+        if resp.status_code >= 400:
+            raise ControlPlaneError(resp.status_code, resp.text[:500])
+        return resp.content
+
     def complete(self, job_id: str, result: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", f"/api/v1/jobs/{job_id}/complete", retry_for=self.result_retry_seconds, json=result)
 

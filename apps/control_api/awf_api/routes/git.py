@@ -15,9 +15,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from awf import githost
+from awf.orchestrator import hosted
 from awf.domain.models import Project, Worker, WorkflowRun
 from awf.security import hash_token
 from awf_api.deps import AppState, get_state
@@ -94,6 +96,7 @@ async def git_http(slug: str, rest: str, request: Request, state: AppState = Dep
     role, name = _who(request, state)
     project = _project(state, slug)
     body = await request.body()
+    updates: list[githost.RefUpdate] = []
     service = request.query_params.get("service") or rest.rsplit("/", 1)[-1]
     if service == "git-receive-pack" and request.method == "POST":
         try:
@@ -112,4 +115,17 @@ async def git_http(slug: str, rest: str, request: Request, state: AppState = Dep
         githost.http_backend, state.platform.settings.git_root, f"/{slug}.git/{rest}", request.method,
         request.url.query, request.headers.get("content-type", ""), body, f"{role}:{name}")
     headers = {k: v for k, v in result.headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
-    return Response(content=result.body, status_code=result.status, headers=headers)
+    mirrored = {f"refs/heads/{b}" for b in hosted.branches_of(project)}
+    later = None
+    if result.status == 200 and any(u.ref in mirrored or u.ref.startswith("refs/tags/") for u in updates)             and hosted.mirror_state(project).get("url"):
+        later = BackgroundTask(_mirror, state, project.id)  # after git has its answer
+    return Response(content=result.body, status_code=result.status, headers=headers, background=later)
+
+
+def _mirror(state: AppState, project_id: str) -> None:
+    """Push the mirror after a push to main, develop or a tag (ADR-017); a failure is kept on the project and
+    retried by the orchestrator's housekeeping."""
+    with state.platform.db.transaction() as s:
+        project = s.get(Project, project_id)
+        if project is not None:
+            hosted.mirror(state.platform.settings, project)

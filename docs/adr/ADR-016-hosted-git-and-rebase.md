@@ -39,4 +39,5 @@ approves, GitHub stays an optional mirror (later).
 - `awf/*` branches are rewritten by rebase; people should branch from them rather than commit on them while a run
   is active.
 - Squashing a conflicted task into one commit loses that task's own commit boundaries (its branch keeps them).
-- Mirroring to GitHub, read-only reference repositories and test screenshots (parts 4–6) are not done yet.
+- Mirroring to GitHub, read-only reference repositories and test screenshots (parts 4–6), branch cleanup and the
+  develop/main flow: ADR-017.

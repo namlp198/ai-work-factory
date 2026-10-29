@@ -76,8 +76,12 @@ def now_ms() -> int:
     return int(time.monotonic() * 1000)
 
 
-def resolve_in_workspace(workspace: Path, relative: str) -> Path:
-    """Path traversal protection: the resolved path must stay inside the workspace and outside .git."""
+REFERENCES_DIR = ".awf-refs"  # read-only copies of other repositories or branches (ADR-017)
+
+
+def resolve_in_workspace(workspace: Path, relative: str, write: bool = False) -> Path:
+    """Path traversal protection: the resolved path must stay inside the workspace and outside .git; a write may
+    not touch the read-only references."""
     if relative is None or "\x00" in str(relative):
         raise PathViolation("invalid path")
     root = workspace.resolve()
@@ -92,4 +96,6 @@ def resolve_in_workspace(workspace: Path, relative: str) -> Path:
     parts = target.relative_to(root).parts
     if parts and parts[0] == ".git":
         raise PathViolation("access to .git is not allowed; use git tools")
+    if write and parts and parts[0] == REFERENCES_DIR:
+        raise PathViolation(f"{REFERENCES_DIR}/ holds read-only references; change files of the repository instead")
     return target
