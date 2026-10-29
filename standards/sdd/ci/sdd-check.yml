@@ -1,0 +1,36 @@
+# Copy to .github/workflows/sdd-check.yml in an adopting repository.
+# Requires the conformance checker (docs/CHECKER.md). The reference implementation, `awf sdd check`, is planned in
+# AI Work Factory; until it is published, keep this workflow disabled.
+name: SDD conformance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  sdd-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # commit trailers (SDD070) need history
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Replace with the repository's own build and test steps; the test step must write the report named in
+      # docs/sdd/testing.md (JUnit XML).
+      - name: Build and test
+        run: |
+          echo "run the project's build and test commands here"
+
+      - name: Install the checker
+        run: pip install "awf-sdd-check"   # placeholder package name until the checker is published
+
+      - name: Check conformance and regenerate verification
+        run: awf sdd check --all-open-changes --junit reports/junit.xml --revision "$GITHUB_SHA" --write-verification
+
+      - name: Fail if verification.md was edited by hand or is out of date
+        run: git diff --exit-code -- docs/sdd/changes

@@ -1,5 +1,13 @@
 # AI Work Factory: rules for working on this repository
 
+## Spec-Driven Development (paused since 29 October 2026)
+
+SDD Repository Standard v1.1 (`standards/sdd/`, draft) and the AWF baseline (`AGENTS.md`, `docs/sdd/`, change 0001)
+are kept for later review and are **not enforced** for now: the owner is first making the existing features run
+smoothly in real use (roadmap stage 0, `docs/plan/ROADMAP.md`). Until the owner resumes SDD, changes follow the
+usual flow (code, tests, guide, ADR). When it resumes: every non-exempt change gets a folder in
+`docs/sdd/changes/<NNNN>-<slug>/`, whose spec, design and tasks the owner approves (combined G1–G3) before any code.
+
 ## Dashboard: always bilingual (English + Vietnamese)
 
 The dashboard (`apps/control_api/awf_api/static/`) ships in **English and Vietnamese**. The user picks the
