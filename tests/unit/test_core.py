@@ -202,6 +202,26 @@ def test_critic_requires_evidence_not_claims(platform):
     assert ok.decision == "PASS"
 
 
+def test_critic_reads_secrets_in_a_diff_by_line(platform):
+    """Removing a committed password is the fix; sample passwords in tests are noted; a quoted password in
+    production code is sent back; a real key format blocks (run 044f4928 failed on the first two)."""
+    contract = platform.agents.get("engineering.developer").contract
+
+    def secrets(*lines):
+        diff = "diff --git a/x b/x\n" + "\n".join(lines)
+        found = Critic().evaluate_agent(contract, {"outputs": {"source_diff": redact(diff)}}).findings
+        return [(f.severity, f.code, f.message) for f in found if f.code.startswith("SECRET")]
+
+    fixed = secrets("+++ b/appsettings.json", '-  "AdminPassword": "Abc@123456",', '+  "UserStoreFile": "data/users.json",',
+                    "+++ b/tests/App.Tests/AuthTests.cs", '+    var body = new { username = "ann", password = "Correct-Horse-1" };',
+                    '+    Login(new { password: "Wrong-Pass-99" });')
+    assert [(sev, code) for sev, code, _ in fixed] == [("MINOR", "SECRET_LITERAL_IN_TESTS")]
+    [(sev, code, msg)] = secrets("+++ b/src/Program.cs", '+var adminPassword = "Abc@123456";')
+    assert (sev, code) == ("MAJOR", "SECRET_LITERAL") and "src/Program.cs" in msg  # sent back, not a failed run
+    [(sev, code, msg)] = secrets("+++ b/tests/conftest.py", "+API_KEY = 'sk-ant-api03-abcdefghijklmnopqrstu'")
+    assert (sev, code) == ("BLOCKER", "SECRET_IN_OUTPUT") and "tests/conftest.py" in msg
+
+
 def test_critic_blocks_secrets_and_permission_abuse(platform):
     contract = platform.agents.get("engineering.code-reviewer").contract
     report = "## Summary\n## Findings\n## Verdict\n" + REDACTED
@@ -233,7 +253,7 @@ def test_secret_redaction(monkeypatch):
     text = 'key sk-ant-api03-abcdefghijklmnop and token supersecretvalue123\nDB_PASSWORD=hunter22 "AdminPassword": "Abc@123456"'
     out = redact(text)
     assert "sk-ant-api03" not in out and "supersecretvalue123" not in out and "hunter22" not in out
-    assert "Abc@123456" not in out and '"AdminPassword": "[REDACTED]"' in out
+    assert "Abc@123456" not in out and '"AdminPassword": "[REDACTED-VALUE]"' in out
     code = 'var adminPassword = builder.Configuration["FileServer:AdminPassword"] ?? "change-me";'
     assert redact(code) == code  # unquoted code is not a secret
     assert redact_obj({"api_key": "x", "nested": ["supersecretvalue123"]}) == {"api_key": REDACTED,

@@ -22,15 +22,21 @@ _REDACTION_PATTERNS = [
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._\-]{16,}"),
+]
+# Values that only look secret by where they stand (often sample passwords in tests) get their own marker, so the
+# critic can tell them from the key formats above. A value already redacted above is left as it is.
+_LITERAL_PATTERNS = [
     # Quoted values: "AdminPassword": "...", password: '...', apiKey = "..." (JSON, YAML, code literals).
     # Unquoted code such as `adminPassword = config["x"]` is deliberately not matched.
-    re.compile(r"(?i)([A-Za-z_]*(?:password|passwd|secret|api[_-]?key|token)['\"]?\s*[:=]\s*['\"])[^\s'\"]{6,}"),
+    re.compile(r"(?i)([A-Za-z_]*(?:password|passwd|secret|api[_-]?key|token)['\"]?\s*[:=]\s*['\"])"
+               r"(?!\[REDACTED)[^\s'\"]{6,}"),
     # .env style lines: DB_PASSWORD=..., export API_TOKEN=...
     re.compile(r"(?im)^(\s*(?:export\s+)?[A-Za-z_]*(?:password|passwd|secret|api[_-]?key|token)[A-Za-z_]*\s*=\s*)"
-               r"[^\s'\"]{6,}"),
+               r"(?!\[REDACTED)[^\s'\"]{6,}"),
 ]
 
 REDACTED = "[REDACTED]"
+REDACTED_LITERAL = "[REDACTED-VALUE]"
 
 
 def _known_secret_values() -> list[str]:
@@ -48,6 +54,8 @@ def redact(text: str) -> str:
         text = text.replace(value, REDACTED)
     for pattern in _REDACTION_PATTERNS:
         text = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + REDACTED, text)
+    for pattern in _LITERAL_PATTERNS:
+        text = pattern.sub(lambda m: m.group(1) + REDACTED_LITERAL, text)
     return text
 
 

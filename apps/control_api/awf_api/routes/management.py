@@ -358,6 +358,22 @@ def reassign_run(run_id: str, body: PlacementIn, state: AppState = Depends(get_s
     return ser.run(run, worker=worker)
 
 
+@router.post("/workflow-runs/{run_id}/retry")
+def retry_run(run_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function"),
+              actor: str = Depends(require_admin)):
+    """Continue a failed run: its failed tasks run again, then the tasks the failure cancelled."""
+    run = _get(session, WorkflowRun, run_id)
+    failed = session.scalars(select(Task).where(Task.workflow_run_id == run_id, Task.state == TaskState.FAILED)
+                             .order_by(Task.created_at)).first()
+    if run.status != RunStatus.FAILED or failed is None:
+        raise HTTPException(409, f"only a failed run can be retried (run is {run.status})")
+    try:
+        state.orchestrator.retry_task(session, failed, actor=actor)
+    except OrchestratorError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return ser.run(run)
+
+
 @router.post("/workflow-runs/{run_id}/cancel")
 def cancel_run(run_id: str, state: AppState = Depends(get_state), session: Session = Depends(get_session, scope="function"),
                actor: str = Depends(require_admin)):

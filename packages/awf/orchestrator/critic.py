@@ -10,13 +10,14 @@ Separately from output quality, the critic computes the *verdict* of reviewer/QA
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from awf.agent_runtime import AgentContract
 from awf.agent_runtime.validation import Finding, validate_outputs
 from awf.domain.enums import CriticDecision
-from awf.security import REDACTED
+from awf.security import REDACTED, REDACTED_LITERAL
 
 APPROVE = "APPROVE"
 CHANGES_REQUIRED = "CHANGES_REQUIRED"
@@ -72,13 +73,57 @@ def _check_rule(rule: str, evidence: dict[str, Any]) -> Finding | None:
     return None
 
 
+_TEST_PATH = re.compile(r"(?i)(^|/)(tests?|specs?|__tests__|fixtures?)/|[._-](tests?|spec)\.|tests?[^/]*\.[a-z]+$")
+
+
+def _redactions(line: str) -> tuple[int, int]:
+    """(quoted literals such as a test password, key formats or this machine's secret values) redacted in a line."""
+    return line.count(REDACTED_LITERAL), line.count(REDACTED)
+
+
+def _diff_secret_findings(name: str, text: str) -> list[Finding]:
+    """In a diff only added lines count: removing a committed password is the fix, not a leak. A real key format
+    blocks the run; a quoted literal is sent back (production code) or noted (tests, which need sample passwords)."""
+    path, keys, in_code, in_tests = "", set(), set(), set()
+    for line in text.splitlines():
+        if line.startswith("+++ "):
+            path = line[4:].strip().removeprefix("b/")
+            continue
+        if not line.startswith("+") or not any(_redactions(line)):
+            continue
+        literals, other = _redactions(line)
+        if other:
+            keys.add(path)
+        if literals:
+            (in_tests if _TEST_PATH.search(path) else in_code).add(path)
+    if keys:
+        return [Finding("BLOCKER", "SECRET_IN_OUTPUT", f"output '{name}' adds credential-like material in "
+                        f"{', '.join(sorted(keys))} (redacted by the platform)")]
+    findings = []
+    if in_code:
+        findings.append(Finding("MAJOR", "SECRET_LITERAL", f"output '{name}' adds a quoted password or token in "
+                                f"{', '.join(sorted(in_code))}: read it from configuration or the environment instead"))
+    if in_tests:
+        findings.append(Finding("MINOR", "SECRET_LITERAL_IN_TESTS", "sample passwords or tokens in tests: "
+                                + ", ".join(sorted(in_tests))))
+    return findings
+
+
 def _secret_findings(outputs: dict[str, Any]) -> list[Finding]:
+    findings: list[Finding] = []
     for name, value in outputs.items():
         text = value if isinstance(value, str) else json.dumps(value, default=str)
-        if REDACTED in text:
+        if not any(_redactions(text)):
+            continue
+        if text.startswith("diff --git") or "\n+++ " in text:
+            findings += _diff_secret_findings(name, text)
+        elif any(_redactions(line)[1] for line in text.splitlines()):
             return [Finding("BLOCKER", "SECRET_IN_OUTPUT",
                             f"output '{name}' contained credential-like material (redacted by the platform)")]
-    return []
+        else:
+            findings.append(Finding("MINOR", "SECRET_LITERAL", f"output '{name}' quoted a password or token value "
+                                    "(redacted by the platform)"))
+    return findings
 
 
 def _policy_findings(tool_calls: list[dict[str, Any]]) -> list[Finding]:

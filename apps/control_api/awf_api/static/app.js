@@ -643,7 +643,9 @@ async function viewRun(id) {
     <td>${task.output?.critic ? pill(task.output.critic.decision) : ""} ${task.output?.critic?.verdict ? pill(task.output.critic.verdict) : ""}</td></tr>`).join("");
   const mine = approvals.filter((a) => a.workflow_run_id === id);
   return `<div class="row"><h1>${t("common.run")} <code>${short(run.id)}</code></h1>${pill(run.status)}
-      ${run.status === "RUNNING" ? `<button class="danger" id="cancel-run">${t("run.cancel")}</button>` : ""}</div>
+      ${run.status === "RUNNING" ? `<button class="danger" id="cancel-run">${t("run.cancel")}</button>` : ""}
+      ${run.status === "FAILED" ? `<button id="retry-run" title="${t("run.retry_help")}">${t("run.retry")}</button><span id="retry-error" class="error"></span>` : ""}</div>
+    ${run.status === "FAILED" ? `<p class="muted">${t("run.retry_help")}</p>` : ""}
     <div class="kv"><div>${t("field.workflow")}</div><div>${esc(run.workflow_id)} v${esc(run.workflow_version)}</div>
       <div>${t("field.objective")}</div><div>${esc(run.input?.objective)}</div>
       ${placementRows(run, workers)}
@@ -704,6 +706,11 @@ async function bindRun(id) {
     const worker = new FormData(form).get("worker") || null;
     try { await api(`/workflow-runs/${id}/reassign`, { method: "POST", body: JSON.stringify({ worker }) }); clearError("reassign-error"); render(); }
     catch (err) { showError("reassign-error", err.message); }
+  };
+  const retry = $("#retry-run");
+  if (retry) retry.onclick = async () => {
+    try { await api(`/workflow-runs/${id}/retry`, { method: "POST" }); clearError("retry-error"); render(); }
+    catch (err) { showError("retry-error", err.message); }
   };
   const btn = $("#cancel-run");
   if (btn) btn.onclick = async () => { if (confirm(t("run.cancel_confirm"))) { await api(`/workflow-runs/${id}/cancel`, { method: "POST" }); render(); } };

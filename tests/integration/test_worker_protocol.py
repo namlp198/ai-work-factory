@@ -240,3 +240,29 @@ def test_model_errors_are_reported_as_retryable_failures(platform, tmp_path, dem
     result = executor.execute("job-1", payload)
     assert result["status"] == "failed" and result["retryable"] is True and "timeout" in result["error"]
     assert not (tmp_path / "ws" / "job-1").exists()  # workspace cleaned up
+
+
+TWO_STAGES = {
+    "id": "two-stages", "version": "1", "inputs": ["objective", "repository"],
+    "stages": [{"id": "api", "role": "engineering.developer"}, {"id": "ui", "role": "engineering.developer"}],
+}
+
+
+def test_retrying_a_failed_run_revives_the_tasks_its_failure_cancelled(client, platform, orchestrator, worker,
+                                                                       repository_config, tmp_path, monkeypatch):
+    _use_workflow(platform, TWO_STAGES)
+    key = "sk-ant-api03-" + "x" * 30  # a real key format: the critic blocks the run
+    _script(tmp_path, monkeypatch, {"engineering.developer": _dev_turns({"src/config.py": f"KEY = '{key}'\n"})})
+    run_id = _start(client, repository_config, workflow_id="two-stages")
+    failed = _drive(client, orchestrator, worker, run_id)
+    assert failed["status"] == "FAILED" and "credential-like material in src/config.py" in failed["error"]
+    states = sorted(t["state"] for t in client.get(f"/api/v1/workflow-runs/{run_id}/tasks").json())
+    assert states == ["CANCELLED", "FAILED"]
+
+    _script(tmp_path, monkeypatch, {"engineering.developer": [
+        {**_dev_turns({f"src/{name.lower()}.py": "KEY = None\n"})[0], "when": {"title_contains": name}}
+        for name in ("Api", "Ui")]})
+    assert client.post(f"/api/v1/workflow-runs/{run_id}/retry").status_code == 200
+    assert _drive(client, orchestrator, worker, run_id)["status"] == "COMPLETED"
+    assert {t["state"] for t in client.get(f"/api/v1/workflow-runs/{run_id}/tasks").json()} == {"DONE"}
+    assert client.post(f"/api/v1/workflow-runs/{run_id}/retry").status_code == 409

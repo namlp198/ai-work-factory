@@ -1105,10 +1105,23 @@ có `on_changes_required: {goto: development, max_iterations: N}` sẽ tăng ite
 findings và report. Quá `max_iterations` → run `FAILED` với lý do rõ ràng.
 
 **Retry task do Critic:** output thiếu section, JSON sai schema, build/test fail, không có thay đổi…
-→ `CHANGES_REQUIRED` → task chạy lại với danh sách lỗi. Critic `BLOCK` (secret trong output, liên tục
+→ `CHANGES_REQUIRED` → task chạy lại với danh sách lỗi. Critic `BLOCK` (khoá thật trong output, liên tục
 vượt quyền) → dừng run và chờ người.
 
-**Retry thủ công:** `POST /api/v1/tasks/{id}/retry` (task `FAILED` → `READY`, run tiếp tục).
+**Secret trong diff:** Critic đọc diff theo từng dòng.
+
+| Trong diff | Kết quả |
+|---|---|
+| Dòng **bị xoá** có mật khẩu (ví dụ gỡ `AdminPassword` khỏi `appsettings.json`) | Bỏ qua: đó là việc sửa lỗi, không phải rò rỉ |
+| Mật khẩu mẫu trong dấu nháy, ở **file test** (`tests/`, `*Tests.cs`, `test_*.py`…) | Ghi chú `MINOR`, task vẫn qua |
+| Mật khẩu hoặc token trong dấu nháy, ở **code chạy thật** | `MAJOR`: task được gửi lại, kèm yêu cầu đọc giá trị từ cấu hình hoặc biến môi trường |
+| Khoá có định dạng thật (`sk-ant-…`, `AIza…`, `ghp_…`, private key) hoặc giá trị secret của máy | `BLOCK`: run dừng |
+
+Trong artifact và log, khoá thật hiện thành `[REDACTED]`, giá trị trong dấu nháy hiện thành `[REDACTED-VALUE]`.
+
+**Chạy lại run đã fail:** trang run có nút **Chạy lại run**. Task đã fail chạy lại, rồi tới các task bị huỷ
+theo nó. Các task đã xong giữ nguyên kết quả và code đã tích hợp. API: `POST /api/v1/workflow-runs/{id}/retry`,
+hoặc `POST /api/v1/tasks/{id}/retry` cho một task. Run đã **huỷ** (Cancel) thì không chạy lại được.
 **Huỷ:** `POST /api/v1/workflow-runs/{id}/cancel`.
 
 ### Thông báo và duyệt từ điện thoại (Telegram, WhatsApp, Zalo)
@@ -1457,6 +1470,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 | POST | `/workflow-runs/{id}/reassign` | `{worker}` chuyển run sang máy đó; `{}` để orchestrator chọn lại |
 | POST | `/workflow-runs/{id}/cancel` | huỷ |
 | GET | `/workflow-runs/{id}/tasks`, `/tasks/{id}` | task, agent run, job, approval, artifact |
+| POST | `/workflow-runs/{id}/retry` | chạy lại run FAILED (task fail và các task bị huỷ theo nó) |
 | POST | `/tasks/{id}/retry` | retry task FAILED |
 | GET | `/jobs/{id}`, `/jobs/{id}/logs` | job + log worker |
 | GET | `/projects/{id}/artifacts?run_id=&type=` | artifact |
@@ -1505,7 +1519,8 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | Developer fail `MISSING_ACCEPTANCE_EVIDENCE` | Agent không chạy `build.run`/`test.run`, hoặc lệnh chưa cấu hình. |
 | `COMPLETION_RULE_FAILED` | Build/test thật sự fail — xem log job và `test_evidence`. |
 | `NO_CHANGES` | Developer không tạo thay đổi nào (thường do `fs.replace` không khớp). |
-| `critic blocked: ... credential-like material` | Diff/output chứa secret. Gỡ secret khỏi repo/thay đổi, dùng biến môi trường. |
+| `critic blocked: ... credential-like material in <file>` | Diff thêm một khoá có định dạng thật vào `<file>`. Gỡ khoá khỏi repo, dùng biến môi trường, rồi bấm **Chạy lại run**. Bản cũ (trước 29/10/2026) chặn cả việc xoá mật khẩu cũ và mật khẩu mẫu trong test: cập nhật máy trung tâm rồi bấm **Chạy lại run**. |
+| Run fail, các task còn lại `CANCELLED` | Bấm **Chạy lại run** trên trang run: task fail chạy lại, các task bị huỷ chạy tiếp. |
 | `INTEGRATION_CONFLICT` | Hai task song song sửa cùng chỗ; Planner nên đặt `depends_on`. |
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |
 | `model provider rejected the request` | Thiếu/sai `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trên worker. |

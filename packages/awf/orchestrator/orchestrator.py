@@ -308,12 +308,23 @@ class Orchestrator:
             raise OrchestratorError("run was cancelled")
         task.max_attempts = max(task.max_attempts, task.attempt + 1)
         self._set_state(task, TaskState.READY)
+        revived = []
         if run.status == RunStatus.FAILED:
             run.status = RunStatus.RUNNING
             run.error = None
             run.finished_at = None
+            # Only closing a run cancels tasks, so in a failed run the failure cancelled them: they start again
+            # (CANCELLED is otherwise final), and the other failed tasks are retried too, or the run fails at once.
+            for other in self._current_tasks(session, run):
+                if other.state == TaskState.CANCELLED:
+                    other.state = TaskState.NEW
+                    revived.append(other.task_key)
+                elif other.state == TaskState.FAILED:
+                    other.max_attempts = max(other.max_attempts, other.attempt + 1)
+                    self._set_state(other, TaskState.READY)
+                    revived.append(other.task_key)
         audit.record(session, EventType.TASK_RETRY, actor_type="human", actor_id=actor, project_id=run.project_id,
-                     workflow_run_id=run.id, task_id=task.id, payload={"manual": True})
+                     workflow_run_id=run.id, task_id=task.id, payload={"manual": True, "revived": revived})
 
     def resolve_approval(self, session: Session, approval: Approval, approved: bool, actor: str,
                          comment: str | None = None) -> Approval:
