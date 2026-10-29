@@ -21,6 +21,13 @@ class RouteRequest:
     budget_remaining_usd: Decimal | None = None
     # Preferred provider for the run (e.g. "google"); None: the configured default_provider.
     provider: str | None = None
+    # How hard the work is (ADR-015): 0 normal, 1 hard, 2 very hard; `level_reason` says why.
+    level: int = 0
+    level_reason: str = ""
+
+
+LEVEL_NAMES = {0: "normal", 1: "hard", 2: "very hard"}
+COMPLEXITY_LEVELS = {"normal": 0, "hard": 1, "very_hard": 2}
 
 
 @dataclass
@@ -85,6 +92,15 @@ class ModelRouter:
         if model_class not in self.classes:
             raise ValueError(f"no route configured for model class '{model_class}'")
 
+        level = max(0, min(2, req.level))
+        escalation = self.config.get("escalation") or {}
+        promoted = (escalation.get("promote") or {}).get(model_class) if level >= 2 else None
+        if promoted and promoted in self.classes and model_class != "LOCAL_PRIVATE":
+            reasons.append(f"{LEVEL_NAMES[level]} ({req.level_reason or 'run complexity'}) -> {promoted}")
+            model_class, steps = promoted, 1
+        else:
+            steps = level
+
         entry = dict(self.classes[model_class])
         chosen = req.provider or self.default_provider
         if chosen not in self.providers():
@@ -97,12 +113,45 @@ class ModelRouter:
             reasons.append(f"provider {chosen}")
         provider = entry.pop("provider")
         model = entry.pop("model")
+        if steps and entry.get("effort"):
+            ladder: list[str] = escalation.get("effort_ladder") or ["low", "medium", "high", "xhigh"]
+            top = (escalation.get("max_effort") or {}).get(provider, ladder[-1])
+            base = entry["effort"]
+            if base in ladder and top in ladder:
+                raised = ladder[min(ladder.index(base) + steps, max(ladder.index(top), ladder.index(base)))]
+                if raised != base:
+                    entry["effort"] = raised
+                    if not promoted:
+                        reasons.append(f"{LEVEL_NAMES[level]} ({req.level_reason or 'run complexity'})")
+                    reasons.append(f"effort {base} -> {raised}")
         if self.provider_override and model_class != "LOCAL_PRIVATE":
             reasons.append(f"provider override '{self.provider_override}'")
             provider = self.provider_override
             model = "scripted" if self.provider_override == "scripted" else model
         return ModelRoute(model_class=model_class, provider=provider, model=model, params=entry,
                           reason="; ".join(reasons))
+
+    def effort_gate(self, route: ModelRoute) -> str | None:
+        """The effort of `route` that needs a human's approval before it runs (ADR-015), or None. DeepSeek-style
+        `extra.reasoning_effort` counts as effort too."""
+        needs = set((self.config.get("escalation") or {}).get("approval_required") or [])
+        for value in (route.params.get("effort"), (route.params.get("extra") or {}).get("reasoning_effort")):
+            if value in needs:
+                return str(value)
+        return None
+
+    def cap_effort(self, route: ModelRoute) -> str:
+        """Lower `route` to the highest effort that needs no approval; returns the effort it now runs at."""
+        escalation = self.config.get("escalation") or {}
+        needs = set(escalation.get("approval_required") or [])
+        ladder = escalation.get("effort_ladder") or ["low", "medium", "high", "xhigh"]
+        allowed = [e for e in ladder if e not in needs] or ["low"]
+        if route.params.get("effort") in needs:
+            route.params["effort"] = allowed[-1]
+        extra = route.params.get("extra") or {}
+        if extra.get("reasoning_effort") in needs:
+            route.params["extra"] = {k: v for k, v in extra.items() if k != "reasoning_effort"}  # provider default
+        return str(route.params.get("effort") or "default")
 
     def _downgrade(self, model_class: str) -> str:
         chain: list[str] = self.config.get("downgrade_chain", [])

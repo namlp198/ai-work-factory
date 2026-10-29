@@ -35,6 +35,22 @@ def _fresh_postgres(url: str) -> None:
     engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _no_machine_engine_settings(monkeypatch):
+    """A developer machine is often a worker too: its .env engine settings (AWF_CLAUDE_CODE_AUTH=login, a real
+    `claude` path...) must not change what the tests see. They are set empty (= not configured) rather than removed,
+    because the .env loader never overrides a variable that exists."""
+    prefixes = ("AWF_CLAUDE_CODE_", "AWF_CODEX_", "AWF_ANTIGRAVITY_", "AWF_QWEN_CODE_", "AWF_KIMI_CODE_",
+                "AWF_DEEPSEEK_HARNESS_", "AWF_MINIMAX_CODE_")
+    env_file = ROOT / ".env"
+    names = {n for n in os.environ if n.startswith(prefixes)}
+    if env_file.is_file():
+        names |= {ln.split("=", 1)[0].strip() for ln in env_file.read_text(encoding="utf-8").splitlines()
+                  if "=" in ln and ln.strip().startswith(prefixes)}
+    for name in names:
+        monkeypatch.setenv(name, "")
+
+
 @pytest.fixture
 def platform(tmp_path, monkeypatch):
     from awf.platform import Platform

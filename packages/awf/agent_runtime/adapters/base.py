@@ -66,7 +66,7 @@ class ModelError(RuntimeError):
     def __init__(self, message: str, retryable: bool = True, code: str | None = None):
         super().__init__(message)
         self.retryable = retryable
-        self.code = code  # MODEL_BILLING (no credit or quota left), MODEL_TIMEOUT, or None
+        self.code = code  # MODEL_BILLING (no credit or quota left), MODEL_REJECTED, MODEL_TIMEOUT, or None
 
 
 # One request may take this long; the agent's own deadline (contract timeout) bounds the whole job.
@@ -74,6 +74,7 @@ REQUEST_TIMEOUT_S = 240.0
 MAX_ATTEMPTS = 4
 BILLING = "MODEL_BILLING"
 TIMEOUT = "MODEL_TIMEOUT"
+REJECTED = "MODEL_REJECTED"  # bad key, no access to the model, unknown model
 
 
 def billing_error(provider: str, message: str) -> ModelError:
@@ -140,7 +141,8 @@ class ModelSession(ABC):
                 self.backoff(retry_after(resp, 2 ** attempt), f"{message} (attempt {attempt}/{MAX_ATTEMPTS})")
                 continue
             if kind == "fail":
-                raise ModelError(f"model provider rejected the request: {message}", retryable=False)
+                code = REJECTED if resp.status_code in (401, 403, 404) else None
+                raise ModelError(f"model provider rejected the request: {message}", retryable=False, code=code)
             raise ModelError(message, retryable=True)
         raise ModelError(f"{name} API unavailable", retryable=True)
 

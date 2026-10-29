@@ -96,7 +96,8 @@ class JobExecutor:
             try:
                 adapter = self.adapter_factory(route["provider"])
             except ModelError as exc:
-                return {"status": "failed", "error": str(exc), "retryable": exc.retryable}
+                return {"status": "failed", "error": str(exc), "retryable": exc.retryable,
+                        "error_code": exc.code or "MODEL_REJECTED"}
         meta = {
             "role": agent["role"],
             "task": task,
@@ -168,13 +169,14 @@ class JobExecutor:
             auth = claude_code.auth_mode()
         elif engine == codex.ENGINE:
             base, hint = self.codex_bin or codex.codex_bin(), "Codex (npm i -g @openai/codex) or set AWF_CODEX_BIN"
+            auth = codex.auth_mode()
         else:
             spec = cli_engines.SPECS[engine]
             base = self.engine_bins.get(engine) or cli_engines.engine_bin(engine)
             hint = f"{spec['install']}, or set {spec['bin_env']}"
         if not base:
             return AgentResult(status="failed", error=f"{engine} is not installed on this worker (install {hint})",
-                               retryable=False), usage
+                               retryable=False, error_code="ENGINE_MISSING"), usage
         writes = bool(payload.get("workspace", {}).get("write"))
         structured = needs_result_block(contract)
 
@@ -198,7 +200,8 @@ class JobExecutor:
         head_before = _head(ws)
         params = route.get("params") or {}
         timeout = contract.timeout_policy.seconds
-        model = claude_code.login_model(route["model"]) if auth == claude_code.LOGIN else route["model"]
+        model = claude_code.login_model(route["model"]) if engine == claude_code.ENGINE and auth == claude_code.LOGIN \
+            else route["model"]
 
         def invoke(task_text: str) -> claude_code.EngineResult:
             if engine == claude_code.ENGINE:
@@ -231,7 +234,8 @@ class JobExecutor:
             # Codex reads the repository's AGENTS.md itself; the role prompt and rules lead the stdin prompt.
             prompt = f"{payload['agent']['system_prompt']}{rules}\n\n# Your task\n\n{task_text}"
             argv = codex.build_argv(base, model=route["model"], effort=params.get("effort"))
-            return claude_code.run_engine(argv, prompt, ws.repo, timeout, log, env=codex.engine_env(ws.root / "codex-home"),
+            return claude_code.run_engine(argv, prompt, ws.repo, timeout, log,
+                                          env=codex.engine_env(ws.root / "codex-home", auth or codex.API_KEY),
                                           parser=codex.CodexParser(log), name=codex.ENGINE)
 
         task_text = payload["context"]["user_message"]
@@ -258,7 +262,7 @@ class JobExecutor:
             task_text = (f"{payload['context']['user_message']}\n\n# Your previous answer was rejected\n\n"
                          + "\n".join(f"- {p}" for p in problems)
                          + "\n\nDo the task again and end with one complete, corrected `awf-result` block.")
-        if engine in SIGNED_IN_ENGINES or auth == claude_code.LOGIN:
+        if engine in SIGNED_IN_ENGINES or auth == "login":  # Claude Code or Codex on a plan
             usage.update({"billing": "subscription", "cost_usd": 0.0})  # paid by the plan, not per token
         if head_before and _head(ws) != head_before:
             res.status, res.retryable = "failed", False

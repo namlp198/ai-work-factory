@@ -168,7 +168,7 @@ def test_engine_applies_only_where_the_profile_allows_it(router, platform):
     assert _route(router, platform, "product.analyst", "claude-code")[0] == "native"
     # A Gemini run still develops with Claude Code, on Claude.
     engine, route = _route(router, platform, DEVELOPER, "claude-code", provider="google")
-    assert (engine, route.provider, route.model) == ("claude-code", "anthropic", "claude-opus-5-5")
+    assert (engine, route.provider, route.model) == ("claude-code", "anthropic", "claude-sonnet-5-5")
     # Restricted code never goes to a hosted engine, and the offline provider keeps the native runtime.
     assert _route(router, platform, DEVELOPER, "claude-code", confidentiality="restricted")[0] == "native"
     assert _route(platform.router, platform, DEVELOPER, "claude-code")[0] == "native"  # scripted override

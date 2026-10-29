@@ -370,7 +370,7 @@ Factory dùng model theo **hai tầng**:
 |---|---|---|---|---|---|
 | Claude (Anthropic) | `anthropic` (mặc định) | `ANTHROPIC_API_KEY` | platform.claude.com | **Claude Code** (`claude-code`) | **Có** (`AWF_CLAUDE_CODE_AUTH=login`): đăng nhập Claude Pro/Max một lần; hoặc API key |
 | Gemini (Google) | `google` | `GEMINI_API_KEY` | aistudio.google.com | **Antigravity CLI** (`antigravity`) | **Có**: đăng nhập Google một lần, dùng quota gói Google AI Pro/Ultra; hoặc API key |
-| ChatGPT (OpenAI) | `openai` | `OPENAI_API_KEY` | platform.openai.com | **Codex** (`codex`) | Không: chỉ API key |
+| ChatGPT (OpenAI) | `openai` | `OPENAI_API_KEY` | platform.openai.com | **Codex** (`codex`) | **Có** (`AWF_CODEX_AUTH=login`): `codex login` bằng tài khoản ChatGPT Plus/Pro; hoặc API key |
 | Qwen (Alibaba) | `qwen` | `DASHSCOPE_API_KEY` | modelstudio.console.alibabacloud.com | **Qwen Code** (`qwen-code`) | Không: chỉ API key |
 | Kimi (Moonshot AI) | `kimi` | `MOONSHOT_API_KEY` | platform.kimi.ai | **Kimi Code** (`kimi-code`) | Đăng nhập Kimi Code bằng API key (`/login`) một lần |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | platform.deepseek.com | **DeepSeek Harness** (`deepseek-harness`) | Không: chỉ API key |
@@ -427,15 +427,43 @@ Khác với runtime native:
 - Trong chế độ `login`, Claude Code không đọc settings, quyền và MCP server của tài khoản bạn trên máy worker
   (`--setting-sources local`, `--strict-mcp-config`), nên các quyền bạn tự cấp cho Claude Code không áp vào job.
 
-Mặc định `config/model-routing.yaml` định tuyến theo model class:
+### Model và effort cho từng role (ADR-015)
 
-| Class | Model | Dùng cho |
-|---|---|---|
-| FAST | `claude-haiku-4-5` | việc cơ học (log summarization, refactor nhỏ) |
-| BALANCED | `claude-sonnet-5-5` (effort medium) | analyst, test engineer, QA |
-| REASONING | `claude-opus-5-5` (effort high) | architect, planner, code reviewer |
-| CODE_SPECIALIST | `claude-opus-5-5` (effort high) | developer |
-| LOCAL_PRIVATE | (chưa có) | project `restricted` → fail an toàn |
+Nguyên tắc: model mạnh chỉ dùng cho **kiến trúc và lập kế hoạch**, ở effort medium. Viết code, test, review, QA
+dùng model cân bằng. Effort high hoặc xhigh chỉ dùng cho việc khó, và **luôn chờ bạn duyệt** trước.
+
+| Role | Class | Bình thường | Khó | Rất khó |
+|---|---|---|---|---|
+| architect, planner | REASONING | `claude-opus-5-5` medium | Opus high | Opus xhigh |
+| developer | CODE_SPECIALIST | `claude-sonnet-5-5` medium | Sonnet high | Opus high |
+| code reviewer, analyst, QA, test engineer | BALANCED | `claude-sonnet-5-5` medium | Sonnet high | Opus high |
+| việc cơ học (tóm tắt log, refactor nhỏ) | FAST | `claude-haiku-4-5` | | |
+| project `restricted` | LOCAL_PRIVATE | (chưa có model) → fail an toàn | | |
+
+Với Gemini: architect `gemini-4-argon` medium, developer và các role khác `gemini-3.8-flash` medium. Effort của
+Gemini dừng ở high. Với ChatGPT: `gpt-6.1-sol`, medium cho architect và developer, low cho các role khác.
+
+**Độ khó** của một run (dashboard → *Complexity*, API `"complexity"`, mặc định cho project ở *Where it runs*):
+
+- *Bình thường* (mặc định): như cột "Bình thường". Hợp với hầu hết việc.
+- *Khó*: mọi role tăng effort một nấc.
+- *Rất khó*: các role thường chuyển sang model mạnh (Opus), architect và planner lên xhigh.
+- Một task bị trả về (reviewer, Critic hoặc bạn yêu cầu sửa, hoặc fix loop) tự leo **một mức** ở lần chạy sau.
+  Lỗi hạ tầng (timeout, mất worker) không làm leo mức.
+
+**Duyệt effort cao.** Trước khi một task chạy với effort `high` hoặc `xhigh`, dù model nào hay role nào, run tạo
+một yêu cầu duyệt **`approve_effort`** (trang **Approvals**, Telegram...). Yêu cầu ghi rõ task, role, model, effort
+và lý do (ví dụ "hard (fix loop 2); effort medium -> high"). Task đứng ở `APPROVAL_REQUIRED` cho tới khi bạn trả lời:
+
+- **Approve:** task chạy đúng model và effort đó.
+- **Reject:** task vẫn chạy, ở effort cao nhất không cần duyệt (medium). Run không bị dừng.
+- Mỗi tổ hợp model + effort chỉ hỏi một lần cho mỗi task. Nếu sau đó task leo lên effort cao hơn, bạn được hỏi lại.
+
+Danh sách effort cần duyệt nằm ở `escalation.approval_required` trong `config/model-routing.yaml`. Antigravity,
+Qwen Code, Kimi Code, DeepSeek Harness và MiniMax Code tự chọn mức suy luận, nên không có effort để duyệt.
+
+**Xem task đang chạy model gì:** trang run → bảng task → cột **Model · effort** (di chuột để xem lý do định tuyến).
+Chi tiết từng lần chạy: bấm vào task → *Agent run* → model, class, lý do định tuyến.
 
 ### Lấy API key và đặt vào worker
 
@@ -655,6 +683,82 @@ trên kết quả đó; worker tự commit. Engine tự commit thì job fail (`E
 
 #### Claude Code (`coding_engine: claude-code`)
 
+#### Cài engine trên worker: từng bước
+
+Làm trên **từng máy worker** sẽ chạy engine, bằng **đúng tài khoản hệ điều hành chạy worker**. Worker chạy dưới
+dạng Scheduled Task hay systemd thì đăng nhập CLI bằng chính user đó: CLI lưu phiên đăng nhập trong thư mục của
+user, và worker chạy bằng user khác sẽ không thấy phiên đó.
+
+**Các bước chung cho mọi engine:**
+
+1. Cài CLI (bảng dưới). Mở **cửa sổ lệnh mới** để PATH có lệnh vừa cài, rồi kiểm tra bằng `<lệnh> --version`.
+2. Đăng nhập (gói thuê bao) hoặc đặt API key (bảng dưới).
+3. Trong `.env` của worker: đặt `AWF_<ENGINE>_BIN=<đường dẫn đầy đủ tới lệnh>`. Không bắt buộc, nhưng **nên làm**,
+   vì worker chạy dưới dạng dịch vụ thường giữ PATH cũ. Xem đường dẫn bằng `where <lệnh>` (Windows) hoặc
+   `which <lệnh>` (Linux). Trên Windows, lệnh cài bằng npm là file `.cmd` trong `%APPDATA%\npm`.
+4. Khởi động lại worker (`.\scripts\install-task.ps1 -Restart`, `sudo systemctl restart awf`, hoặc dừng và chạy lại
+   `awf start`).
+5. Dashboard → **Workers**: máy phải có capability của engine. Không thấy thì chạy `awf doctor` trên máy đó.
+6. Chạy thử: project → **Coding engine** = engine đó, **Engine dùng cho** = *Chỉ viết code* (thử nhanh) hoặc
+   *Mọi role* (cả run qua engine, dùng gói thuê bao).
+
+| Engine | Cài (Windows PowerShell / Linux) | Đăng nhập hoặc key | `.env` của worker | Capability |
+|---|---|---|---|---|
+| **Claude Code** | `irm https://claude.ai/install.ps1 \| iex` / `curl -fsSL https://claude.ai/install.sh \| bash` | Gói Claude Pro/Max: chạy `claude`, chọn đăng nhập bằng tài khoản Claude, xong gõ `/exit`. API key: `ANTHROPIC_API_KEY` | `AWF_CLAUDE_CODE_AUTH=login` (gói) hoặc `api-key`; `AWF_CLAUDE_CODE_BIN=C:\Users\<user>\.local\bin\claude.exe`; tuỳ chọn `AWF_CLAUDE_CODE_MODEL=sonnet` | `claude-code` (+ `claude-code-login`) |
+| **Codex** (ChatGPT) | Cài Node.js LTS, rồi `npm i -g @openai/codex` | Gói ChatGPT Plus/Pro: `codex login`, đăng nhập bằng tài khoản ChatGPT trong trình duyệt. API key: `OPENAI_API_KEY` | `AWF_CODEX_AUTH=login` (gói) hoặc `api-key`; `AWF_CODEX_BIN=%APPDATA%\npm\codex.cmd` | `codex` (+ `codex-login`) |
+| **Antigravity** (Gemini) | Bộ cài Antigravity CLI ở antigravity.google/docs/getting-started (lệnh `agy`) | Gói Google AI Pro/Ultra: chạy `agy`, đăng nhập bằng tài khoản Google. Hoặc API key Gemini | `AWF_ANTIGRAVITY_BIN=<đường dẫn agy>`; tuỳ chọn `AWF_ANTIGRAVITY_MODEL` | `antigravity` |
+| **Qwen Code** | Node.js 20+, rồi `npm i -g @qwen-code/qwen-code` (lệnh `qwen`) | API key DashScope (Model Studio): `DASHSCOPE_API_KEY` | `AWF_QWEN_CODE_BIN`; tuỳ chọn `AWF_QWEN_CODE_SANDBOX=1` (cần Docker/Podman) | `qwen-code`, `llm-qwen` |
+| **Kimi Code** | Bộ cài ở code.kimi.com (lệnh `kimi`) | Chạy `kimi`, gõ `/login`, dán API key Kimi (platform.kimi.ai) | `AWF_KIMI_CODE_BIN`; tuỳ chọn `AWF_KIMI_CODE_MODEL` | `kimi-code` |
+| **DeepSeek Harness** | Node.js 20+, rồi `npm i -g @deepseek-ai/dsh` (lệnh `dsh`) | `DEEPSEEK_API_KEY` (platform.deepseek.com) | `AWF_DEEPSEEK_HARNESS_BIN` | `deepseek-harness`, `llm-deepseek` |
+| **MiniMax Code** | Node.js 22.19+, rồi `npm i -g @minimax-ai/code` (lệnh `mcode`) | `mcode login --region global`, hoặc key qua `mcode provider set-minimax-key` | `AWF_MINIMAX_CODE_BIN`; tuỳ chọn `AWF_MINIMAX_CODE_MODEL` | `minimax-code` |
+
+**Claude Code (Windows), chi tiết:**
+
+1. PowerShell (không cần quyền admin): `irm https://claude.ai/install.ps1 | iex`. Bộ cài đặt `claude.exe` vào
+   `C:\Users\<user>\.local\bin` và thêm thư mục đó vào PATH của user.
+2. Mở PowerShell **mới**: `claude --version`.
+3. `claude` → chọn **Claude account with subscription** → trình duyệt mở trang đăng nhập → đăng nhập tài khoản
+   Claude Pro/Max → quay lại cửa sổ lệnh, thấy lời chào → `/exit`. Muốn dùng API key thay gói thì bỏ bước này,
+   đặt `ANTHROPIC_API_KEY` trong `.env`.
+4. `.env` của worker:
+   ```text
+   AWF_CLAUDE_CODE_AUTH=login
+   AWF_CLAUDE_CODE_BIN=C:\Users\<user>\.local\bin\claude.exe
+   ```
+   `AWF_CLAUDE_CODE_AUTH=login` **bắt buộc** khi `.env` có `ANTHROPIC_API_KEY`, kể cả key hết credit: thiếu dòng
+   này, engine dùng key.
+5. Khởi động lại worker. Trang **Workers** phải thấy `claude-code` và `claude-code-login`. Từ đó, form tạo project
+   tự gợi ý *Coding engine = Claude Code, Engine dùng cho = Mọi role*.
+
+**Codex (Windows), chi tiết:**
+
+1. Cài Node.js LTS (nodejs.org). Mở PowerShell mới: `node --version`.
+2. `npm i -g @openai/codex`, rồi `codex --version`.
+3. Gói ChatGPT: `codex login` → trình duyệt mở → đăng nhập tài khoản ChatGPT → cửa sổ lệnh báo đăng nhập xong.
+   Phiên được lưu trong `C:\Users\<user>\.codex`. Máy không mở được trình duyệt (server Linux): dùng
+   `codex login --device-auth` rồi nhập mã trên máy khác.
+4. `.env` của worker:
+   ```text
+   AWF_CODEX_AUTH=login
+   AWF_CODEX_BIN=C:\Users\<user>\AppData\Roaming\npm\codex.cmd
+   ```
+5. Windows: Codex chạy lệnh trong sandbox của Windows. Nên dùng Windows 11; máy công ty có thể chặn bước cài
+   sandbox lần đầu.
+6. Khởi động lại worker: phải thấy `codex` và `codex-login`.
+
+**Antigravity (Gemini), chi tiết:**
+
+1. Tải và cài Antigravity CLI theo antigravity.google/docs/getting-started. Mở cửa sổ lệnh mới: `agy --version`.
+2. Gói Google AI Pro/Ultra: chạy `agy` → đăng nhập bằng tài khoản Google của gói → thoát. Quota tính theo tài
+   khoản, chung với Antigravity bạn dùng trên máy cá nhân.
+3. `.env` của worker: `AWF_ANTIGRAVITY_BIN=<kết quả của where agy>`. Muốn ghim model:
+   `AWF_ANTIGRAVITY_MODEL=<tên model>`; không đặt thì Antigravity tự chọn.
+4. Khởi động lại worker: phải thấy `antigravity`.
+5. Lưu ý: Antigravity tự chọn mức suy luận, nên mục **Độ khó** và cổng duyệt effort không áp dụng cho nó.
+
+Gặp lỗi khi chạy: mở trang run → khối **Đang làm gì**, hoặc nút **Lỗi** ở đầu trang (nhật ký lỗi, có nút Sao
+chép), rồi tra bảng ở mục 19.
+
 #### Claude Code (`coding_engine: claude-code`)
 
 Mặc định Developer chạy trên runtime native của factory: dùng các tool có kiểu (`fs.read`, `fs.replace`,
@@ -717,21 +821,26 @@ Chuẩn bị máy worker:
 
 1. Cài Node.js (bản LTS mới), rồi cài Codex CLI: `npm i -g @openai/codex`. Lệnh `codex` phải có trên PATH, hoặc đặt
    `AWF_CODEX_BIN=<đường dẫn>` trong `.env`.
-2. Đặt `OPENAI_API_KEY` trong `.env` của worker. Engine chỉ dùng API key (worker truyền key cho Codex qua
-   `CODEX_API_KEY`), **không dùng đăng nhập ChatGPT** đã lưu trên máy. Chi phí tính vào tài khoản API.
+2. Chọn cách trả tiền bằng `AWF_CODEX_AUTH` trong `.env` của worker:
+   - `api-key` (mặc định khi có `OPENAI_API_KEY`): worker truyền key cho Codex qua `CODEX_API_KEY`, kèm một
+     `CODEX_HOME` trống cho mỗi job. Chi phí tính vào tài khoản API;
+   - `login` (mặc định khi không có key): Codex dùng tài khoản ChatGPT (gói Plus/Pro) đã đăng nhập bằng
+     `codex login`, đọc từ `CODEX_HOME` của user chạy worker (mặc định `~/.codex`). Engine vẫn chạy
+     `--ignore-user-config --ignore-rules --ephemeral`, nên chỉ dùng phần đăng nhập, không dùng cấu hình hay lịch
+     sử của bạn. Chi phí ghi là 0.
 3. Windows: Codex chạy lệnh trong sandbox riêng của Windows. Nên dùng Windows 11; Windows 10 bản mới (1809 trở
    lên) chỉ được hỗ trợ ở mức "cố gắng". Một số máy công ty chặn bước cài sandbox. Linux/Jetson không cần gì thêm.
-4. Khởi động lại worker. `awf doctor` và trang **Workers** phải thấy capability `codex` và `llm-openai`. Run dùng
-   engine Codex chỉ được giao cho máy có đủ hai capability này.
+4. Khởi động lại worker. `awf doctor` và trang **Workers** phải thấy capability `codex` (thêm `codex-login` ở chế
+   độ `login`). Run dùng engine Codex chỉ được giao cho máy có capability này.
 
 Worker làm gì trong một job development:
 
 - Clone repo, rồi chạy `codex exec --json` trong thư mục đó. Prompt (role, quy tắc platform, task, context) đi qua
-  stdin. Model và effort lấy từ bảng `providers.openai`, class `CODE_SPECIALIST` (`gpt-6.1-sol`, effort high).
+  stdin. Model và effort lấy từ bảng `providers.openai`, class `CODE_SPECIALIST` (`gpt-6.1-sol`, effort medium).
 - Codex chạy mọi lệnh trong **sandbox của hệ điều hành** (`--sandbox workspace-write`): chỉ ghi được trong
   workspace, **không có mạng**, không có web search, `approval_policy=never` (không chờ ai duyệt).
-- Codex nhận `CODEX_HOME` trống riêng cho mỗi job cùng `--ignore-user-config --ignore-rules --ephemeral`: không
-  dùng đăng nhập, cấu hình, rule hay lịch sử của máy worker. Lệnh nó chạy chỉ thấy môi trường tối thiểu
+- Codex chạy với `--ignore-user-config --ignore-rules --ephemeral`: không dùng cấu hình, rule hay lịch sử của máy
+  worker. Ở chế độ `api-key`, mỗi job còn có `CODEX_HOME` trống riêng. Lệnh nó chạy chỉ thấy môi trường tối thiểu
   (`shell_environment_policy.inherit=core`), không thấy API key. Codex tự đọc `AGENTS.md` của repo (nếu có).
 - Engine xong việc thì **worker tự chạy lại build/test/lint**, Critic chấm trên kết quả đó. Engine tự commit thì
   job fail với `ENGINE_TOUCHED_GIT`.
@@ -739,8 +848,7 @@ Worker làm gì trong một job development:
 
 Khác Claude Code: Codex **không giới hạn lệnh nào được chạy** bên trong sandbox (Claude Code chỉ cho chạy đúng
 các lệnh build/test/lint đã cấu hình). Giới hạn của Codex là sandbox hệ điều hành: ghi trong workspace, không mạng.
-Một run Claude hoặc Gemini có bật engine Codex vẫn develop bằng Codex trên model OpenAI, nên máy cần cả key của
-nhà cung cấp chính lẫn `OPENAI_API_KEY`.
+Một run Claude hoặc Gemini có bật engine Codex vẫn develop bằng Codex trên model OpenAI.
 
 #### Antigravity CLI cho Gemini (`coding_engine: antigravity`)
 
@@ -852,13 +960,14 @@ soát chặt, dùng `claude-code` hoặc `codex`.
 | Trang | Nội dung |
 |---|---|
 | Overview | card số liệu (run đang chạy, chờ duyệt, worker online, chi phí, task lỗi, project; card đổi màu khi cần bạn xử lý), yêu cầu đang chờ duyệt, run đang chạy (tiến độ, stage hiện tại, máy), run vừa kết thúc |
-| Projects | danh sách (project đã lưu trữ nằm trong mục *Archived projects*), tạo project, chi tiết project, bắt đầu run (máy, model, coding engine, **Engine dùng cho**: chỉ viết code hoặc mọi role) |
+| Projects | danh sách (project đã lưu trữ nằm trong mục *Archived projects*), tạo project (platform, engine, engine dùng cho được **gợi ý sẵn** theo các máy đang online), chi tiết project, bắt đầu run (máy, model, coding engine, **Engine dùng cho**, **Độ khó**; để trống = mặc định của project) |
 | Project → Settings | sửa tên, URL repository, base branch, lệnh build/test/lint, confidentiality, budget (để trống = không giới hạn), mô tả. Run đã bắt đầu giữ cấu hình lúc nó bắt đầu |
 | Project → Danger zone | project **chưa có run**: *Delete project* (xoá hẳn, audit vẫn ghi lại). Project **đã có run**: *Archive project* (ẩn khỏi danh sách, chặn run mới; run, artifact, audit vẫn xem được; *Restore project* để dùng lại). Run đang chạy phải huỷ trước khi lưu trữ |
-| Run | pipeline stage (iteration, trạng thái), khối **Đang làm gì** khi run đang chạy (lần thử, tin mới nhất từ worker như model đang thử lại, lỗi của lần thử trước kèm gợi ý sửa), bảng task (critic decision + verdict), approval chờ, artifact |
+| Run | pipeline stage (iteration, trạng thái), độ khó, bảng task có cột **Model · effort**, khối **Đang làm gì** khi run đang chạy (lần thử, tin mới nhất từ worker như model đang thử lại, lỗi của lần thử trước kèm gợi ý sửa), bảng task (critic decision + verdict), approval chờ, artifact |
 | Task (click dòng) | tiêu chí chấp nhận, feedback, agent run (model, route reason, token, chi phí, critic findings, tool calls), log job |
 | Artifact (click dòng) | nội dung, checksum, quan hệ trace, impact analysis |
-| Approvals | hàng đợi duyệt + lịch sử |
+| Approvals | hàng đợi duyệt + lịch sử; `approve_effort` ghi rõ task, model và effort xin dùng |
+| Lỗi (nút ở đầu trang) | nhật ký lỗi của trình duyệt này: thời gian, trang, nội dung đầy đủ; Sao chép từng lỗi hoặc tất cả; Xoá hết |
 | Workers | platform, capability, tải, heartbeat |
 | Agents | KPI theo role: số run, success, retry, critic rejection, latency, chi phí |
 | Audit | toàn bộ sự kiện |
@@ -1291,7 +1400,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (254 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (268 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -1328,6 +1437,8 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |
 | `model provider rejected the request` | Thiếu/sai `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trên worker. |
 | `no credit or quota left on the <nhà cung cấp> API account` | Tài khoản API hết credit (Claude: "credit balance is too low"), hết quota ngày, hoặc key free tier không được dùng model đó (Gemini: `limit: 0`, thường gặp với `gemini-4-argon`). Job fail ngay, không thử lại. Nạp credit hoặc bật billing cho key; gói Pro/Plus **không** trả tiền cho API key. Hoặc chạy cả run bằng gói (mục 6, "Chạy cả run bằng gói Pro"). |
+| Task đứng ở `APPROVAL_REQUIRED`, có yêu cầu `approve_effort` | Task sắp chạy với effort high/xhigh (run *Khó*/*Rất khó*, hoặc task bị trả về rồi tự leo mức). Duyệt để chạy đúng mức; từ chối để chạy ở medium (mục 6, "Model và effort cho từng role"). |
+| Không kịp đọc lỗi trên dashboard | Lỗi dưới form giờ được giữ tới khi bạn bấm ×. Mọi lỗi còn nằm trong **nhật ký lỗi**: nút **Lỗi** ở đầu trang, mới nhất ở trên, có nút **Sao chép** và **Chép tất cả**. |
 | Run đứng ở 0%, stage đầu `active` rất lâu | Mở trang run, xem khối **Đang làm gì**: nó hiện lần thử của task, tin mới nhất từ worker (ví dụ `[model] Gemini API 503 ... high demand; retrying in 4s`) và lỗi của lần thử trước. |
 | `... did not answer within 240s (model busy or overloaded)` / `high demand` / `no time left for another attempt` | Model đang quá tải, không trả lời. Mỗi request chờ tối đa 240 giây; mọi lần thử lại nằm trong giới hạn thời gian của agent (mặc định 900 giây), rồi job được xếp chạy lại. Lặp lại nhiều lần: đổi model/nhà cung cấp, hoặc chờ hãng hết quá tải. |
 | `engine result rejected: ...` | Engine chạy một role chỉ đọc (Engine dùng cho = Mọi role) nhưng khối `awf-result` thiếu hoặc sai contract, cả sau lần làm lại. Job được chạy lại; lặp lại thì dùng engine hoặc model khác cho run đó. |
@@ -1886,7 +1997,8 @@ Factory gọi API bằng `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` trong `.env` c�
 |---|---|---|
 | Factory, Claude | Credit của API key (Anthropic Console) | Không, nếu app Claude/Claude Code đăng nhập bằng gói Pro/Max: gói thuê bao và API là hai nguồn riêng |
 | Factory, Gemini | Key từ AI Studio / Google Cloud | Antigravity dùng quota tài khoản Google riêng; chỉ chung khi dùng cùng key hoặc cùng project Google Cloud |
-| Factory, ChatGPT / engine Codex | Credit của API key (platform.openai.com) | Không: gói ChatGPT Plus/Pro và OpenAI API là hai nguồn riêng; engine Codex chỉ dùng API key, không dùng đăng nhập ChatGPT trên máy |
+| Factory, ChatGPT | Credit của API key (platform.openai.com) | Không: gói ChatGPT Plus/Pro và OpenAI API là hai nguồn riêng |
+| Engine Codex (mục 6) | `api-key`: credit API. `login`: gói ChatGPT Plus/Pro đã `codex login` | `login`: **có**, chung lượt dùng với Codex bạn dùng trên máy cùng tài khoản |
 | Engine Antigravity (Gemini) | Quota gói Google AI Pro/Ultra nếu `agy` đăng nhập bằng tài khoản Google; credit API nếu dùng API key | **Có**, khi đăng nhập Google: chung quota với Antigravity bạn dùng trên máy cá nhân cùng tài khoản |
 | Factory, Qwen / Kimi / DeepSeek / MiniMax | Số dư API của từng hãng | Không: API key riêng. Engine Kimi Code dùng API key Kimi đã `/login`; engine MiniMax Code dùng tài khoản `mcode login` hoặc key đã lưu |
 | Factory, engine Claude Code (mục 6) | `api-key`: credit của API key, như dòng Claude ở trên. `login`: gói Claude Pro/Max đã đăng nhập bằng `claude` | `api-key`: không. `login`: **có**, chung lượt dùng với Claude Code bạn dùng trên máy cùng tài khoản |

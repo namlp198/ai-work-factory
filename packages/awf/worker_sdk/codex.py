@@ -6,8 +6,10 @@ evidence, and the worker commits. What differs is how the engine is contained:
 - Codex runs every command in its own OS sandbox (`--sandbox workspace-write`): writes stay inside the
   workspace, network access is off, and approvals are `never` (nothing waits for a human). It does not limit
   *which* commands run inside that sandbox, unlike Claude Code's per-command rules.
-- The engine gets its own empty CODEX_HOME per job and `--ignore-user-config --ignore-rules`: no saved login,
-  user config, rules or history from the worker machine. It authenticates with the API key only.
+- `--ignore-user-config --ignore-rules --ephemeral`: no user config, rules or history from the worker machine.
+- Two ways to pay (AWF_CODEX_AUTH, ADR-015): `api-key` (default when OPENAI_API_KEY is set) gives the engine an
+  empty CODEX_HOME per job and the key as CODEX_API_KEY; `login` uses the ChatGPT account signed in once with
+  `codex login` (a ChatGPT Plus/Pro plan): CODEX_HOME is the worker user's own, read for its sign-in only.
 - Commands it runs see only a core environment (`shell_environment_policy.inherit=core`), never the key.
 """
 
@@ -39,6 +41,24 @@ You are running as the coding engine of the AI Work Factory, inside a fresh git 
 """
 
 
+AUTH_ENV = "AWF_CODEX_AUTH"
+LOGIN, API_KEY = "login", "api-key"
+
+
+def auth_mode() -> str:
+    """`login` (ChatGPT plan signed in with `codex login`) or `api-key`. Default: api-key when a key is set."""
+    mode = os.environ.get(AUTH_ENV, "").strip().lower()
+    if mode in (LOGIN, API_KEY):
+        return mode
+    return API_KEY if (os.environ.get("CODEX_API_KEY") or os.environ.get("OPENAI_API_KEY")) else LOGIN
+
+
+def user_codex_home() -> Path:
+    """Where `codex login` keeps the sign-in of the user running the worker."""
+    configured = os.environ.get("CODEX_HOME", "").strip()
+    return Path(configured) if configured else Path.home() / ".codex"
+
+
 def codex_bin() -> list[str] | None:
     """The `codex` executable: AWF_CODEX_BIN, else the one on PATH."""
     configured = os.environ.get("AWF_CODEX_BIN", "").strip()
@@ -61,9 +81,13 @@ def build_argv(base: list[str], *, model: str, effort: str | None) -> list[str]:
     return [*argv, "-"]  # the prompt comes on stdin
 
 
-def engine_env(codex_home: Path) -> dict[str, str]:
-    """No credentials from the worker except the OpenAI key, passed the way `codex exec` reads it."""
+def engine_env(codex_home: Path, auth: str = API_KEY) -> dict[str, str]:
+    """No credentials from the worker except the engine's own: the OpenAI key (api-key mode, with a fresh
+    CODEX_HOME) or the signed-in ChatGPT account in the user's CODEX_HOME (login mode)."""
     env = sanitized_env()
+    if auth == LOGIN:
+        env["CODEX_HOME"] = str(user_codex_home())
+        return env
     key = os.environ.get("CODEX_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if key:
         env["CODEX_API_KEY"] = key

@@ -137,7 +137,7 @@ def test_router_maps_classes_to_openai(platform):
     router = ModelRouter.load(platform.settings.config_dir / "model-routing.yaml")
     assert "openai" in router.providers()
     route = router.resolve(RouteRequest(profile_class="CODE_SPECIALIST", provider="openai"))
-    assert (route.provider, route.model, route.params.get("effort")) == ("openai", "gpt-6.1-sol", "high")
+    assert (route.provider, route.model, route.params.get("effort")) == ("openai", "gpt-6.1-sol", "medium")
     assert router.resolve(RouteRequest(profile_class="FAST", provider="openai")).model == "gpt-6-luna"
     assert router.resolve(RouteRequest(profile_class="REASONING", provider="openai",
                                        confidentiality="restricted")).provider == "unavailable"
@@ -225,6 +225,18 @@ def _execute(platform, tmp_path, payload, bin_=FAKE_CODEX):
     return executor.execute("job-1", payload, log=lambda line, stream="stdout": None)
 
 
+def test_codex_on_a_chatgpt_plan(platform, repository_config, tmp_path, fake_codex, monkeypatch):
+    monkeypatch.setenv("AWF_CODEX_AUTH", "login")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "my-codex"))  # where `codex login` saved the sign-in
+    result = _execute(platform, tmp_path, _payload(platform, repository_config))
+    assert result["status"] == "succeeded", result.get("error")
+    call = json.loads(fake_codex.read_text(encoding="utf-8"))
+    assert call["codex_api_key"] == "" and not call["env_has_openai_key"]  # the plan, not the key
+    assert call["codex_home"] == str(tmp_path / "my-codex")
+    assert "--ignore-user-config" in call["argv"] and "--ephemeral" in call["argv"]  # sign-in only, no config
+    assert result["usage"]["billing"] == "subscription" and result["usage"]["cost_usd"] == 0.0
+
+
 def test_codex_edits_and_the_platform_verifies(platform, repository_config, tmp_path, fake_codex):
     result = _execute(platform, tmp_path, _payload(platform, repository_config))
     assert result["status"] == "succeeded", result.get("error")
@@ -279,4 +291,5 @@ def test_codex_routing(platform):
     engine, route = engine_route(router, request, router.resolve(request), profile.engines, "codex")
     assert (engine, route.provider, route.model) == ("codex", "openai", "gpt-6.1-sol")  # a Claude run, Codex dev
     roles = platform.workflows.get("software-development").spec.roles()
-    assert engine_capabilities(platform.agents, router, roles, "internal", "codex") == {"codex", "llm-openai"}
+    # Codex signs in itself (API key or a ChatGPT Plus/Pro login, ADR-015): only the CLI is required.
+    assert engine_capabilities(platform.agents, router, roles, "internal", "codex") == {"codex"}

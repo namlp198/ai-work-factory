@@ -66,7 +66,12 @@ async function api(path, opts = {}) {
   if (!res.ok) {  // show FastAPI's {"detail": "..."} as a sentence, not raw JSON
     const text = await res.text();
     let message = `${res.status} ${text}`;
-    try { const detail = JSON.parse(text).detail; if (typeof detail === "string") message = detail; } catch { /* not JSON */ }
+    try {
+      const detail = JSON.parse(text).detail;
+      if (typeof detail === "string") message = detail;
+      // Validation errors: one "field: problem" per line instead of raw JSON.
+      else if (Array.isArray(detail)) message = detail.map((d) => `${(d.loc || []).filter((x) => x !== "body").join(".")}: ${d.msg}`).join("\n");
+    } catch { /* not JSON */ }
     throw new Error(message);
   }
   const type = res.headers.get("content-type") || "";
@@ -108,6 +113,84 @@ $("#drawer").onclick = (e) => { if (e.target.id === "drawer") $("#drawer").class
 $("#lang-select").onchange = (e) => { e.target.blur(); setLang(e.target.value); };
 
 function drawer(html) { $("#drawer-body").innerHTML = html; $("#drawer").classList.remove("hidden"); }
+
+// ------------------------------------------------------------------------------------ errors that stay
+// The page re-renders every 4 s, so a message written into it would vanish before it is read. A form error stays
+// on its element until dismissed (or the action succeeds), and every error also goes to the error log (header
+// button): newest first, kept in this browser, each with a Copy button.
+const ERROR_LOG_KEY = "awf.errors";
+let errorLog = [];
+try { errorLog = JSON.parse(localStorage.getItem(ERROR_LOG_KEY) || "[]"); } catch { /* storage blocked */ }
+const stickyErrors = new Map();  // element id -> markup shown there until dismissed
+
+function logError(context, message) {
+  errorLog = [{ at: new Date().toISOString(), context, message: String(message) }, ...errorLog].slice(0, 100);
+  try { localStorage.setItem(ERROR_LOG_KEY, JSON.stringify(errorLog)); } catch { /* storage blocked */ }
+  updateErrorButton();
+}
+
+function updateErrorButton() {
+  $("#errors-btn").classList.toggle("hidden", !errorLog.length);
+  $("#errors-badge").textContent = errorLog.length;
+}
+
+const copyButton = (text) => `<button type="button" class="ghost copy" data-copy="${esc(text)}">${t("errors.copy")}</button>`;
+
+// Show an error on element `id` (a form's message line) and log it. `markup` is already safe (runErrorHint).
+function showError(id, message, markup) {
+  logError(`${location.hash || "#/"} · ${id}`, message);
+  stickyErrors.set(id, `${markup || `<span class="error">${esc(message)}</span>${copyButton(message)}`}
+    <button type="button" class="ghost dismiss" data-dismiss="${id}" title="${t("errors.dismiss")}">×</button>`);
+  applyStickyErrors();
+}
+
+function clearError(id) {
+  stickyErrors.delete(id);
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = "";
+}
+
+function applyStickyErrors() {
+  for (const [id, markup] of stickyErrors) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = markup;
+  }
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return; } catch { /* plain http: no clipboard API */ }
+  const area = Object.assign(document.createElement("textarea"), { value: text });
+  document.body.append(area); area.select(); document.execCommand("copy"); area.remove();
+}
+
+document.addEventListener("click", async (e) => {
+  const copy = e.target.closest("[data-copy]");
+  if (copy) {
+    e.preventDefault();
+    await copyText(copy.dataset.copy);
+    copy.textContent = t("errors.copied");
+    setTimeout(() => { copy.textContent = t("errors.copy"); }, 1500);
+    return;
+  }
+  const dismiss = e.target.closest("[data-dismiss]");
+  if (dismiss) clearError(dismiss.dataset.dismiss);
+});
+
+function openErrorLog() {
+  const rows = errorLog.map((x) => `<div class="card errlog"><div class="row"><span class="muted">${when(x.at)} · <code>${esc(x.context)}</code></span>${copyButton(x.message)}</div>
+    <pre>${esc(x.message)}</pre></div>`).join("");
+  drawer(`<h2>${t("errors.title")}</h2><p class="muted">${t("errors.help")}</p>
+    <div class="row">${copyButton(errorLog.map((x) => `[${x.at}] ${x.context}\n${x.message}`).join("\n\n")).replace(t("errors.copy"), t("errors.copy_all"))}
+      <button type="button" class="danger" id="errors-clear">${t("errors.clear")}</button></div>
+    ${rows || `<p class="muted">${t("errors.empty")}</p>`}`);
+  $("#errors-clear").onclick = () => { errorLog = []; try { localStorage.removeItem(ERROR_LOG_KEY); } catch { /* blocked */ } updateErrorButton(); openErrorLog(); };
+}
+$("#errors-btn").onclick = openErrorLog;
+// Actions without their own message line (cancel, approve, revoke...): the error still reaches the log.
+window.addEventListener("unhandledrejection", (e) => {
+  if (e.reason instanceof Offline || e.reason instanceof AuthRequired) return;
+  logError(location.hash || "#/", e.reason?.message || String(e.reason));
+});
 
 // ------------------------------------------------------------------------------------ views
 // Stroke icons (24px grid) for the overview cards.
@@ -240,8 +323,21 @@ const capList = (raw) => String(raw || "").split(",").map((c) => c.trim()).filte
 const confidentialityOptions = (selected = "internal") => ["internal", "public", "restricted"]
   .map((c) => `<option value="${c}" ${c === selected ? "selected" : ""}>${t(`confidentiality.${c}`)}</option>`).join("");
 
+// Defaults for a new project, read from the machines online now: their platform, and a run that goes through the
+// Claude Pro/Max plan when a worker has Claude Code signed in (capability claude-code-login).
+function suggestedDefaults(workers) {
+  const online = workers.filter((w) => w.status === "online");
+  const family = (p) => (String(p).startsWith("windows") ? "windows" : p === "linux-amd64" ? "linux" : p);
+  const counts = {};
+  for (const w of online) counts[family(w.platform)] = (counts[family(w.platform)] || 0) + 1;
+  const platform = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+  const plan = online.some((w) => (w.capabilities || []).includes("claude-code-login"));
+  return { platform, coding_engine: plan ? "claude-code" : "", engine_scope: plan ? "all" : "coding", plan };
+}
+
 async function viewProjects() {
-  const [projects, archived] = await Promise.all([api("/projects"), api("/projects?archived=true")]);
+  const [projects, archived, workers] = await Promise.all([api("/projects"), api("/projects?archived=true"), api("/workers")]);
+  const d = suggestedDefaults(workers);
   const archivedRows = archived.map((p) => `<tr class="click" data-href="#/projects/${p.id}"><td>${esc(p.name)}</td>
     <td><code>${esc(p.slug)}</code></td><td>${esc(p.repository?.url || "")}</td><td>${when(p.updated_at)}</td></tr>`).join("");
   const rows = projects.map((p) => `<tr class="click" data-href="#/projects/${p.id}"><td>${esc(p.name)}</td><td><code>${esc(p.slug)}</code></td>
@@ -256,8 +352,12 @@ async function viewProjects() {
       <label>${t("field.name")}<input name="name" required></label>
       <label>${t("field.repository_url")}<input name="url" placeholder="${t("projects.url_placeholder")}"></label>
       <label>${t("field.base_branch")}<input name="base_branch" value="main"></label>
-      <label>${t("field.platform")}<select name="platform" required>${platformOptions()}</select></label>
+      <label>${t("field.platform")}<select name="platform" required>${platformOptions(d.platform)}</select></label>
       <label>${t("field.required_capabilities")}<input name="required_capabilities" placeholder="dotnet-windowsdesktop, msbuild"></label>
+      <label>${t("where.default_engine")}<select name="coding_engine">${engineOptions(d.coding_engine)}</select></label>
+      <label>${t("where.default_engine_scope")}<select name="engine_scope">${scopeOptions(d.engine_scope)}</select></label>
+      <label>${t("where.default_complexity")}<select name="complexity">${complexityOptions("normal")}</select></label>
+      <p class="full muted">${d.platform ? t(d.plan ? "projects.defaults_plan" : "projects.defaults", { platform: d.platform }) : t("projects.defaults_none")}</p>
       <label>${t("field.build_command")}<input name="build_command" placeholder="python -m compileall -q src"></label>
       <label>${t("field.test_command")}<input name="test_command" placeholder="python -m pytest -q"></label>
       <label>${t("field.lint_command")}<input name="lint_command" placeholder="ruff check ."></label>
@@ -274,6 +374,9 @@ function bindProjects() {
     e.preventDefault();
     const f = new FormData(form);
     const body = { name: f.get("name"), confidentiality: f.get("confidentiality"), labels: { platform: f.get("platform") } };
+    if (f.get("coding_engine")) body.labels.coding_engine = f.get("coding_engine");
+    if (f.get("engine_scope") === "all") body.labels.engine_scope = "all";
+    if (f.get("complexity") && f.get("complexity") !== "normal") body.labels.complexity = f.get("complexity");
     if (f.get("url")) {  // software projects; content projects may have no repository
       const repo = { url: f.get("url"), base_branch: f.get("base_branch") || "main" };
       for (const k of ["build_command", "test_command", "lint_command"]) if (f.get(k)) repo[k] = argvParse(f.get(k));
@@ -281,8 +384,8 @@ function bindProjects() {
       body.repository = repo;
     }
     if (f.get("budget_usd")) body.budget_usd = Number(f.get("budget_usd"));
-    try { const p = await api("/projects", { method: "POST", body: JSON.stringify(body) }); location.hash = `#/projects/${p.id}`; }
-    catch (err) { $("#project-error").textContent = err.message; }
+    try { const p = await api("/projects", { method: "POST", body: JSON.stringify(body) }); clearError("project-error"); location.hash = `#/projects/${p.id}`; }
+    catch (err) { showError("project-error", err.message); }
   };
 }
 
@@ -314,6 +417,8 @@ async function viewProject(id) {
       <label>${t("field.model")}<select name="llm">${llmOptions(models, "", t("common.project_default", { value: llmName(p.labels?.llm || models.default_provider) }))}</select></label>
       <label>${t("field.coding_engine")}<select name="coding_engine">${engineOptions("", t("common.project_default", { value: engineName(p.labels?.coding_engine || "native") }, true))}</select></label>
       <label>${t("field.engine_scope")}<select name="engine_scope">${scopeOptions("", t("common.project_default", { value: t(`engine_scope.${p.labels?.engine_scope || "coding"}`) }, true))}</select></label>
+      <label>${t("field.complexity")}<select name="complexity">${complexityOptions("", t("common.project_default", { value: t(`complexity.${p.labels?.complexity || "normal"}`) }, true))}</select></label>
+      <p class="full muted">${t("run.complexity_help")}</p>
       <label class="full">${t("field.objective")}<textarea name="objective" rows="3" required></textarea></label>
       <div class="full row"><button>${t("run.start")}</button></div><div class="full" id="run-error"></div></form>`}
     <h2>${t("project.runs")}</h2><div class="table-wrap"><table><tr><th>${t("common.run")}</th><th>${t("field.workflow")}</th><th>${t("field.status")}</th><th>${t("field.objective")}</th><th>${t("field.created")}</th></tr>${rows || `<tr><td colspan="5" class="muted">${t("project.no_runs")}</td></tr>`}</table></div>
@@ -374,7 +479,7 @@ function runErrorHint(message) {
   const billing = message.match(/no credit or quota left on the (\w+) API account/);
   if (billing) hints.push(t("hint.billing", { provider: LLM_NAMES[billing[1]] || billing[1] }));
   if (/did not answer|overloaded|high demand|time limit was reached|timeout after/i.test(message)) hints.push(t("hint.model_busy"));
-  return `<span class="error">${esc(message)}</span>${[...new Set(hints)].map((h) => `<span class="hint-fix">${h}</span>`).join("")}`;
+  return `<span class="error">${esc(message)}</span>${copyButton(message)}${[...new Set(hints)].map((h) => `<span class="hint-fix">${h}</span>`).join("")}`;
 }
 
 function projectMachines(p, models) {
@@ -392,6 +497,7 @@ function projectMachines(p, models) {
       <label>${t("where.default_model")}<select name="llm">${llmOptions(models, p.labels?.llm || "")}</select></label>
       <label>${t("where.default_engine")}<select name="coding_engine">${engineOptions(p.labels?.coding_engine || "")}</select></label>
       <label>${t("where.default_engine_scope")}<select name="engine_scope">${scopeOptions(p.labels?.engine_scope || "coding")}</select></label>
+      <label>${t("where.default_complexity")}<select name="complexity">${complexityOptions(p.labels?.complexity || "normal")}</select></label>
       <div class="full row"><button class="ghost">${t("common.save")}</button><span id="project-edit-error" class="error"></span>
         <span class="muted">${t("where.note")}</span></div></form>
     <div class="table-wrap"><table><tr><th>${t("field.machine")}</th><th>${t("field.status")}</th><th>${t("field.platform")}</th><th>${t("where.can_run")}</th></tr>
@@ -417,21 +523,22 @@ function bindProject(id) {
         body.repository = repo;
       }
       await api(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+      clearError("settings-error");
       await render();
       const msg = $("#settings-msg"); if (msg) msg.textContent = t("common.saved");
-    } catch (err) { $("#settings-error").textContent = err.message; }
+    } catch (err) { showError("settings-error", err.message); }
   };
   const del = $("#delete-project");
   if (del) del.onclick = async () => {
     if (!confirm(t("danger.delete_confirm"))) return;
     try { await api(`/projects/${id}`, { method: "DELETE" }); location.hash = "#/projects"; }
-    catch (err) { $("#danger-error").textContent = err.message; }
+    catch (err) { showError("danger-error", err.message); }
   };
   const arc = $("#archive-project");
   if (arc) arc.onclick = async () => {
     if (!confirm(t("danger.archive_confirm"))) return;
-    try { await api(`/projects/${id}/archive`, { method: "POST" }); render(); }
-    catch (err) { $("#danger-error").textContent = err.message; }
+    try { await api(`/projects/${id}/archive`, { method: "POST" }); clearError("danger-error"); render(); }
+    catch (err) { showError("danger-error", err.message); }
   };
   const restore = $("#restore-project");
   if (restore) restore.onclick = async () => { await api(`/projects/${id}/restore`, { method: "POST" }); render(); };
@@ -446,11 +553,13 @@ function bindProject(id) {
       if (f.get("llm")) labels.llm = f.get("llm"); else delete labels.llm;
       if (f.get("coding_engine")) labels.coding_engine = f.get("coding_engine"); else delete labels.coding_engine;
       if (f.get("engine_scope") === "all") labels.engine_scope = "all"; else delete labels.engine_scope;
+      if (f.get("complexity") && f.get("complexity") !== "normal") labels.complexity = f.get("complexity"); else delete labels.complexity;
       const body = { labels };
       if (p.repository?.url) body.repository = { ...p.repository, required_capabilities: capList(f.get("required_capabilities")) };
       await api(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+      clearError("project-edit-error");
       render();
-    } catch (err) { $("#project-edit-error").textContent = err.message; }
+    } catch (err) { showError("project-edit-error", err.message); }
   };
   const form = $("#run-form");
   if (!form) return;
@@ -463,9 +572,10 @@ function bindProject(id) {
       if (f.get("llm")) body.llm = f.get("llm");
       if (f.get("coding_engine")) body.coding_engine = f.get("coding_engine");
       if (f.get("engine_scope")) body.engine_scope = f.get("engine_scope");
+      if (f.get("complexity")) body.complexity = f.get("complexity");
       const r = await api(`/projects/${id}/workflow-runs`, { method: "POST", body: JSON.stringify(body) });
       location.hash = `#/runs/${r.id}`;
-    } catch (err) { $("#run-error").innerHTML = runErrorHint(err.message); }
+    } catch (err) { showError("run-error", err.message, runErrorHint(err.message)); }
   };
 }
 
@@ -474,7 +584,7 @@ async function viewRun(id) {
   const pipeline = run.stages.map((s) => `<div class="stage ${esc(s.status)}"><div class="t">${esc(s.title)}</div>
     <div class="m">${esc(s.kind)}${s.gate ? ` · ${t("run.gate")}` : ""} · ${t("run.iteration", { n: s.iteration })}</div><div>${pill(s.status)}</div></div>`).join('<div class="arrow">→</div>');
   const rows = tasks.map((task) => `<tr class="click" data-task="${task.id}"><td>${esc(task.stage_id)}</td><td>${esc(task.title)}</td>
-    <td>${esc(task.assigned_role || task.task_type)}</td><td>${pill(task.state)}</td><td>${task.iteration}</td><td>${task.attempt}/${task.max_attempts}</td>
+    <td>${esc(task.assigned_role || task.task_type)}</td><td title="${esc(task.model?.reason || "")}">${modelCell(task.model)}</td><td>${pill(task.state)}</td><td>${task.iteration}</td><td>${task.attempt}/${task.max_attempts}</td>
     <td>${task.output?.critic ? pill(task.output.critic.decision) : ""} ${task.output?.critic?.verdict ? pill(task.output.critic.verdict) : ""}</td></tr>`).join("");
   const mine = approvals.filter((a) => a.workflow_run_id === id);
   return `<div class="row"><h1>${t("common.run")} <code>${short(run.id)}</code></h1>${pill(run.status)}
@@ -489,7 +599,7 @@ async function viewRun(id) {
     ${run.status === "RUNNING" && run.activity?.length ? `<h2>${t("run.now")}</h2>${runActivity(run.activity)}` : ""}
     ${mine.length ? `<h2>${t("overview.waiting_title")}</h2>${approvalTable(mine)}` : ""}
     <h2>${t("field.workflow")}</h2><div class="pipeline">${pipeline}</div>
-    <h2>${t("run.tasks")}</h2><div class="table-wrap"><table><tr><th>${t("run.stage")}</th><th>${t("run.task")}</th><th>${t("run.role")}</th><th>${t("run.state")}</th><th>${t("run.iter")}</th><th>${t("run.attempt")}</th><th>${t("run.critic")}</th></tr>${rows}</table></div>
+    <h2>${t("run.tasks")}</h2><div class="table-wrap"><table><tr><th>${t("run.stage")}</th><th>${t("run.task")}</th><th>${t("run.role")}</th><th>${t("run.model_effort")}</th><th>${t("run.state")}</th><th>${t("run.iter")}</th><th>${t("run.attempt")}</th><th>${t("run.critic")}</th></tr>${rows}</table></div>
     <h2>${t("run.artifacts")}</h2><div id="run-artifacts" class="muted">${t("common.loading")}</div>`;
 }
 
@@ -498,6 +608,12 @@ function scopeOptions(selected, defaultLabel) {
   const head = defaultLabel ? `<option value="">${defaultLabel}</option>` : "";
   return head + ["coding", "all"].map((v) => `<option value="${v}" ${v === selected ? "selected" : ""}>${t(`engine_scope.${v}`)}</option>`).join("");
 }
+
+const complexityOptions = (selected, defaultLabel) => (defaultLabel ? `<option value="">${defaultLabel}</option>` : "") +
+  ["normal", "hard", "very_hard"].map((v) => `<option value="${v}" ${v === selected ? "selected" : ""}>${t(`complexity.${v}`)}</option>`).join("");
+
+// The model a task runs on now: name · effort, and the engine when it is not the native runtime.
+const modelCell = (m) => (m ? `<code>${esc(m.name)}</code>${m.effort ? ` · <b>${esc(m.effort)}</b>` : ""}${m.engine && m.engine !== "native" ? ` <span class="muted">(${engineName(m.engine)})</span>` : ""}` : "");
 
 // What each unfinished task is waiting for: the worker's latest note (model retries) and the previous error.
 function runActivity(items) {
@@ -522,6 +638,7 @@ function placementRows(run, workers) {
       ${run.placement.wait ? `<div class="error">${esc(run.placement.wait)}</div>` : ""}${move}</div>
     <div>${t("run.requirements")}</div><div>${t("field.platform")} <code>${esc(req.platform || "any")}</code> · ${t("run.capabilities")} <code>${esc((req.capabilities || []).join(", "))}</code></div>
     ${run.llm ? `<div>${t("field.model")}</div><div>${esc(llmName(run.llm))}</div>` : ""}
+    <div>${t("field.complexity")}</div><div>${t(`complexity.${run.complexity || "normal"}`)}</div>
     ${run.coding_engine && run.coding_engine !== "native" ? `<div>${t("field.coding_engine")}</div><div>${engineName(run.coding_engine)} · ${t(`engine_scope.${run.engine_scope || "coding"}`)}</div>` : ""}`;
 }
 
@@ -530,8 +647,8 @@ async function bindRun(id) {
   if (form) form.onsubmit = async (e) => {
     e.preventDefault();
     const worker = new FormData(form).get("worker") || null;
-    try { await api(`/workflow-runs/${id}/reassign`, { method: "POST", body: JSON.stringify({ worker }) }); render(); }
-    catch (err) { $("#reassign-error").textContent = err.message; }
+    try { await api(`/workflow-runs/${id}/reassign`, { method: "POST", body: JSON.stringify({ worker }) }); clearError("reassign-error"); render(); }
+    catch (err) { showError("reassign-error", err.message); }
   };
   const btn = $("#cancel-run");
   if (btn) btn.onclick = async () => { if (confirm(t("run.cancel_confirm"))) { await api(`/workflow-runs/${id}/cancel`, { method: "POST" }); render(); } };
@@ -570,16 +687,16 @@ async function openTask(id) {
     <div class="kv"><div>${t("field.model")}</div><div>${esc(r.model_provider)}/${esc(r.model_name)} (${esc(r.model_class)})</div>
     <div>${t("task.route_reason")}</div><div>${esc(r.route_reason)}</div><div>${t("task.tokens")}</div><div>${t("task.tokens_value", { in: r.token_input, out: r.token_output, cost: money(r.cost_estimate), ms: r.duration_ms })}</div>
     <div>${t("run.critic")}</div><div>${r.critic?.decision ? pill(r.critic.decision) : ""} ${esc((r.critic?.findings || []).map((f) => `[${f.severity}] ${f.message}`).join(" · "))}</div>
-    ${r.error ? `<div>${t("common.error")}</div><div class="error">${esc(r.error)}</div>` : ""}</div>
+    ${r.error ? `<div>${t("common.error")}</div><div>${runErrorHint(r.error)}</div>` : ""}</div>
     <details><summary>${tn("task.tool_calls", r.tool_calls.length)}</summary><pre>${esc(r.tool_calls.map((c) => `${c.status.padEnd(8)} ${c.tool} ${JSON.stringify(c.input || {})} ${c.message || ""}`).join("\n"))}</pre></details>`).join("");
-  const jobs = task.jobs.map((j) => `<li><a href="#" data-logs="${j.id}">${t("task.job", { id: short(j.id) })}</a> ${pill(j.state)} ${t("task.attempt_n", { n: j.attempt })} ${j.error ? `<span class="error">${esc(j.error)}</span>` : ""}</li>`).join("");
+  const jobs = task.jobs.map((j) => `<li><a href="#" data-logs="${j.id}">${t("task.job", { id: short(j.id) })}</a> ${pill(j.state)} ${t("task.attempt_n", { n: j.attempt })} ${j.error ? `<span class="error">${esc(j.error)}</span> ${copyButton(j.error)}` : ""}</li>`).join("");
   drawer(`<h2>${esc(task.title)}</h2><div class="kv"><div>${t("run.state")}</div><div>${pill(task.state)}</div><div>${t("run.role")}</div><div>${esc(task.assigned_role || task.task_type)}</div>
     <div>${t("task.iteration_attempt")}</div><div>${t("task.iteration_attempt_value", { iter: task.iteration, attempt: task.attempt, max: task.max_attempts })}</div>
     <div>${t("task.acceptance")}</div><div>${(task.acceptance_criteria || []).map(esc).join("<br>") || "—"}</div>
     ${task.input?.feedback?.length ? `<div>${t("task.feedback")}</div><div>${task.input.feedback.map(esc).join("<br>")}</div>` : ""}
-    ${task.output?.failure_reason ? `<div>${t("task.failure")}</div><div class="error">${esc(task.output.failure_reason)}</div>` : ""}</div>
+    ${task.output?.failure_reason ? `<div>${t("task.failure")}</div><div>${runErrorHint(task.output.failure_reason)}</div>` : ""}</div>
     <h3>${t("task.summary")}</h3><p>${esc(task.output?.summary || "—")}</p>
-    <h3>${t("task.jobs")}</h3><ul>${jobs || `<li class='muted'>${t("common.none")}</li>`}</ul><pre id="job-logs" class="hidden"></pre>
+    <h3>${t("task.jobs")}</h3><ul>${jobs || `<li class='muted'>${t("common.none")}</li>`}</ul><div id="job-logs-copy"></div><pre id="job-logs" class="hidden"></pre>
     ${runs}<h3>${t("run.artifacts")}</h3>${artifactTable(task.artifacts)}`);
   bindArtifactLinks();
   document.querySelectorAll("[data-logs]").forEach((a) => (a.onclick = async (e) => {
@@ -587,11 +704,12 @@ async function openTask(id) {
     const logs = await api(`/jobs/${a.dataset.logs}/logs`);
     const pre = $("#job-logs"); pre.classList.remove("hidden");
     pre.textContent = logs.map((l) => `[${l.stream}] ${l.line}`).join("\n") || t("task.no_logs");
+    $("#job-logs-copy").innerHTML = logs.length ? copyButton(pre.textContent) : "";
   }));
 }
 
 function approvalTable(list) {
-  const rows = list.map((a) => `<tr><td>${esc(a.action)}</td><td>${a.risk_level}</td><td><a href="#/runs/${a.workflow_run_id}"><code>${short(a.workflow_run_id)}</code></a></td>
+  const rows = list.map((a) => `<tr><td>${esc(a.action)}${a.action === "approve_effort" ? `<div class="muted">${t("approval.effort", { task: a.scope?.task || "", role: a.scope?.role || "", model: a.scope?.model || "", effort: a.scope?.effort || "" })}</div>` : ""}</td><td>${a.risk_level}</td><td><a href="#/runs/${a.workflow_run_id}"><code>${short(a.workflow_run_id)}</code></a></td>
     <td>${(a.scope?.artifact_ids || []).map((x) => `<a href="#" data-art="${x}"><code>${short(x)}</code></a>`).join(" ")}</td><td>${pill(a.state)}</td>
     <td>${a.state === "PENDING" ? `<div class="row"><input placeholder="${t("approval.comment")}" data-comment="${a.id}" style="width:180px">
       <button data-approve="${a.id}">${t("approval.approve")}</button><button class="danger" data-reject="${a.id}">${t("approval.reject")}</button></div>` : esc(a.approved_by || "")}</td></tr>`).join("");
@@ -728,7 +846,7 @@ async function render() {
       document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === nav));
       const html = await view(...m.slice(1));
       const focused = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
-      if (!focused || signedOut) { $("#view").innerHTML = html; shown = true; document.querySelectorAll("tr[data-href]").forEach((tr) => (tr.onclick = () => (location.hash = tr.dataset.href))); if (bind) await bind(...m.slice(1)); }
+      if (!focused || signedOut) { $("#view").innerHTML = html; shown = true; document.querySelectorAll("tr[data-href]").forEach((tr) => (tr.onclick = () => (location.hash = tr.dataset.href))); if (bind) await bind(...m.slice(1)); applyStickyErrors(); }
       break;
     }
     signedOut = false;
@@ -748,12 +866,14 @@ async function render() {
       $("#logout-btn").classList.add("hidden");
       if (!signedOut) { $("#view").innerHTML = viewLogin(); bindLogin(); signedOut = true; }
     } else {
-      $("#view").innerHTML = `<p class="error">${esc(err.message)}</p>`;
+      logError(location.hash || "#/", err.message);
+      $("#view").innerHTML = `<p class="error">${esc(err.message)}</p>${copyButton(err.message)}`;
     }
   } finally { rendering = false; }
 }
 
 window.addEventListener("hashchange", () => {
+  stickyErrors.clear();
   if (location.hash.startsWith("#login=")) { signedOut = false; consumeLoginLink().then(render); } else { render(); }
 });
 // Live refresh while the page is on screen; none in the background (phone battery), catch up when it comes back.
@@ -762,4 +882,5 @@ setInterval(() => {
 }, 4000);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !signedOut) render(); });
 applyStatic();
+updateErrorButton();
 consumeLoginLink().then(render);

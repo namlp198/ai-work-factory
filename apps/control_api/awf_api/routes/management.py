@@ -229,6 +229,8 @@ class RunIn(BaseModel):
     coding_engine: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{1,30}$")
     # Which roles use that engine: coding (the Developer) or all (every role, e.g. on a signed-in Pro plan).
     engine_scope: Literal["coding", "all"] | None = None
+    # How hard the work is: raises effort (and the model, for very_hard) for every role; default: project/normal.
+    complexity: Literal["normal", "hard", "very_hard"] | None = None
 
 
 @router.post("/projects/{project_id}/workflow-runs", status_code=201)
@@ -239,7 +241,7 @@ def start_run(project_id: str, body: RunIn, state: AppState = Depends(get_state)
         run = state.orchestrator.start_run(session, project, body.workflow_id, body.inputs, actor=actor,
                                            worker_name=body.placement.worker if body.placement else None,
                                            llm=body.llm, coding_engine=body.coding_engine,
-                                           engine_scope=body.engine_scope)
+                                           engine_scope=body.engine_scope, complexity=body.complexity)
     except (OrchestratorError, KeyError) as exc:
         raise HTTPException(422, str(exc)) from None
     return ser.run(run, worker=None)
@@ -320,8 +322,21 @@ def cancel_run(run_id: str, state: AppState = Depends(get_state), session: Sessi
 @router.get("/workflow-runs/{run_id}/tasks")
 def list_tasks(run_id: str, session: Session = Depends(get_session, scope="function")):
     _get(session, WorkflowRun, run_id)
-    rows = session.scalars(select(Task).where(Task.workflow_run_id == run_id).order_by(Task.created_at))
-    return [ser.task(t) for t in rows]
+    rows = list(session.scalars(select(Task).where(Task.workflow_run_id == run_id).order_by(Task.created_at)))
+    latest: dict[str, AgentRun] = {}
+    for ar in session.scalars(select(AgentRun).where(AgentRun.task_id.in_([t.id for t in rows]))
+                              .order_by(AgentRun.created_at)):
+        latest[ar.task_id] = ar  # the last attempt's route: what the task runs on now
+    out = []
+    for t in rows:
+        data = ser.task(t)
+        ar = latest.get(t.id)
+        if ar:
+            data["model"] = {"provider": ar.model_provider, "name": ar.model_name, "class": ar.model_class,
+                             "effort": (ar.input_json or {}).get("effort"),
+                             "engine": (ar.input_json or {}).get("engine"), "reason": ar.route_reason}
+        out.append(data)
+    return out
 
 
 @router.get("/tasks/{task_id}")

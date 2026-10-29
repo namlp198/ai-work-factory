@@ -27,6 +27,7 @@ ACTION_LABELS = {
     "approve_architecture": "Duyệt kiến trúc",
     "approve_merge": "Duyệt merge vào nhánh chính",
     "approve_publish": "Duyệt xuất bản",
+    "approve_effort": "Duyệt dùng effort cao",
 }
 
 

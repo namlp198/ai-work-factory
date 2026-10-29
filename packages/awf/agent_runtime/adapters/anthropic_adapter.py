@@ -11,6 +11,7 @@ from typing import Any
 import anthropic
 
 from awf.agent_runtime.adapters.base import (
+    REJECTED,
     TIMEOUT,
     ModelAdapter,
     ModelError,
@@ -81,7 +82,8 @@ class AnthropicSession(ModelSession):
             raise ModelError("Claude did not answer in time (model busy or overloaded)", retryable=True,
                              code=TIMEOUT) from exc
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError, anthropic.NotFoundError) as exc:
-            raise ModelError(f"model provider rejected the request: {exc.message}", retryable=False) from exc
+            raise ModelError(f"model provider rejected the request: {exc.message}", retryable=False,
+                             code=REJECTED) from exc
         except anthropic.RateLimitError as exc:
             raise ModelError("rate limited by model provider", retryable=True) from exc
         except anthropic.APIStatusError as exc:

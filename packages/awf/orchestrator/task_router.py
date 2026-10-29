@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from awf.agent_runtime import AgentDefinition, AgentRegistry
 from awf.agent_runtime.providers import LLM_PROVIDERS  # providers that need a key on the worker
 from awf.domain.models import AgentRun, Project, Task, WorkflowRun
-from awf.model_router import ModelRoute, ModelRouter, RouteRequest
+from awf.model_router import COMPLEXITY_LEVELS, ModelRoute, ModelRouter, RouteRequest
 from awf.policy import PolicyEngine
 from awf.workflow_engine import StageSpec
 
@@ -29,7 +29,8 @@ class TaskRoute:
 
 
 # Coding engines (ADR-011, ADR-012, ADR-013, ADR-014): the provider an engine talks to and what the worker must
-# have. `key: False` engines can sign in on their own (Claude Code with a Claude Pro/Max login, Antigravity with a
+# have. `key: False` engines can sign in on their own (Claude Code with a Claude Pro/Max login, Codex with a ChatGPT
+# Plus/Pro login, Antigravity with a
 # Google account such as a Google AI Pro plan, Kimi Code with `/login`, MiniMax Code with `mcode login`), so they
 # need the CLI but not an API key on the worker: the worker advertises the engine only when it can run it.
 # DeepSeek Harness reads DEEPSEEK_API_KEY but chooses its own model.
@@ -37,7 +38,7 @@ NATIVE_ENGINE = "native"
 CODING_ENGINES: dict[str, dict[str, Any]] = {
     NATIVE_ENGINE: {},
     "claude-code": {"provider": "anthropic", "capabilities": ["claude-code"], "key": False},
-    "codex": {"provider": "openai", "capabilities": ["codex", "llm-openai"]},
+    "codex": {"provider": "openai", "capabilities": ["codex"], "key": False},
     "antigravity": {"provider": "google", "capabilities": ["antigravity"], "key": False},
     "qwen-code": {"provider": "qwen", "capabilities": ["qwen-code", "llm-qwen"]},
     "kimi-code": {"provider": "kimi", "capabilities": ["kimi-code"], "key": False},
@@ -105,6 +106,17 @@ def engine_capabilities(agents: AgentRegistry, models: ModelRouter, roles: set[s
     return caps
 
 
+def task_level(run: WorkflowRun | None, task: Task) -> tuple[int, str]:
+    """How hard a task is (ADR-015): the run's complexity, one level more once the task was sent back (a fix loop,
+    or the Critic or a human asking for changes). Infrastructure failures (timeouts, lost workers) do not count."""
+    base = COMPLEXITY_LEVELS.get(((run.context_json or {}) if run else {}).get("complexity") or "normal", 0)
+    struggled = task.iteration > 1 or int((task.input_json or {}).get("sent_back") or 0) > 0
+    if struggled and base < 2:
+        why = f"fix loop {task.iteration}" if task.iteration > 1 else "sent back for changes"
+        return base + 1, why
+    return base, "run complexity" if base else ""
+
+
 def slug(text: str, max_len: int = 40) -> str:
     value = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return value[:max_len].strip("-") or "task"
@@ -137,6 +149,7 @@ class TaskRouter:
         if project.budget_usd is not None:
             budget_remaining = Decimal(str(project.budget_usd)) - project_spend(session, project.id)
         run = session.get(WorkflowRun, task.workflow_run_id)
+        level, level_reason = task_level(run, task)
         request = RouteRequest(
             profile_class=definition.profile.model_policy.class_,
             fallback_class=definition.profile.model_policy.fallback,
@@ -144,6 +157,7 @@ class TaskRouter:
             confidentiality=project.confidentiality,
             budget_remaining_usd=budget_remaining,
             provider=(run.context_json or {}).get("llm") if run else None,
+            level=level, level_reason=level_reason,
         )
         ctx = (run.context_json or {}) if run else {}
         engine, route = engine_route(self.models, request, self.models.resolve(request), definition.profile.engines,

@@ -2,6 +2,12 @@
 # A profile declares a model class; this file maps the class to a provider/model.
 # Override the provider globally with AWF_MODEL_PROVIDER=scripted for offline runs.
 
+# Spend where thinking pays (ADR-015): the strong model only for architecture and planning, at medium effort;
+# code, tests, review and QA on the balanced model. Harder work climbs through `escalation` below.
+#   role                         class            normal              hard          very hard
+#   architect, planner           REASONING        opus-5-5 medium     opus high     opus xhigh
+#   developer                    CODE_SPECIALIST  sonnet-5-5 medium   sonnet high   opus high
+#   reviewer, analyst, QA, tests BALANCED         sonnet-5-5 medium   sonnet high   opus high
 classes:
   FAST:
     provider: anthropic
@@ -13,11 +19,11 @@ classes:
   REASONING:
     provider: anthropic
     model: claude-opus-5-5
-    effort: high
+    effort: medium
   CODE_SPECIALIST:
     provider: anthropic
-    model: claude-opus-5-5
-    effort: high
+    model: claude-sonnet-5-5
+    effort: medium
   MULTIMODAL:
     provider: anthropic
     model: claude-opus-5-5
@@ -31,6 +37,20 @@ classes:
 # The provider a run uses when neither the run (inputs "llm") nor the project (labels.llm) chooses one.
 default_provider: anthropic
 
+# How hard the work is: a run picks normal / hard / very hard ("Complexity" in the dashboard, default normal), and a
+# task that a reviewer, the Critic or a human sent back climbs one level by itself (max very hard).
+#   hard:      effort one rung up the ladder;
+#   very hard: the class in `promote` (strong model) one rung up, or two rungs for a class not promoted.
+# Effort never goes above the provider's highest rung (`max_effort`, default the top of the ladder).
+escalation:
+  effort_ladder: [low, medium, high, xhigh]
+  # Efforts that wait for a human: before a task runs at one of these (any model, any role), the run asks
+  # `approve_effort` (dashboard Approvals, Telegram...). Approved: it runs as routed. Rejected: it runs at the
+  # highest effort below these (medium), and the run goes on.
+  approval_required: [high, xhigh]
+  promote: {FAST: BALANCED, BALANCED: REASONING, CODE_SPECIALIST: REASONING}
+  max_effort: {google: high}
+
 # The same classes on other providers. A run with llm=google maps every class through this table instead of
 # `classes` above. LOCAL_PRIVATE is never remapped.
 providers:
@@ -43,10 +63,10 @@ providers:
       effort: medium
     REASONING:
       model: gemini-4-argon
-      effort: high
+      effort: medium
     CODE_SPECIALIST:
-      model: gemini-4-argon
-      effort: high
+      model: gemini-3.8-flash
+      effort: medium
     MULTIMODAL:
       model: gemini-3.8-flash
       effort: medium
@@ -59,13 +79,13 @@ providers:
       effort: low
     BALANCED:
       model: gpt-6.1-sol
-      effort: medium
+      effort: low
     REASONING:
       model: gpt-6.1-sol
-      effort: high
+      effort: medium
     CODE_SPECIALIST:
       model: gpt-6.1-sol
-      effort: high
+      effort: medium
     MULTIMODAL:
       model: gpt-6.1-sol
       effort: medium
@@ -95,18 +115,20 @@ providers:
       model: kimi-k3.1-pro
     MULTIMODAL:
       model: kimi-k3
+  # Thinking on at DeepSeek's default effort: a `reasoning_effort: high` here would make every task wait for
+  # approval (escalation.approval_required), and escalation does not change `extra`.
   deepseek:
     FAST:
       model: deepseek-flash
     BALANCED:
       model: deepseek-flash
-      extra: {thinking: {type: enabled}, reasoning_effort: high}
+      extra: {thinking: {type: enabled}}
     REASONING:
       model: deepseek-v4-pro
-      extra: {thinking: {type: enabled}, reasoning_effort: high}
+      extra: {thinking: {type: enabled}}
     CODE_SPECIALIST:
       model: deepseek-v4-pro
-      extra: {thinking: {type: enabled}, reasoning_effort: high}
+      extra: {thinking: {type: enabled}}
     MULTIMODAL:
       model: deepseek-flash
   minimax:

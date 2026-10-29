@@ -182,3 +182,27 @@ def test_the_run_page_says_what_a_task_is_waiting_for(client, platform, orchestr
     (item,) = client.get(f"/api/v1/workflow-runs/{run['id']}").json()["activity"]
     assert item["note"].startswith("[model] Gemini API 503") and item["previous_error"] == "timeout after 900s"
     assert item["title"] and item["attempt"] == 1
+
+
+def test_an_account_that_cannot_pay_fails_the_task_at_once(client, platform, orchestrator, worker, repository_config,
+                                                           monkeypatch):
+    from sqlalchemy import select
+
+    from awf.agent_runtime.adapters.base import billing_error
+    from awf.agent_runtime.adapters.scripted import ScriptedAdapter
+    from awf.domain.models import Job
+
+    def broke(self, **kwargs):
+        raise billing_error("anthropic", "Your credit balance is too low")
+
+    monkeypatch.setattr(ScriptedAdapter, "start", broke)
+    project = client.post("/api/v1/projects", json={"name": "P", "repository": repository_config,
+                                                    "labels": {"platform": "linux"}}).json()
+    run = client.post(f"/api/v1/projects/{project['id']}/workflow-runs", json={"inputs": {"objective": "x"}}).json()
+    for _ in range(4):
+        orchestrator.run_until_idle()
+        worker.run_once()
+    state = client.get(f"/api/v1/workflow-runs/{run['id']}").json()
+    assert state["status"] == "FAILED" and "MODEL_BILLING" in state["error"]
+    with platform.db.session() as s:
+        assert len(s.scalars(select(Job)).all()) == 1  # no second attempt against the same empty account

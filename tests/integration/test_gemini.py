@@ -141,7 +141,7 @@ def test_router_maps_classes_to_gemini():
     router = ModelRouter.load(ROOT / "config" / "model-routing.yaml")
     assert router.providers() == ["anthropic", "google", "openai", "qwen", "kimi", "deepseek", "minimax"]
     route = router.resolve(RouteRequest(profile_class="REASONING", provider="google"))
-    assert (route.provider, route.model, route.params) == ("google", "gemini-4-argon", {"effort": "high"})
+    assert (route.provider, route.model, route.params) == ("google", "gemini-4-argon", {"effort": "medium"})
     assert router.resolve(RouteRequest(profile_class="REASONING")).provider == "anthropic"
     restricted = router.resolve(RouteRequest(profile_class="REASONING", provider="google",
                                              confidentiality="restricted"))

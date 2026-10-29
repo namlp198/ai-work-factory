@@ -53,6 +53,7 @@ from awf.domain.models import (
 )
 from awf.domain.state_machine import can_transition_task, check_task_transition
 from awf.logging import get_logger
+from awf.model_router import COMPLEXITY_LEVELS
 from awf.orchestrator import audit
 from awf.orchestrator import placement
 from awf.orchestrator.jobs import expire_leases, mismatch_reasons, requeue_or_fail, requirements_met
@@ -87,6 +88,13 @@ def aware(dt: datetime | None) -> datetime | None:
     if dt is not None and dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+# Job errors a task retry cannot fix: the API account cannot pay, the provider refuses the key or model, the
+# machine lacks the engine. The task fails at once instead of running its remaining attempts.
+NO_TASK_RETRY = {"MODEL_BILLING", "MODEL_REJECTED", "ENGINE_MISSING"}
+# Approval asked before a task runs at an effort listed in escalation.approval_required (ADR-015).
+EFFORT_APPROVAL = "approve_effort"
 
 
 class OrchestratorError(Exception):
@@ -153,13 +161,16 @@ class Orchestrator:
 
     def start_run(self, session: Session, project: Project, workflow_id: str, inputs: dict[str, Any],
                   actor: str = "admin", worker_name: str | None = None, llm: str | None = None,
-                  coding_engine: str | None = None, engine_scope: str | None = None) -> WorkflowRun:
+                  coding_engine: str | None = None, engine_scope: str | None = None,
+                  complexity: str | None = None) -> WorkflowRun:
         """Start a run. With run placement (the default) `worker_name` pins it to that machine; otherwise
         the orchestrator picks the least loaded matching machine at the first dispatch. `llm` chooses the model
         provider for every agent of the run (default: the project's labels.llm, then default_provider).
         `coding_engine` runs the roles that support it on another engine, e.g. claude-code (default: the project's
         labels.coding_engine, else native). `engine_scope` `all` runs every role on that engine, e.g. to use a
-        signed-in subscription plan instead of API keys (default: labels.engine_scope, else `coding`)."""
+        signed-in subscription plan instead of API keys (default: labels.engine_scope, else `coding`).
+        `complexity` normal / hard / very_hard raises effort and model for every role (ADR-015; default:
+        labels.complexity, else normal)."""
         if project.status == PROJECT_ARCHIVED:
             raise OrchestratorError("project is archived; restore it before starting a run")
         workflow = self.p.workflows.get(workflow_id)
@@ -179,6 +190,9 @@ class Orchestrator:
                                     f"{', '.join(self.p.router.providers())})")
         engine = coding_engine or (project.labels or {}).get("coding_engine") or NATIVE_ENGINE
         scope = engine_scope or (project.labels or {}).get("engine_scope") or "coding"
+        level = complexity or (project.labels or {}).get("complexity") or "normal"
+        if level not in COMPLEXITY_LEVELS:
+            raise OrchestratorError(f"unknown complexity '{level}' (supported: {', '.join(COMPLEXITY_LEVELS)})")
         if scope == "all" and engine == NATIVE_ENGINE:
             raise OrchestratorError("engine scope 'all' needs a coding engine (e.g. claude-code or antigravity)")
         try:
@@ -203,7 +217,8 @@ class Orchestrator:
             status=RunStatus.RUNNING, input_json=inputs, started_at=utcnow(),
             context_json={"stage_iteration": {}, "fix_loops": {}, "integration_branch": f"awf/run-{run_id[:8]}",
                           "placement": {"mode": workflow.spec.placement, "worker": worker_name, "wait": None},
-                          "llm": provider, "coding_engine": engine, "engine_scope": scope},
+                          "llm": provider, "coding_engine": engine, "engine_scope": scope,
+                          "complexity": level},
             requirements=requirements,
         )
         session.add(run)
@@ -219,7 +234,7 @@ class Orchestrator:
                                                       "placement": workflow.spec.placement,
                                                       "requirements": requirements, "worker": worker_name,
                                                       "llm": provider, "coding_engine": engine,
-                                                      "engine_scope": scope})
+                                                      "engine_scope": scope, "complexity": level})
         return run
 
     @staticmethod
@@ -400,13 +415,16 @@ class Orchestrator:
         audit.record(session, event, project_id=run.project_id, workflow_run_id=run.id, task_id=task.id,
                      payload={"reason": reason, "title": task.title})
 
-    def _retry_or_fail(self, session: Session, run: WorkflowRun, task: Task, feedback: list[str]) -> None:
-        """Re-run a task with feedback if it has attempts left, otherwise fail it."""
+    def _retry_or_fail(self, session: Session, run: WorkflowRun, task: Task, feedback: list[str],
+                       sent_back: bool = False) -> None:
+        """Re-run a task with feedback if it has attempts left, otherwise fail it. `sent_back`: the work itself was
+        judged insufficient (Critic, human), so the next attempt runs one complexity level higher (ADR-015)."""
         if task.attempt < task.max_attempts:
             if can_transition_task(task.state, TaskState.CHANGES_REQUIRED):
                 self._set_state(task, TaskState.CHANGES_REQUIRED)
             self._set_state(task, TaskState.READY)
-            task.input_json = {**task.input_json, "feedback": feedback}
+            task.input_json = {**task.input_json, "feedback": feedback,
+                               "sent_back": int(task.input_json.get("sent_back") or 0) + int(sent_back)}
             audit.record(session, EventType.TASK_RETRY, project_id=run.project_id, workflow_run_id=run.id,
                          task_id=task.id, payload={"attempt": task.attempt, "feedback": feedback[:10]})
         else:
@@ -449,6 +467,11 @@ class Orchestrator:
         if agent_run:
             agent_run.status = AgentRunStatus.FAILED
             agent_run.error = job.error
+        code = (job.result or {}).get("error_code")
+        if code in NO_TASK_RETRY:
+            # Another attempt of the task would meet the same account or machine: fail now, with the reason.
+            self._fail_task(session, run, task, f"{code}: {job.error}"[:2000])
+            return
         self._retry_or_fail(session, run, task, [f"previous attempt failed: {job.error}"])
 
     def _record_agent_run(self, session: Session, run: WorkflowRun, job: Job, agent_run: AgentRun | None,
@@ -549,7 +572,7 @@ class Orchestrator:
             audit.record(session, EventType.TASK_CHANGES_REQUIRED, actor_type="critic", actor_id="critic",
                          project_id=run.project_id, workflow_run_id=run.id, task_id=task.id, payload=critic.as_dict())
             feedback = [f"[{f.severity}/{f.code}] {f.message}" for f in critic.findings if f.severity in ("MAJOR", "BLOCKER")]
-            self._retry_or_fail(session, run, task, feedback)
+            self._retry_or_fail(session, run, task, feedback, sent_back=True)
             return
 
         audit.record(session, EventType.CRITIC_PASSED, actor_type="critic", actor_id="critic",
@@ -606,6 +629,12 @@ class Orchestrator:
             task = session.get(Task, approval.task_id) if approval.task_id else None
             if task is None or task.state != TaskState.APPROVAL_REQUIRED:
                 continue
+            if approval.action == EFFORT_APPROVAL:
+                decisions = dict((task.input_json or {}).get("effort_decisions") or {})
+                decisions[(approval.scope or {}).get("key", "")] = approval.state == ApprovalState.APPROVED
+                task.input_json = {**(task.input_json or {}), "effort_decisions": decisions}
+                self._set_state(task, TaskState.READY)
+                continue
             if approval.state == ApprovalState.APPROVED:
                 self._set_state(task, TaskState.DONE)
                 audit.record(session, EventType.TASK_COMPLETED, project_id=run.project_id, workflow_run_id=run.id,
@@ -614,7 +643,8 @@ class Orchestrator:
                 self._fail_task(session, run, task, f"rejected by {approval.approved_by}: {approval.comment or ''}")
             else:
                 self._retry_or_fail(session, run, task, [
-                    f"Human reviewer {approval.approved_by} rejected the result: {approval.comment or 'no comment'}"])
+                    f"Human reviewer {approval.approved_by} rejected the result: {approval.comment or 'no comment'}"],
+                    sent_back=True)
         return bool(approvals)
 
     # ================================================================== 3. stage verdicts / fix loops
@@ -836,11 +866,45 @@ class Orchestrator:
                 continue  # waiting for a machine (see _ensure_placement); the task stays READY
             changed = True
             try:
+                if task.task_type != TaskType.TOOL and self._effort_needs_approval(session, run, project, stage, task):
+                    continue
                 self._dispatch_job(session, run, workflow, project, stage, task)
             except Exception as exc:  # routing/config errors fail the task, not the orchestrator
                 logger.exception("dispatch failed for task %s", task.id)
                 self._fail_task(session, run, task, f"dispatch failed: {exc}")
         return changed
+
+    # Engines whose effort setting reaches the model; the other CLIs choose their own reasoning.
+    EFFORT_ENGINES = (NATIVE_ENGINE, "claude-code", "codex")
+
+    def _effort_needs_approval(self, session: Session, run: WorkflowRun, project: Project, stage: StageSpec,
+                               task: Task) -> bool:
+        """High effort waits for a human (ADR-015): ask once per model and effort; True while the task waits."""
+        route = self.router.resolve(session, task, stage, project)
+        model = route.model_route
+        if not model or model.provider == "scripted" or route.engine not in self.EFFORT_ENGINES:
+            return False  # the offline provider and CLIs that pick their own reasoning have no effort to approve
+        effort = self.router.models.effort_gate(model)
+        if not effort:
+            return False
+        key = f"{model.provider}/{model.model}/{effort}"
+        if key in ((task.input_json or {}).get("effort_decisions") or {}):
+            return False  # decided: _dispatch_job applies it
+        self._set_state(task, TaskState.APPROVAL_REQUIRED)
+        approval = Approval(project_id=run.project_id, workflow_run_id=run.id, task_id=task.id,
+                            action=EFFORT_APPROVAL, risk_level=1,
+                            scope={"project_id": run.project_id, "workflow_run_id": run.id, "stage_id": stage.id,
+                                   "task": task.title, "role": task.assigned_role, "provider": model.provider,
+                                   "model": model.model, "effort": effort, "key": key, "reason": model.reason,
+                                   "description": f"Run {task.title} ({task.assigned_role}) on {model.provider}/"
+                                                  f"{model.model} with effort {effort}? Rejecting runs it at "
+                                                  "the highest effort that needs no approval."})
+        session.add(approval)
+        session.flush()
+        audit.record(session, EventType.APPROVAL_REQUESTED, project_id=run.project_id, workflow_run_id=run.id,
+                     task_id=task.id, payload={"approval_id": approval.id, "action": EFFORT_APPROVAL,
+                                               "model": model.model, "effort": effort})
+        return True
 
     def _stage_input_artifacts(self, session: Session, run: WorkflowRun, workflow: LoadedWorkflow,
                                stage: StageSpec) -> list[str]:
@@ -851,6 +915,11 @@ class Orchestrator:
     def _dispatch_job(self, session: Session, run: WorkflowRun, workflow: LoadedWorkflow, project: Project,
                       stage: StageSpec, task: Task) -> Job:
         route = self.router.resolve(session, task, stage, project)
+        model = route.model_route
+        effort = self.router.models.effort_gate(model) if model else None
+        decisions = (task.input_json or {}).get("effort_decisions") or {}
+        if effort and decisions.get(f"{model.provider}/{model.model}/{effort}") is False:
+            model.reason = f"{model.reason}; effort {effort} not approved -> {self.router.models.cap_effort(model)}"
         repository = run.input_json.get("repository") or project.repository or {}
         task.attempt += 1
         integration = run.context_json.get("integration_branch")
@@ -893,7 +962,8 @@ class Orchestrator:
                                  model_class=model.model_class, model_provider=model.provider, model_name=model.model,
                                  route_reason=model.reason, status=AgentRunStatus.QUEUED,
                                  input_json={"input_artifact_ids": built.input_artifact_ids,
-                                             "task": task_meta(task), "context_chars": len(built.user_message)})
+                                             "task": task_meta(task), "context_chars": len(built.user_message),
+                                             "effort": model.params.get("effort"), "engine": route.engine})
             session.add(agent_run)
         placed = placement.is_run_placed(run)
         job = Job(id=new_id(), task_id=task.id, workflow_run_id=run.id, agent_run_id=agent_run.id if agent_run else None,

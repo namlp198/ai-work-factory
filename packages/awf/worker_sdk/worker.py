@@ -20,10 +20,12 @@ from awf.agent_runtime.providers import key_capabilities
 from awf.logging import get_logger, log_event
 from awf.policy import PolicyConfig, PolicyEngine
 from awf.worker_sdk.claude_code import CAPABILITY as CLAUDE_CODE_CAPABILITY
+from awf.worker_sdk.claude_code import auth_mode as claude_code_auth_mode
 from awf.worker_sdk.claude_code import claude_code_bin
 from awf.worker_sdk.codex import CAPABILITY as CODEX_CAPABILITY
 from awf.worker_sdk.cli_engines import ENGINES as CLI_ENGINES
 from awf.worker_sdk.cli_engines import engine_bin as cli_engine_bin
+from awf.worker_sdk.codex import auth_mode as codex_auth_mode
 from awf.worker_sdk.codex import codex_bin
 from awf.worker_sdk.client import ControlPlaneClient, ControlPlaneError
 from awf.worker_sdk.executor import JobExecutor
@@ -96,8 +98,12 @@ def detect_capabilities() -> list[str]:
         caps.add("msbuild")
     if claude_code_bin():
         caps.add(CLAUDE_CODE_CAPABILITY)
+        if claude_code_auth_mode() == "login":
+            caps.add(CLAUDE_CODE_CAPABILITY + "-login")  # runs on a Claude Pro/Max plan: the dashboard suggests it
     if codex_bin():
         caps.add(CODEX_CAPABILITY)
+        if codex_auth_mode() == "login":
+            caps.add(CODEX_CAPABILITY + "-login")  # runs on a ChatGPT plan
     caps |= {engine for engine in CLI_ENGINES if cli_engine_bin(engine)}  # antigravity, qwen-code, kimi-code
     vswhere = _vswhere()
     if vswhere:
