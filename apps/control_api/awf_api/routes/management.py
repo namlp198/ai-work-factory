@@ -108,6 +108,10 @@ def create_project(body: ProjectIn, state: AppState = Depends(get_state), sessio
         session.flush()
     except IntegrityError:
         session.rollback()
+        other = session.scalar(select(Project).where(Project.slug == body.slug))
+        if other is not None and other.status == "ARCHIVED":
+            raise HTTPException(409, f"the archived project '{other.name}' uses the slug '{body.slug}': restore it, "
+                                     "or choose another slug") from None
         raise HTTPException(409, "a project with this slug already exists") from None
     return ser.project(project)
 

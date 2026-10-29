@@ -156,7 +156,12 @@ class Orchestrator:
                        repository: dict[str, Any] | None = None, confidentiality: str = "internal",
                        budget_usd: float | None = None, labels: dict[str, Any] | None = None,
                        actor: str = "admin") -> Project:
-        project = Project(id=new_id(), name=name, slug=slug_value or slug(name, 100), description=description,
+        if not slug_value:
+            # A name taken by another project (an archived one keeps its slug) gets the next free suffix: -2, -3...
+            base = slug(name, 95)
+            taken = set(session.scalars(select(Project.slug).where(Project.slug.like(f"{base}%"))))
+            slug_value = next(s for s in (base if n == 1 else f"{base}-{n}" for n in range(1, 10_000)) if s not in taken)
+        project = Project(id=new_id(), name=name, slug=slug_value, description=description,
                           repository=repository or {}, confidentiality=confidentiality,
                           budget_usd=budget_usd, labels=labels or {})
         session.add(project)

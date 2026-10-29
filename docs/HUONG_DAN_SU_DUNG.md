@@ -273,6 +273,15 @@ clone từ đó và đẩy nhánh của chúng lên đó (ADR-016).
    trung tâm; nếu không đặt, máy trung tâm tự sinh một token và lưu trong `var/git/.token`.
 4. Run chỉ bắt đầu được sau lần push `main` đầu tiên. Trước đó, nút Start báo "push your code first".
 
+**Project cũ (repo ở GitHub hay thư mục):** không cần tạo lại. Mở trang project, mục **Repo chung** → **Chuyển lên
+máy trung tâm**. Máy trung tâm chép repo từ URL cũ (để trống ô này nếu muốn tạo repo trống rồi push từ PC). Các
+cài đặt khác giữ nguyên. Các mặc định mới (engine, phạm vi engine, độ khó) sửa ở mục **Chạy ở đâu**; build, test
+và ngân sách sửa ở mục **Cài đặt**. Run đã chạy vẫn giữ cấu hình lúc nó bắt đầu.
+
+**Tạo lại project trùng tên:** project đã có run thì chỉ **lưu trữ** được, không xoá được (để giữ lịch sử), và nó
+vẫn giữ slug. Project mới cùng tên sẽ nhận slug kế tiếp (`internal-file-server-2`). Muốn dùng lại chính project
+cũ: mở danh sách *Đã lưu trữ* ở trang Projects → **Khôi phục**, rồi sửa cài đặt.
+
 **Một run diễn ra thế nào:**
 
 - Mỗi task viết code làm việc trên nhánh `awf/tasks/<run>/<task>`. Xong việc, nó được **rebase** lên nhánh tích

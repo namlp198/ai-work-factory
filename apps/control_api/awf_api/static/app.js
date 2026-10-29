@@ -412,7 +412,12 @@ function machineSelect(workers, selected = "", auto = "") {
 
 // The project's repository on the control plane (ADR-016): what your PC needs to use it as the `factory` remote.
 function gitPanel(p, g) {
-  if (!g?.hosted) return "";
+  if (!g?.hosted) {
+    if (p.status === "ARCHIVED" || !p.repository?.url) return "";
+    return `<h2>${t("git.move_title")}</h2><p class="muted">${t("git.move_text")}</p>
+      <form class="grid" id="git-move-form"><label class="full">${t("git.move_from")}<input name="import_from" value="${esc(p.repository.url === "pending" ? "" : p.repository.url)}"></label>
+      <div class="full row"><button class="ghost">${t("git.move_button")}</button><span id="git-move-error" class="error"></span></div></form>`;
+  }
   const url = `${location.origin}${g.path}`;
   const base = g.base_branch || "main";
   const setup = [`git remote add factory ${url}`, `git push factory ${base}`].join("\n");
@@ -443,7 +448,8 @@ async function viewProject(id) {
   const repo = p.repository || {};
   return `<div class="page-head"><h1>${esc(p.name)}</h1><span class="muted"><code>${esc(p.slug)}</code> · ${tn("project.run_count", p.run_count)}</span></div>
     ${archived ? `<div class="archived-banner"><span>${t("project.archived_banner")}</span>
-      <button class="ghost" id="restore-project">${t("project.restore")}</button></div>` : ""}
+      <button class="ghost" id="restore-project">${t("project.restore")}</button></div>
+      <p class="muted">${t("project.archived_restore_hint")}</p>` : ""}
     <div class="kv"><div>${t("field.repository")}</div><div>${g?.hosted ? t("git.hosted_here", { base: esc(repo.base_branch || "main") }) : repo.url ? `<code>${esc(repo.url)}</code> (${esc(repo.base_branch)})` : `<span class="muted">${t("project.no_repository")}</span>`}</div>
     <div>${t("project.commands")}</div><div>build: <code>${esc(argvText(repo.build_command) || "—")}</code> test: <code>${esc(argvText(repo.test_command) || "—")}</code> lint: <code>${esc(argvText(repo.lint_command) || "—")}</code></div>
     <div>${t("project.spend_budget")}</div><div>${money(p.spend_usd)} / ${p.budget_usd == null ? "∞" : money(p.budget_usd)}</div></div>
@@ -582,6 +588,16 @@ function bindProject(id) {
   const restore = $("#restore-project");
   if (restore) restore.onclick = async () => { await api(`/projects/${id}/restore`, { method: "POST" }); render(); };
 
+  const move = $("#git-move-form");
+  if (move) move.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!confirm(t("git.move_confirm", {}, true))) return;
+    const from = new FormData(move).get("import_from").trim();
+    try {
+      await api(`/projects/${id}/git`, { method: "POST", body: JSON.stringify(from && from !== "pending" ? { import_from: from } : {}) });
+      clearError("git-move-error"); render();
+    } catch (err) { showError("git-move-error", err.message); }
+  };
   const edit = $("#project-edit-form");
   if (edit) edit.onsubmit = async (e) => {
     e.preventDefault();

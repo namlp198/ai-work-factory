@@ -65,3 +65,27 @@ def test_overview_lists_recently_finished_runs(client, repository_config):
     recent = client.get("/api/v1/overview").json()["recent_runs"]
     assert recent[0]["id"] == run["id"] and recent[0]["project"] == "Shop" and recent[0]["status"] == "CANCELLED"
     assert recent[0]["objective"] == "Add CSV export"
+
+
+def test_the_name_of_an_archived_project_can_be_used_again(client, orchestrator, repository_config):
+    old = _project(client, repository_config, name="Internal File Server")
+    run = client.post(f"/api/v1/projects/{old['id']}/workflow-runs", json={"inputs": {"objective": "x"}}).json()
+    client.post(f"/api/v1/workflow-runs/{run['id']}/cancel")
+    assert client.post(f"/api/v1/projects/{old['id']}/archive").status_code == 200
+
+    new = _project(client, repository_config, name="Internal File Server")
+    assert (old["slug"], new["slug"]) == ("internal-file-server", "internal-file-server-2")
+    assert _project(client, repository_config, name="Internal File Server")["slug"] == "internal-file-server-3"
+    taken = client.post("/api/v1/projects", json={"name": "X", "slug": "internal-file-server", "labels": {"platform": "linux"}})
+    assert taken.status_code == 409 and "restore it" in taken.json()["detail"]
+
+
+def test_an_existing_project_moves_to_the_shared_repository(client, repository_config):
+    p = _project(client, repository_config)
+    assert client.get(f"/api/v1/projects/{p['id']}/git").json() == {"hosted": False}
+    res = client.post(f"/api/v1/projects/{p['id']}/git", json={"import_from": repository_config["url"]})
+    assert res.status_code == 200, res.text
+    assert res.json()["base_sha"]  # the copy has the base branch, so runs can start at once
+    got = client.get(f"/api/v1/projects/{p['id']}").json()
+    assert got["repository"]["url"] == f"awf-git:{p['slug']}"
+    assert got["repository"]["build_command"] == repository_config.get("build_command")  # other settings kept
