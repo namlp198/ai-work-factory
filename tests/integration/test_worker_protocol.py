@@ -266,3 +266,23 @@ def test_retrying_a_failed_run_revives_the_tasks_its_failure_cancelled(client, p
     assert _drive(client, orchestrator, worker, run_id)["status"] == "COMPLETED"
     assert {t["state"] for t in client.get(f"/api/v1/workflow-runs/{run_id}/tasks").json()} == {"DONE"}
     assert client.post(f"/api/v1/workflow-runs/{run_id}/retry").status_code == 409
+
+
+def test_a_retry_with_nothing_left_to_do_keeps_the_earlier_attempts_work(client, platform, orchestrator, worker,
+                                                                         repository_config, tmp_path, monkeypatch):
+    """Run 044f4928: the blocked attempt had already integrated its work, so every retry found nothing to change
+    and failed with NO_CHANGES."""
+    _use_workflow(platform, DEV_ONLY)
+    key = "sk-ant-api03-" + "y" * 30
+    _script(tmp_path, monkeypatch, {"engineering.developer": _dev_turns({"src/config.py": f"KEY = '{key}'\n"})})
+    run_id = _start(client, repository_config)
+    assert _drive(client, orchestrator, worker, run_id)["status"] == "FAILED"
+
+    _script(tmp_path, monkeypatch, {"engineering.developer": [{"turns": [
+        {"tool_calls": [{"name": "build.run", "input": {}}, {"name": "test.run", "input": {}}]},
+        {"submit": {"summary": "already done"}}]}]})
+    assert client.post(f"/api/v1/workflow-runs/{run_id}/retry").status_code == 200
+    assert _drive(client, orchestrator, worker, run_id)["status"] == "COMPLETED"
+    task = client.get(f"/api/v1/workflow-runs/{run_id}/tasks").json()[0]
+    codes = [f["code"] for f in task["output"]["critic"]["findings"]]
+    assert "CHANGES_FROM_EARLIER_ATTEMPT" in codes and "NO_CHANGES" not in codes

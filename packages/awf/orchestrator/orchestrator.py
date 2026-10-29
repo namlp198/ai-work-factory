@@ -59,6 +59,7 @@ from awf.orchestrator import audit
 from awf.orchestrator import placement
 from awf.orchestrator.jobs import expire_leases, mismatch_reasons, requeue_or_fail, requirements_met
 from awf.orchestrator.context import ContextBuilder, task_meta
+from awf.agent_runtime.validation import Finding
 from awf.orchestrator.critic import CHANGES_REQUIRED, Critic, CriticResult
 from awf.orchestrator.task_router import NATIVE_ENGINE, TaskRouter, run_capabilities, slug
 from awf.platform import Platform
@@ -591,7 +592,14 @@ class Orchestrator:
             contract = definition.contract
             specs = {o.name: (o.resolved_artifact_type, o.media_type, o.extension) for o in contract.outputs}
             artifact_ids = self._store_outputs(session, run, stage, task, job, result.get("outputs") or {}, specs)
+            earlier = None if (result.get("evidence") or {}).get("has_changes") else self._integrated_commit(session, task, job)
+            if earlier:
+                # A retry finds nothing to do when an earlier attempt's work is already in the run branch.
+                result = {**result, "evidence": {**(result.get("evidence") or {}), "has_changes": True}}
             critic = self.critic.evaluate_agent(contract, result)
+            if earlier:
+                critic.findings.append(Finding("INFO", "CHANGES_FROM_EARLIER_ATTEMPT", "no new changes; this task's "
+                                               f"work is already in the run branch (commit {earlier[:10]})"))
         if agent_run:
             agent_run.critic_json = critic.as_dict()
         self._merge_output(task, critic=critic.as_dict(), artifact_ids=artifact_ids, summary=result.get("summary"),
@@ -600,6 +608,16 @@ class Orchestrator:
         self._apply_critic(session, run, stage, task, critic, artifact_ids, definition, result)
         if result.get("integration_conflict") and task.state in (TaskState.DONE, TaskState.APPROVAL_REQUIRED):
             self._spawn_resolve(session, run, stage, task, result["integration_conflict"])
+
+    @staticmethod
+    def _integrated_commit(session: Session, task: Task, job: Job) -> str | None:
+        """The commit an earlier attempt of this task integrated into the run branch, if any."""
+        for other in session.scalars(select(Job).where(Job.task_id == task.id, Job.id != job.id,
+                                                       Job.state == JobState.SUCCESS).order_by(Job.created_at.desc())):
+            commit = (other.result or {}).get("commit") or {}
+            if commit.get("has_changes") and commit.get("integrated") and commit.get("sha"):
+                return commit["sha"]
+        return None
 
     def _apply_critic(self, session: Session, run: WorkflowRun, stage: StageSpec, task: Task, critic: CriticResult,
                       artifact_ids: list[str], definition, result: dict[str, Any]) -> None:

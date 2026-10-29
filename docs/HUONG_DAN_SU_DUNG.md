@@ -1520,6 +1520,7 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `COMPLETION_RULE_FAILED` | Build/test thật sự fail — xem log job và `test_evidence`. |
 | `NO_CHANGES` | Developer không tạo thay đổi nào (thường do `fs.replace` không khớp). |
 | `critic blocked: ... credential-like material in <file>` | Diff thêm một khoá có định dạng thật vào `<file>`. Gỡ khoá khỏi repo, dùng biến môi trường, rồi bấm **Chạy lại run**. Bản cũ (trước 29/10/2026) chặn cả việc xoá mật khẩu cũ và mật khẩu mẫu trong test: cập nhật máy trung tâm rồi bấm **Chạy lại run**. |
+| Chạy lại run thì task báo `[MAJOR/NO_CHANGES] task requires source changes but none were committed` | Lần chạy trước của task đã đưa code vào nhánh run, nên lần này không còn gì để sửa. Từ 29/10/2026, platform tính phần code đó là thay đổi của task (ghi chú `CHANGES_FROM_EARLIER_ATTEMPT`). Cập nhật máy trung tâm rồi bấm **Chạy lại run**. |
 | Run fail, các task còn lại `CANCELLED` | Bấm **Chạy lại run** trên trang run: task fail chạy lại, các task bị huỷ chạy tiếp. |
 | `INTEGRATION_CONFLICT` | Hai task song song sửa cùng chỗ; Planner nên đặt `depends_on`. |
 | `no model available for class LOCAL_PRIVATE` | Project `restricted`; chưa có model cục bộ. |
