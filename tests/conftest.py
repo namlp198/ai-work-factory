@@ -67,6 +67,7 @@ def platform(tmp_path, monkeypatch):
         environment="development",
         api_token="",
         worker_registration_token="",
+        git_root=tmp_path / "git",
     )
     p = Platform.build(settings)
     p.db.create_all()

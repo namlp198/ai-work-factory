@@ -42,7 +42,7 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
   không cần đăng nhập; PowerShell admin).
 - Câu hỏi thường gặp (khác gì Claude Code local, repo local hay GitHub, project/run/task, API key, cập nhật
   máy): §22 của hướng dẫn.
-- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (268 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
+- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (276 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
 - Model thật: Claude, Gemini, ChatGPT, Qwen, Kimi, DeepSeek, MiniMax. Đặt API key của hãng trong `.env` của máy
   worker (bảng tổng hợp và cách lấy key ở §6 của hướng dẫn). Key dùng cho mọi agent, không riêng coding. Developer chạy bằng engine viết code
   (Claude Code, Codex, Antigravity cho Gemini, Qwen Code, Kimi Code, DeepSeek Harness, MiniMax Code): chọn
@@ -56,7 +56,7 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
 |---|---|
 | [docs/HUONG_DAN_SU_DUNG.md](docs/HUONG_DAN_SU_DUNG.md) | **Hướng dẫn chi tiết**: cài đặt, đưa repo thật vào, worker, nhiều máy (§21), cấu hình, viết workflow/agent, API, bảo mật, sự cố |
 | [docs/architecture/implementation-overview.md](docs/architecture/implementation-overview.md) | Ánh xạ thiết kế → code, vòng đời run, state machine, giới hạn |
-| [docs/adr/](docs/adr/) | ADR-001 … ADR-015 |
+| [docs/adr/](docs/adr/) | ADR-001 … ADR-016 |
 | [docs/trials/internal-file-server.md](docs/trials/internal-file-server.md) | Báo cáo chạy thử trên repo .NET thật |
 
 ## Cấu trúc

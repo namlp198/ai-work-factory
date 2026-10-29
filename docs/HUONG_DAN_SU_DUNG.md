@@ -243,6 +243,64 @@ development/verification/review chạy lại với `iteration 2`, rồi QA và d
 
 ## 5. Đưa một repo thật vào factory (từng bước)
 
+**Cách khuyến nghị: repo chung trên máy trung tâm** (mục 5a ngay dưới). PC của bạn và mọi worker dùng chung một
+repo như một team. Các bước 1–6 phía sau là cách cũ: dùng repo ở nơi khác (GitHub, server git, thư mục), và vẫn
+dùng được.
+
+### 5a. Repo chung trên máy trung tâm (làm việc như một team)
+
+Máy trung tâm giữ một **bare repo** cho mỗi project, phục vụ git qua HTTPS, cùng địa chỉ với dashboard
+(`https://<máy trung tâm>/git/<project>.git`). PC của bạn thêm repo đó làm remote `factory`. Worker ở mọi máy
+clone từ đó và đẩy nhánh của chúng lên đó (ADR-016).
+
+| Ai | Được làm gì |
+|---|---|
+| Bạn (PC) | fetch, pull, push mọi nhánh, kể cả `main` |
+| Worker | chỉ ghi nhánh `awf/*`. Chỉ ghi `main` trong **job merge**, sau khi bạn duyệt `approve_merge` |
+
+**Tạo project:**
+
+1. Dashboard → **Projects → New project** → **Repository** = *Repo mới trên máy trung tâm* (hoặc *Chép vào máy
+   trung tâm từ một URL hoặc đường dẫn*: bản sao có sẵn toàn bộ nhánh, kể cả `main`).
+2. Mở trang project, mục **Git remote**: ở đó có URL remote, token đăng nhập (nút *Hiện* / *Sao chép*) và lệnh.
+3. Trong repo trên PC của bạn, làm một lần:
+   ```powershell
+   git remote add factory https://<máy trung tâm>/git/<project>.git
+   git push factory main
+   ```
+   Lần đầu git hỏi đăng nhập: **tên người dùng tuỳ ý**, **mật khẩu là token** ở mục Git remote. Credential
+   Manager của Git for Windows lưu lại, nên không phải nhập lại. Token là `AWF_GIT_TOKEN` trong `.env` của máy
+   trung tâm; nếu không đặt, máy trung tâm tự sinh một token và lưu trong `var/git/.token`.
+4. Run chỉ bắt đầu được sau lần push `main` đầu tiên. Trước đó, nút Start báo "push your code first".
+
+**Một run diễn ra thế nào:**
+
+- Mỗi task viết code làm việc trên nhánh `awf/tasks/<run>/<task>`. Xong việc, nó được **rebase** lên nhánh tích
+  hợp `awf/run-<id>`, rồi nhánh tích hợp được fast-forward. Lịch sử thẳng, không có commit merge.
+- Bước *Prepare pull request*: nếu trong lúc run chạy bạn đã push gì lên `main`, nhánh tích hợp được **rebase lên
+  `main` mới nhất**, rồi platform build và test lại.
+- Bạn duyệt **approve_merge**, stage *Merge into the base branch* fast-forward `main` tới nhánh tích hợp. Không
+  bao giờ có force push lên `main`. Nếu `main` lại vừa đổi, nhánh tích hợp được rebase thêm một lần nữa trước khi
+  merge.
+- Sau đó, trên PC: `git pull factory main`.
+
+**Khi có conflict:**
+
+1. Git không tự rebase được, nên platform tạo task **Resolve conflict** cho Developer (cùng engine và model của
+   run). Workspace của task chứa sẵn hai phía dưới dạng một squash merge, kèm dấu conflict.
+2. Agent sửa xong thì platform kiểm tra không còn dấu `<<<<<<<` / `=======` / `>>>>>>>`, build, test, commit, rồi
+   đẩy lên nhánh tích hợp. Trên trang run, task này có tên "Resolve conflict: … onto …".
+3. Agent không giải được (hết lượt thử) thì run **dừng chờ bạn**, với yêu cầu duyệt **resolve_conflict**. Yêu cầu
+   này liệt kê các file conflict và lệnh để bạn tự giải trên PC (có nút Sao chép). Giải xong và push thì bấm
+   **Approve**, run chạy tiếp. **Reject** thì run fail.
+4. Trên 6 lần conflict trong một run: run dừng, vì có thể các task đang chồng chéo nhau. Hãy xem lại kế hoạch.
+
+**Xem việc của một run trên PC:** `git fetch factory`, rồi `git switch -c review factory/awf/run-<id>`. Không nên
+commit lên các nhánh `awf/*` trong lúc run còn chạy, vì platform rebase chúng.
+
+**Sao lưu:** `awf db backup` sao lưu cả các repo này, mỗi repo một file `var/backups/git-<project>-*.bundle`.
+Khôi phục bằng `git clone --bare <file .bundle> var/git/<project>.git`.
+
 Ví dụ thực tế: `D:\src\ai-workspace\06_Repositories\InternalFileServer` (.NET 8). Báo cáo đầy đủ của lần
 chạy thử: [`docs/trials/internal-file-server.md`](trials/internal-file-server.md).
 
@@ -1127,8 +1185,14 @@ git push origin factory/awf/run-0af3d47f:refs/heads/feature/health-endpoint
 ```
 
 Artifact `source_patch` (`delivery/patch.patch`) áp dụng được bằng `git apply`. Artifact `pull_request`
-chứa nhánh nguồn/đích, diffstat, danh sách commit, trace artifact. Merge vào nhánh protected **luôn** do
-người thực hiện (policy level 2).
+chứa nhánh nguồn/đích, diffstat, danh sách commit, trace artifact.
+
+Merge vào nhánh chính:
+
+- **Repo chung trên máy trung tâm** (mục 5a): sau khi bạn duyệt `approve_merge`, stage *Merge into the base
+  branch* fast-forward `main`. Trên PC: `git pull factory main`.
+- **Repo ở nơi khác** (GitHub...): stage đó chỉ ghi "merge it yourself". Merge vẫn do bạn tự làm, qua PR (policy
+  level 2).
 
 ## 9b. Quy trình viết content (`content-production`)
 
@@ -1400,7 +1464,7 @@ OpenAPI đầy đủ: `http://<host>:8000/docs`.
 ## 18. Kiểm thử nền tảng
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (268 test)
+.\.venv\Scripts\python -m pytest -q -p no:logging            # toàn bộ (276 test)
 .\.venv\Scripts\python -m pytest tests/unit -q                # state machine, workflow, policy, router, critic, redaction
 .\.venv\Scripts\python -m pytest tests/integration -q         # giao thức worker, auth, routing, các kịch bản lỗi
 .\.venv\Scripts\python -m pytest tests/e2e -q                 # workflow đầy đủ trên git repo thật + fix loop
@@ -1439,6 +1503,11 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `no credit or quota left on the <nhà cung cấp> API account` | Tài khoản API hết credit (Claude: "credit balance is too low"), hết quota ngày, hoặc key free tier không được dùng model đó (Gemini: `limit: 0`, thường gặp với `gemini-4-argon`). Job fail ngay, không thử lại. Nạp credit hoặc bật billing cho key; gói Pro/Plus **không** trả tiền cho API key. Hoặc chạy cả run bằng gói (mục 6, "Chạy cả run bằng gói Pro"). |
 | Task đứng ở `APPROVAL_REQUIRED`, có yêu cầu `approve_effort` | Task sắp chạy với effort high/xhigh (run *Khó*/*Rất khó*, hoặc task bị trả về rồi tự leo mức). Duyệt để chạy đúng mức; từ chối để chạy ở medium (mục 6, "Model và effort cho từng role"). |
 | Không kịp đọc lỗi trên dashboard | Lỗi dưới form giờ được giữ tới khi bạn bấm ×. Mọi lỗi còn nằm trong **nhật ký lỗi**: nút **Lỗi** ở đầu trang, mới nhất ở trên, có nút **Sao chép** và **Chép tất cả**. |
+| Start run báo `has no 'main' branch yet: push your code first` | Repo trên máy trung tâm còn trống: `git push factory main` từ PC (mục 5a). |
+| `git push factory` hỏi mật khẩu, hoặc báo `401` | Tên người dùng tuỳ ý, mật khẩu là token ở mục **Git remote** của trang project. Token đã đổi thì xoá mật khẩu cũ trong Credential Manager của Windows (mục `git:https://<máy trung tâm>`). |
+| Worker báo `403 ... workers may only push awf/* branches` | Worker cố ghi một nhánh khác `awf/*`. Chỉ job merge (sau khi duyệt) mới được ghi `main`. Nếu gặp ở job thường, hãy báo lỗi kèm log job. |
+| Task "Resolve conflict: …" xuất hiện trong run | Hai task, hoặc run và `main`, cùng sửa một chỗ. Agent đang giải. Nếu nó không giải được, bạn nhận yêu cầu `resolve_conflict` kèm lệnh (mục 5a). |
+| `after rebasing onto the latest main ... fails` | Một thay đổi bạn push lên `main` trong lúc run chạy làm hỏng build/test của run. Sửa trên `main`, hoặc chạy lại run. |
 | Run đứng ở 0%, stage đầu `active` rất lâu | Mở trang run, xem khối **Đang làm gì**: nó hiện lần thử của task, tin mới nhất từ worker (ví dụ `[model] Gemini API 503 ... high demand; retrying in 4s`) và lỗi của lần thử trước. |
 | `... did not answer within 240s (model busy or overloaded)` / `high demand` / `no time left for another attempt` | Model đang quá tải, không trả lời. Mỗi request chờ tối đa 240 giây; mọi lần thử lại nằm trong giới hạn thời gian của agent (mặc định 900 giây), rồi job được xếp chạy lại. Lặp lại nhiều lần: đổi model/nhà cung cấp, hoặc chờ hãng hết quá tải. |
 | `engine result rejected: ...` | Engine chạy một role chỉ đọc (Engine dùng cho = Mọi role) nhưng khối `awf-result` thiếu hoặc sai contract, cả sau lần làm lại. Job được chạy lại; lặp lại thì dùng engine hoặc model khác cho run đó. |

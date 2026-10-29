@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from awf import githost
 from awf.domain.enums import (
     ACTIVE_JOB_STATES,
     TERMINAL_RUN_STATUSES,
@@ -61,6 +62,7 @@ from awf.orchestrator.context import ContextBuilder, task_meta
 from awf.orchestrator.critic import CHANGES_REQUIRED, Critic, CriticResult
 from awf.orchestrator.task_router import NATIVE_ENGINE, TaskRouter, run_capabilities, slug
 from awf.platform import Platform
+from awf.security import hash_token, new_token
 from awf.workflow_engine import LoadedWorkflow, StageSpec
 
 logger = get_logger("orchestrator")
@@ -95,6 +97,10 @@ def aware(dt: datetime | None) -> datetime | None:
 NO_TASK_RETRY = {"MODEL_BILLING", "MODEL_REJECTED", "ENGINE_MISSING"}
 # Approval asked before a task runs at an effort listed in escalation.approval_required (ADR-015).
 EFFORT_APPROVAL = "approve_effort"
+# Asked when the agent could not resolve a git conflict: the owner resolves it on their machine (ADR-016).
+CONFLICT_APPROVAL = "resolve_conflict"
+CONFLICT_ROLE = "engineering.developer"
+MAX_CONFLICT_TASKS = 6  # per run: beyond this, something keeps colliding and a person should look
 
 
 class OrchestratorError(Exception):
@@ -184,6 +190,13 @@ class Orchestrator:
         missing = [name for name in workflow.spec.inputs if not inputs.get(name)]
         if missing:
             raise OrchestratorError(f"missing workflow inputs: {missing}")
+        repo = inputs.get("repository") or {}
+        if githost.is_hosted(repo.get("url")):
+            base = repo.get("base_branch") or "main"
+            path = githost.repo_path(self.p.settings.git_root, githost.hosted_slug(repo["url"]))
+            if not path.exists() or not githost.branch_sha(path, base):
+                raise OrchestratorError(f"the project's repository on the control plane has no '{base}' branch yet: "
+                                        f"push your code first (git push factory {base})")
         provider = llm or (project.labels or {}).get("llm") or self.p.router.default_provider
         if provider not in self.p.router.providers():
             raise OrchestratorError(f"unknown model provider '{provider}' (configured: "
@@ -410,6 +423,10 @@ class Orchestrator:
 
     def _fail_task(self, session: Session, run: WorkflowRun, task: Task, reason: str,
                    event: EventType = EventType.TASK_FAILED) -> None:
+        if (task.input_json or {}).get("resolve") and not task.input_json.get("asked_human") \
+                and can_transition_task(task.state, TaskState.APPROVAL_REQUIRED):
+            self._ask_human_to_resolve(session, run, task, reason)
+            return
         self._set_state(task, TaskState.FAILED)
         self._merge_output(task, failure_reason=reason)
         audit.record(session, event, project_id=run.project_id, workflow_run_id=run.id, task_id=task.id,
@@ -468,6 +485,12 @@ class Orchestrator:
             agent_run.status = AgentRunStatus.FAILED
             agent_run.error = job.error
         code = (job.result or {}).get("error_code")
+        conflict = (job.result or {}).get("conflict")
+        if code == "INTEGRATION_CONFLICT" and conflict:
+            stage = self.p.workflows.get(run.workflow_id).spec.stage(task.stage_id)
+            if self._spawn_resolve(session, run, stage, task, conflict):
+                self._set_state(task, TaskState.NEW)  # runs again once the conflict is resolved
+                return
         if code in NO_TASK_RETRY:
             # Another attempt of the task would meet the same account or machine: fail now, with the reason.
             self._fail_task(session, run, task, f"{code}: {job.error}"[:2000])
@@ -559,6 +582,8 @@ class Orchestrator:
                            decision=result.get("decision"), agent_findings=result.get("findings") or [],
                            commit=result.get("commit"))
         self._apply_critic(session, run, stage, task, critic, artifact_ids, definition, result)
+        if result.get("integration_conflict") and task.state in (TaskState.DONE, TaskState.APPROVAL_REQUIRED):
+            self._spawn_resolve(session, run, stage, task, result["integration_conflict"])
 
     def _apply_critic(self, session: Session, run: WorkflowRun, stage: StageSpec, task: Task, critic: CriticResult,
                       artifact_ids: list[str], definition, result: dict[str, Any]) -> None:
@@ -619,6 +644,66 @@ class Orchestrator:
                                                "artifact_ids": artifact_ids})
         return approval
 
+    # ================================================================== git conflicts (ADR-016)
+    def _spawn_resolve(self, session: Session, run: WorkflowRun, stage: StageSpec, task: Task,
+                       conflict: dict[str, Any]) -> Task | None:
+        """A Developer task that resolves a rebase conflict: its workspace holds `source` squashed onto `target`
+        with the conflict markers. A blocked tool task (`task`, when it is one) waits for it."""
+        count = int((run.context_json or {}).get("conflict_tasks") or 0)
+        if count >= MAX_CONFLICT_TASKS:
+            self._fail_task(session, run, task, f"too many git conflicts in this run ({count}); last: "
+                                                f"{conflict.get('source')} onto {conflict.get('target')}")
+            return None
+        self._update_ctx(run, conflict_tasks=count + 1)
+        files = conflict.get("files") or []
+        what = ("the task's changes onto the run's integration branch" if conflict.get("kind") == "task"
+                else f"the run's changes onto the latest {conflict.get('target')}")
+        resolver = self._new_task(
+            session, run, stage, key=f"{stage.id}:resolve-{count + 1}",
+            title=f"Resolve conflict: {conflict.get('source')} onto {conflict.get('target')}"[:500],
+            task_type=TaskType.AGENT, role=CONFLICT_ROLE, iteration=task.iteration,
+            description=(f"Git could not rebase {what}. The workspace holds both sides as one squashed merge with "
+                         f"conflict markers in: {', '.join(files) or 'see git status'}. Edit those files so that "
+                         "the intent of both sides is kept, remove every conflict marker, and keep the build and the "
+                         "tests passing. Do not touch unrelated code."),
+            criteria=["No conflict markers remain", "The intent of both sides is preserved", "Build and tests pass"],
+            input_json={"resolve": conflict, "blocks": task.id if task.task_type == TaskType.TOOL else None})
+        session.flush()
+        if task.task_type == TaskType.TOOL:
+            session.add(TaskDependency(task_id=task.id, depends_on_task_id=resolver.id))
+        audit.record(session, EventType.TASK_RETRY, project_id=run.project_id, workflow_run_id=run.id, task_id=task.id,
+                     payload={"conflict": conflict, "resolver": resolver.id})
+        return resolver
+
+    def _ask_human_to_resolve(self, session: Session, run: WorkflowRun, task: Task, reason: str) -> None:
+        """The agent could not resolve the conflict: stop and ask the owner, with the commands to do it."""
+        c = (task.input_json or {}).get("resolve") or {}
+        integration = run.context_json.get("integration_branch")
+        if c.get("kind") == "base":
+            steps = [f"git fetch factory", f"git switch -C {integration} factory/{c.get('target')}",
+                     f"git merge --squash factory/{integration}",
+                     "# resolve the conflicts, build and test, then:",
+                     'git commit -am "Resolve conflict with the latest base"', f"git push --force factory {integration}"]
+        else:
+            steps = [f"git fetch factory", f"git switch -C {integration} factory/{integration}",
+                     f"git merge --squash factory/{c.get('source')}",
+                     "# resolve the conflicts, build and test, then:",
+                     'git commit -am "Resolve conflict"', f"git push factory {integration}"]
+        self._set_state(task, TaskState.APPROVAL_REQUIRED)
+        task.input_json = {**(task.input_json or {}), "asked_human": True}
+        approval = Approval(project_id=run.project_id, workflow_run_id=run.id, task_id=task.id,
+                            action=CONFLICT_APPROVAL, risk_level=2,
+                            scope={"project_id": run.project_id, "workflow_run_id": run.id, "stage_id": task.stage_id,
+                                   "files": c.get("files") or [], "source": c.get("source"), "target": c.get("target"),
+                                   "commands": steps,
+                                   "description": f"The agent could not resolve the conflict ({reason[:300]}). Resolve "
+                                                  "it on your machine with the commands below, push, then approve. "
+                                                  "Reject to fail the run."})
+        session.add(approval)
+        session.flush()
+        audit.record(session, EventType.APPROVAL_REQUESTED, project_id=run.project_id, workflow_run_id=run.id,
+                     task_id=task.id, payload={"approval_id": approval.id, "action": CONFLICT_APPROVAL})
+
     # ================================================================== 2. approvals
     def _process_approvals(self, session: Session, run: WorkflowRun) -> bool:
         approvals = session.scalars(select(Approval).where(
@@ -628,6 +713,10 @@ class Orchestrator:
             approval.processed = True
             task = session.get(Task, approval.task_id) if approval.task_id else None
             if task is None or task.state != TaskState.APPROVAL_REQUIRED:
+                continue
+            if approval.action == CONFLICT_APPROVAL and approval.state != ApprovalState.APPROVED:
+                self._set_state(task, TaskState.FAILED)
+                self._merge_output(task, failure_reason=f"conflict left unresolved by {approval.approved_by}")
                 continue
             if approval.action == EFFORT_APPROVAL:
                 decisions = dict((task.input_json or {}).get("effort_decisions") or {})
@@ -711,6 +800,8 @@ class Orchestrator:
         return True
 
     def _close_run(self, session: Session, run: WorkflowRun, status: RunStatus, reason: str) -> None:
+        if (run.context_json or {}).get("merge_ticket"):
+            self._update_ctx(run, merge_ticket=None)
         run.status = status
         run.error = reason if status != RunStatus.COMPLETED else None
         run.finished_at = utcnow()
@@ -932,7 +1023,8 @@ class Orchestrator:
             "workflow_run_id": run.id,
             "task": task_meta(task),
             "repository": repository,
-            "workspace": {"integration_branch": integration, "task_branch": task_branch, "write": route.write},
+            "workspace": {"integration_branch": integration, "task_branch": task_branch, "write": route.write,
+                          **({"resolve": task.input_json["resolve"]} if (task.input_json or {}).get("resolve") else {})},
             "context": {"user_message": built.user_message, "objective": run.input_json.get("objective", ""),
                         "trace_summary": self._trace_summary(session, run)},
             "input_artifact_ids": built.input_artifact_ids,
@@ -945,6 +1037,11 @@ class Orchestrator:
         agent_run = None
         if task.task_type == TaskType.TOOL:
             payload["tool"] = {"name": task.input_json["tool"], "input": task.input_json.get("tool_input") or {}}
+            if task.input_json["tool"] == "git.merge_to_base":
+                # Lets this job (and only while the run is running) fast-forward the base branch of a hosted repo.
+                ticket = new_token()
+                self._update_ctx(run, merge_ticket=hash_token(ticket))
+                payload["merge_ticket"] = ticket
         else:
             definition, model = route.definition, route.model_route
             if model.provider == "unavailable":

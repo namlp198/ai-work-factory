@@ -84,13 +84,17 @@ def run_command(argv: list[str], cwd: Path, timeout: int = 600, max_bytes: int =
     )
 
 
-def git(args: list[str], cwd: Path, timeout: int = 300, check: bool = True) -> CommandResult:
+def git(args: list[str], cwd: Path, timeout: int = 300, check: bool = True,
+        env: dict[str, str] | None = None) -> CommandResult:
+    """`env` adds variables for this call, e.g. GIT_CONFIG_* carrying the credentials of a hosted repository."""
+    extra = env or {}
     env = {
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_AUTHOR_NAME": os.environ.get("AWF_GIT_AUTHOR_NAME", "AI Work Factory"),
         "GIT_AUTHOR_EMAIL": os.environ.get("AWF_GIT_AUTHOR_EMAIL", "awf@localhost"),
         "GIT_COMMITTER_NAME": os.environ.get("AWF_GIT_AUTHOR_NAME", "AI Work Factory"),
         "GIT_COMMITTER_EMAIL": os.environ.get("AWF_GIT_AUTHOR_EMAIL", "awf@localhost"),
+        **extra,
     }
     result = run_command(["git", "-c", "core.autocrlf=false", *args], cwd=cwd, timeout=timeout,
                          max_bytes=5_000_000, env=env)

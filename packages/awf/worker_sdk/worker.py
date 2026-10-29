@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from awf import githost
 from awf.agent_runtime.providers import key_capabilities
 from awf.logging import get_logger, log_event
 from awf.policy import PolicyConfig, PolicyEngine
@@ -233,7 +234,8 @@ class Worker:
                 logger.warning("progress update rejected: %s", exc)
 
         try:
-            result = self.executor.execute(job_id, job["payload"], log=buffer, on_state=on_state)
+            result = self.executor.execute(job_id, self.with_git_access(job["payload"]), log=buffer,
+                                           on_state=on_state)
         except Exception as exc:  # executor bugs must still produce a reportable failure
             logger.exception("job %s crashed", job_id)
             result = {"status": "failed", "error": f"worker crash: {type(exc).__name__}: {exc}", "retryable": True}
@@ -243,6 +245,26 @@ class Worker:
         finally:
             with self._count_lock:
                 self.running_jobs -= 1
+
+    def with_git_access(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """A repository hosted on the control plane (ADR-016) is cloned from it with this worker's token. The token
+        (and the merge ticket of an approved merge) reach git through GIT_CONFIG_* variables of the git calls only:
+        never a command line, a log or an engine's environment."""
+        repo = payload.get("repository") or {}
+        if not githost.is_hosted(repo.get("url")):
+            return payload
+        base = str(self.client.http.base_url).rstrip("/")
+        headers = [f"Authorization: Bearer {self.client.worker_token}"]
+        if payload.get("merge_ticket"):
+            headers.append(f"X-AWF-Merge-Ticket: {payload['merge_ticket']}")
+        settings = [("http.extraHeader", h) for h in headers]
+        if os.environ.get("AWF_CA_BUNDLE"):
+            settings.append(("http.sslCAInfo", os.environ["AWF_CA_BUNDLE"]))
+        env = {"GIT_CONFIG_COUNT": str(len(settings))}
+        for i, (key, value) in enumerate(settings):
+            env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
+        url = f"{base}/git/{githost.hosted_slug(repo['url'])}.git"
+        return {**payload, "repository": {**repo, "url": url, "hosted": True}, "_git_env": env}
 
     def _submit(self, job_id: str, result: dict[str, Any]) -> None:
         """Deliver the result, retrying through network outages (see ControlPlaneClient.result_retry_seconds).

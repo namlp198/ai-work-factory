@@ -28,6 +28,7 @@ ACTION_LABELS = {
     "approve_merge": "Duyệt merge vào nhánh chính",
     "approve_publish": "Duyệt xuất bản",
     "approve_effort": "Duyệt dùng effort cao",
+    "resolve_conflict": "Cần bạn giải conflict git",
 }
 
 

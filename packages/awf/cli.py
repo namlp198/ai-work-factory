@@ -67,6 +67,12 @@ def _backup(settings, keep: int) -> int:
         print(f"backup failed: {exc}", file=sys.stderr)
         return 1
     print(f"backup written to {target} (keeping the newest {keep})")
+    try:
+        for bundle in dbops.backup_git(settings.git_root, target_dir, keep):
+            print(f"repository backup written to {bundle}")
+    except (RuntimeError, OSError) as exc:
+        print(f"repository backup failed: {exc}", file=sys.stderr)
+        return 1
     print(f"artifacts live in {settings.artifact_root}; back that directory up as well")
     return 0
 

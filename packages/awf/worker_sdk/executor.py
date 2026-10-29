@@ -19,7 +19,7 @@ from awf.tool_sdk import ToolContext, ToolRegistry
 from awf.tool_sdk.build import configured_command
 from awf.tool_sdk.command import GitError
 from awf.worker_sdk import claude_code, cli_engines, codex
-from awf.worker_sdk.sandbox import IntegrationConflict, Workspace
+from awf.worker_sdk.sandbox import CommitInfo, IntegrationConflict, Workspace
 
 # Permissions a standalone tool job needs; tool jobs are platform actions, not agent actions.
 TOOL_JOB_PERMISSIONS = {"filesystem": {"read": True}, "git": {"read": True}, "build": True, "test": True}
@@ -47,16 +47,22 @@ class JobExecutor:
         started = time.monotonic()
         log = log or (lambda line, stream="stdout": None)
         notify = on_state or (lambda state: None)
-        ws = Workspace(self.workspace_root, job_id)
+        ws = Workspace(self.workspace_root, job_id, git_env=payload.get("_git_env"))
         try:
             notify("PREPARING")
             repo = payload.get("repository") or {}
             wsp = payload.get("workspace") or {}
             if repo.get("url"):
+                resolve = wsp.get("resolve")
                 ws.prepare(repo["url"], repo.get("base_branch") or "main", wsp.get("integration_branch"),
-                           wsp.get("task_branch") if wsp.get("write") else None)
-                log(f"workspace ready at {ws.repo} (branch {wsp.get('task_branch') or wsp.get('integration_branch')})",
-                    "system")
+                           wsp.get("task_branch") if wsp.get("write") and not resolve else None)
+                if resolve:
+                    files = ws.start_resolve(resolve["kind"], resolve["source"], resolve["target"])
+                    log(f"conflict workspace: {resolve['source']} onto {resolve['target']}, "
+                        f"{len(files)} conflicted file(s): {', '.join(files)}", "system")
+                else:
+                    log(f"workspace ready at {ws.repo} (branch {wsp.get('task_branch') or wsp.get('integration_branch')})",
+                        "system")
             elif payload.get("job_type") == "agent" and not wsp.get("write"):
                 ws.prepare_scratch()  # content/research runs without a repository: an empty working directory
                 log(f"empty workspace at {ws.repo} (no repository)", "system")
@@ -69,7 +75,8 @@ class JobExecutor:
                 result = self._run_agent_job(payload, ws, log)
             notify("UPLOADING_RESULT")
         except IntegrationConflict as exc:
-            result = {"status": "failed", "error": str(exc), "retryable": False, "error_code": "INTEGRATION_CONFLICT"}
+            result = {"status": "failed", "error": str(exc), "retryable": False, "error_code": "INTEGRATION_CONFLICT",
+                      "conflict": exc.as_dict()}
         except (GitError, ValueError, OSError) as exc:
             result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "retryable": True}
         finally:
@@ -137,7 +144,13 @@ class JobExecutor:
         commit = None
         if writes and "git.branch_write" in _allowed_actions(self.policy, contract.permissions):
             message = f"awf({task.get('stage_id')}): {task.get('title')}\n\nTask: {task.get('id')}\nRole: {agent['role']}"
-            info = ws.commit_and_integrate(message[:2000])
+            try:
+                info = ws.commit_and_integrate(message[:2000])
+            except IntegrationConflict as exc:
+                # The work is committed on its task branch; a "resolve conflict" task brings it into the run.
+                result["integration_conflict"] = exc.as_dict()
+                log(f"[platform] {exc}; a conflict-resolution task will integrate this work", "system")
+                info = CommitInfo(has_changes=True, task_branch=ws.task_branch, integration_branch=ws.integration_branch)
             commit = info
             result["commit"] = info.as_dict()
             log(f"commit: changes={info.has_changes} sha={info.sha} integrated={info.integrated}", "system")
@@ -290,11 +303,53 @@ class JobExecutor:
                                             "(commands outside the configured build/test/lint commands)"})
         return res, usage
 
+    # ------------------------------------------------------------------ base branch (ADR-016)
+    def _sync_and_verify(self, payload: dict[str, Any], ws: Workspace, log: LogFn) -> dict[str, Any]:
+        """Rebase the run onto the latest base branch; when that changed anything, build and test it again."""
+        if not ws.integration_branch:
+            return {}
+        synced = ws.sync_with_base()
+        if not synced["updated"]:
+            return synced
+        log(f"[platform] {ws.integration_branch} rebased onto the latest {ws.base_branch} "
+            f"({synced['base'][:10]}); building and testing again", "system")
+        ctx = ToolContext(workspace=ws.repo, permissions=TOOL_JOB_PERMISSIONS, policy=self.policy,
+                          repository=payload.get("repository") or {}, base_ref=ws.base_ref, log=log)
+        for tool in ("build.run", "test.run"):
+            self.registry.execute(tool, {}, ctx)
+            ev = _public_evidence(ctx.evidence).get(tool.split(".")[0], {})
+            if ev.get("status") == "fail":
+                return {"status": "failed", "retryable": False, "evidence": _public_evidence(ctx.evidence),
+                        "tool_calls": ctx.calls, "error": f"after rebasing onto the latest {ws.base_branch} "
+                        f"({synced['base'][:10]}), {tool} fails: someone's change on {ws.base_branch} breaks this run"}
+        return synced
+
+    def _merge_to_base(self, payload: dict[str, Any], ws: Workspace, log: LogFn) -> dict[str, Any]:
+        """After approve_merge: fast-forward the base branch of a hosted repository to the run's work. Other
+        repositories (GitHub...) are left to their own review: the result says so."""
+        if not (payload.get("repository") or {}).get("hosted"):
+            return {"status": "succeeded", "summary": f"not hosted on the control plane: merge "
+                    f"{ws.integration_branch} into {ws.base_branch} yourself (pull request)", "outputs": {},
+                    "evidence": {}, "tool_calls": [{"tool": "git.merge_to_base", "status": "ok"}]}
+        synced = self._sync_and_verify(payload, ws, log)
+        if synced.get("status") == "failed":
+            return synced
+        merged = ws.merge_to_base()
+        log(f"[platform] {ws.base_branch} fast-forwarded to {merged['merged'][:10]}", "system")
+        return {"status": "succeeded", "summary": f"{ws.base_branch} is now {merged['merged'][:10]}"
+                + (" (rebased onto the latest base first)" if merged["rebased"] else ""),
+                "outputs": {}, "evidence": {"merge": merged}, "tool_calls": [{"tool": "git.merge_to_base", "status": "ok"}]}
+
     # ------------------------------------------------------------------ tool jobs
     def _run_tool_job(self, payload: dict[str, Any], ws: Workspace, log: LogFn) -> dict[str, Any]:
         tool = payload["tool"]
         name = tool["name"]
+        if name == "git.merge_to_base":
+            return self._merge_to_base(payload, ws, log)
         if name == "git.export_patch":
+            synced = self._sync_and_verify(payload, ws, log)
+            if synced.get("status") == "failed":
+                return synced
             exported = ws.export_patch()
             pr = _pull_request_markdown(payload, ws, exported)
             return {

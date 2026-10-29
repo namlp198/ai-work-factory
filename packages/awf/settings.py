@@ -57,6 +57,7 @@ class Settings:
     job_max_attempts: int
     context_max_chars_per_artifact: int
     default_worker_platform: str
+    git_root: Path = Path("var/git")  # hosted project repositories (ADR-016)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -130,6 +131,7 @@ def build_settings(home: Path | None = None) -> Settings:
         job_max_attempts=int(orch.get("job_max_attempts", 3)),
         context_max_chars_per_artifact=int(orch.get("context_max_chars_per_artifact", 60000)),
         default_worker_platform=raw.get("routing", {}).get("default_worker", "linux"),
+        git_root=_resolve_path(home, env.get("AWF_GIT_ROOT") or "./var/git"),
         raw=raw,
     )
 

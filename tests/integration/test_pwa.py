@@ -58,7 +58,7 @@ def test_overview_lists_running_runs_with_progress(client, platform, orchestrato
     orchestrator.run_until_idle()
     runs = client.get("/api/v1/overview").json()["runs"]
     row = next(r for r in runs if r["id"] == run_id)
-    assert row["project"] == "Robo" and row["worker"] == "test-linux-01" and row["stages_total"] == 9
+    assert row["project"] == "Robo" and row["worker"] == "test-linux-01" and row["stages_total"] == 10
     assert row["stages_done"] == 1 and row["current_stage"] == "Architecture" and row["current_gate"] is True
     assert row["objective"] == "Add a health check"
 

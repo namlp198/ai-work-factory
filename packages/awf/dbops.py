@@ -167,3 +167,21 @@ def import_sqlite(source_url: str, target_url: str, batch: int = 500, log=print)
         source.dispose()
         target.dispose()
     return copied
+
+
+def backup_git(git_root: Path, target_dir: Path, keep: int) -> list[Path]:
+    """Hosted repositories (ADR-016) as git bundles: one file per repository, every branch, restorable with
+    `git clone --bare <bundle> <git root>/<slug>.git`."""
+    from awf.tool_sdk.command import git
+
+    written = []
+    for repo in sorted(git_root.glob("*.git")) if git_root.is_dir() else []:
+        if not git(["for-each-ref", "--count=1", "refs/heads"], repo, check=False).stdout.strip():
+            continue  # nothing pushed yet
+        slug = repo.name[:-4]
+        target = target_dir / f"git-{slug}-{_stamp()}.bundle"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        git(["bundle", "create", "--quiet", str(target), "--all"], repo, timeout=1800)
+        _rotate(target_dir, f"git-{slug}-*.bundle", keep)
+        written.append(target)
+    return written

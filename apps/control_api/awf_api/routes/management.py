@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from awf import githost
 from awf.domain.enums import AgentRunStatus, ApprovalState, RunStatus, TaskState, WorkerStatus
 from awf.domain.models import (
     AgentRun,
@@ -28,6 +29,7 @@ from awf.domain.models import (
 from awf.orchestrator import jobs as job_service
 from awf.orchestrator import placement
 from awf.orchestrator.orchestrator import OrchestratorError
+from awf.tool_sdk.command import GitError
 from awf_api import serializers as ser
 from awf_api.deps import AppState, get_session, get_state, require_admin
 
@@ -115,6 +117,51 @@ def list_projects(archived: bool = False, session: Session = Depends(get_session
     """Active projects; `archived=true` lists the archived ones instead."""
     status = Project.status == "ARCHIVED" if archived else Project.status != "ARCHIVED"
     return [ser.project(p) for p in session.scalars(select(Project).where(status).order_by(Project.created_at.desc()))]
+
+
+class HostedRepoIn(BaseModel):
+    # A URL or a path on the control plane to copy from (GitHub, a folder...); empty: a new empty repository.
+    import_from: str | None = Field(default=None, max_length=2000)
+
+
+def _git_info(state: AppState, project: Project) -> dict[str, Any]:
+    from awf_api.routes.git import git_token
+
+    root = state.platform.settings.git_root
+    repo = project.repository or {}
+    path = githost.repo_path(root, project.slug)
+    base = repo.get("base_branch") or "main"
+    return {"hosted": True, "path": f"/git/{project.slug}.git", "base_branch": base,
+            "base_sha": githost.branch_sha(path, base), "branches": githost.branches(path),
+            "token": git_token(root)}
+
+
+@router.post("/projects/{project_id}/git")
+def host_repository(project_id: str, body: HostedRepoIn, state: AppState = Depends(get_state),
+                    session: Session = Depends(get_session, scope="function"), actor: str = Depends(require_admin)):
+    """Keep the project's repository on this control plane (ADR-016): new and empty (push it from your PC), or a
+    copy of `import_from`. Workers then clone it from here, and your PC uses it as the `factory` remote."""
+    project = _get(session, Project, project_id)
+    repo = dict(project.repository or {})
+    if githost.is_hosted(repo.get("url")):
+        raise HTTPException(409, "this project's repository is already hosted on the control plane")
+    base = repo.get("base_branch") or "main"
+    try:
+        githost.create_repo(state.platform.settings.git_root, project.slug, base, (body.import_from or "").strip() or None)
+    except (githost.GitHostError, GitError) as exc:
+        raise HTTPException(422, str(exc)) from None
+    project.repository = {**repo, "url": f"{githost.HOSTED_SCHEME}{project.slug}", "base_branch": base}
+    session.flush()
+    return _git_info(state, project)
+
+
+@router.get("/projects/{project_id}/git")
+def repository_info(project_id: str, state: AppState = Depends(get_state),
+                    session: Session = Depends(get_session, scope="function")):
+    project = _get(session, Project, project_id)
+    if not githost.is_hosted((project.repository or {}).get("url")):
+        return {"hosted": False}
+    return _git_info(state, project)
 
 
 @router.get("/projects/{project_id}")

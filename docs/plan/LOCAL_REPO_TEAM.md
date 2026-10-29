@@ -1,6 +1,6 @@
 # Thiết kế: repo chung trên máy trung tâm, làm việc như một team dev
 
-Trạng thái: **đề xuất, chờ bạn duyệt**. Viết ngày 29/10/2026 theo các lựa chọn của bạn: repo chung đặt trên máy
+Trạng thái: **đã duyệt 29/10/2026; phần 1–3 đã làm (ADR-016)**, phần 4–6 chưa làm. Viết ngày 29/10/2026 theo các lựa chọn của bạn: repo chung đặt trên máy
 control-plane, gộp nhánh bằng rebase, agent giải conflict và bạn duyệt, GitHub chỉ là mirror tuỳ chọn.
 
 ## Vấn đề

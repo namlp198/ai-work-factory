@@ -89,3 +89,9 @@ stages:
       action: approve_merge
       risk_level: 2
       description: Approve merging the integration branch into the protected base branch.
+
+  - id: merge
+    title: Merge into the base branch
+    tool: git.merge_to_base
+    depends_on: [merge_approval]
+    relation: includes

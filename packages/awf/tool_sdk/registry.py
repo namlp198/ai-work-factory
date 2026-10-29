@@ -89,4 +89,4 @@ def default_tools() -> list[ToolSpec]:
 
 
 # Tools that run as standalone worker jobs (workflow `tool:` stages), not inside an agent loop.
-JOB_TOOLS = ("lint.run", "test.run", "build.run", "git.export_patch")
+JOB_TOOLS = ("lint.run", "test.run", "build.run", "git.export_patch", "git.merge_to_base")

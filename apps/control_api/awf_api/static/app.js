@@ -350,7 +350,13 @@ async function viewProjects() {
     <h2>${t("projects.new")}</h2>
     <form class="grid" id="project-form">
       <label>${t("field.name")}<input name="name" required></label>
+      <label>${t("field.repo_source")}<select name="repo_source">
+        <option value="hosted" selected>${t("repo_source.hosted")}</option>
+        <option value="import">${t("repo_source.import")}</option>
+        <option value="external">${t("repo_source.external")}</option>
+        <option value="none">${t("repo_source.none")}</option></select></label>
       <label>${t("field.repository_url")}<input name="url" placeholder="${t("projects.url_placeholder")}"></label>
+      <p class="full muted">${t("projects.repo_source_help")}</p>
       <label>${t("field.base_branch")}<input name="base_branch" value="main"></label>
       <label>${t("field.platform")}<select name="platform" required>${platformOptions(d.platform)}</select></label>
       <label>${t("field.required_capabilities")}<input name="required_capabilities" placeholder="dotnet-windowsdesktop, msbuild"></label>
@@ -377,14 +383,22 @@ function bindProjects() {
     if (f.get("coding_engine")) body.labels.coding_engine = f.get("coding_engine");
     if (f.get("engine_scope") === "all") body.labels.engine_scope = "all";
     if (f.get("complexity") && f.get("complexity") !== "normal") body.labels.complexity = f.get("complexity");
-    if (f.get("url")) {  // software projects; content projects may have no repository
-      const repo = { url: f.get("url"), base_branch: f.get("base_branch") || "main" };
+    const source = f.get("repo_source") || "external";
+    if ((source === "import" || source === "external") && !f.get("url")) { showError("project-error", t("projects.url_required")); return; }
+    if (source !== "none") {  // software projects; content projects may have no repository
+      const repo = { url: source === "external" ? f.get("url") : "pending", base_branch: f.get("base_branch") || "main" };
       for (const k of ["build_command", "test_command", "lint_command"]) if (f.get(k)) repo[k] = argvParse(f.get(k));
       repo.required_capabilities = capList(f.get("required_capabilities"));
       body.repository = repo;
     }
     if (f.get("budget_usd")) body.budget_usd = Number(f.get("budget_usd"));
-    try { const p = await api("/projects", { method: "POST", body: JSON.stringify(body) }); clearError("project-error"); location.hash = `#/projects/${p.id}`; }
+    try {
+      const p = await api("/projects", { method: "POST", body: JSON.stringify(body) });
+      if (source === "hosted" || source === "import") {
+        await api(`/projects/${p.id}/git`, { method: "POST", body: JSON.stringify(source === "import" ? { import_from: f.get("url") } : {}) });
+      }
+      clearError("project-error"); location.hash = `#/projects/${p.id}`;
+    }
     catch (err) { showError("project-error", err.message); }
   };
 }
@@ -396,8 +410,32 @@ function machineSelect(workers, selected = "", auto = "") {
   return `<select name="worker"><option value="">${auto || t("run.machine_auto")}</option>${opts}</select>`;
 }
 
+// The project's repository on the control plane (ADR-016): what your PC needs to use it as the `factory` remote.
+function gitPanel(p, g) {
+  if (!g?.hosted) return "";
+  const url = `${location.origin}${g.path}`;
+  const base = g.base_branch || "main";
+  const setup = [`git remote add factory ${url}`, `git push factory ${base}`].join("\n");
+  const daily = [`git fetch factory`, `git switch -c review factory/awf/run-<id>   # look at a run's work`,
+    `git pull factory ${base}                    # after you approved a merge`].join("\n");
+  return `<h2>${t("git.title")}</h2><div class="kv">
+    <div>${t("git.remote")}</div><div><code>${esc(url)}</code>${copyButton(url)}</div>
+    <div>${t("git.login")}</div><div>${t("git.login_text")} <code class="secret" data-secret="${esc(g.token)}">••••••••</code>
+      <button type="button" class="ghost copy" data-reveal>${t("git.show")}</button>${copyButton(g.token)}</div>
+    <div>${t("git.base")}</div><div>${g.base_sha ? `<code>${esc(base)}</code> @ <code>${esc(g.base_sha.slice(0, 10))}</code>` : `<span class="error">${t("git.empty", { base: esc(base) })}</span>`}</div>
+    <div>${t("git.branches")}</div><div>${(g.branches || []).map((b) => `<code>${esc(b)}</code>`).join(" ") || "—"}</div></div>
+    <p class="muted">${t("git.setup")}</p><pre>${esc(setup)}</pre>${copyButton(setup)}
+    <p class="muted">${t("git.daily")}</p><pre>${esc(daily)}</pre>`;
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-reveal]");
+  if (!b) return;
+  const s = b.parentElement.querySelector("[data-secret]");
+  s.textContent = s.textContent.startsWith("•") ? s.dataset.secret : "••••••••";
+});
+
 async function viewProject(id) {
-  const [p, runs, workflows, workers, models] = await Promise.all([api(`/projects/${id}`), api(`/projects/${id}/workflow-runs`), api("/workflows"), api("/workers"), api("/models")]);
+  const [p, runs, workflows, workers, models, g] = await Promise.all([api(`/projects/${id}`), api(`/projects/${id}/workflow-runs`), api("/workflows"), api("/workers"), api("/models"), api(`/projects/${id}/git`)]);
   const rows = runs.map((r) => `<tr class="click" data-href="#/runs/${r.id}"><td><code>${short(r.id)}</code></td><td>${esc(r.workflow_id)}</td>
     <td>${pill(r.status)}</td><td>${esc(r.input?.objective || "")}</td><td>${when(r.created_at)}</td></tr>`).join("");
   const options = workflows.filter((w) => w.status === "active").map((w) => `<option value="${esc(w.id)}">${esc(w.name || w.id)} v${esc(w.version)}</option>`).join("");
@@ -406,9 +444,10 @@ async function viewProject(id) {
   return `<div class="page-head"><h1>${esc(p.name)}</h1><span class="muted"><code>${esc(p.slug)}</code> · ${tn("project.run_count", p.run_count)}</span></div>
     ${archived ? `<div class="archived-banner"><span>${t("project.archived_banner")}</span>
       <button class="ghost" id="restore-project">${t("project.restore")}</button></div>` : ""}
-    <div class="kv"><div>${t("field.repository")}</div><div>${repo.url ? `<code>${esc(repo.url)}</code> (${esc(repo.base_branch)})` : `<span class="muted">${t("project.no_repository")}</span>`}</div>
+    <div class="kv"><div>${t("field.repository")}</div><div>${g?.hosted ? t("git.hosted_here", { base: esc(repo.base_branch || "main") }) : repo.url ? `<code>${esc(repo.url)}</code> (${esc(repo.base_branch)})` : `<span class="muted">${t("project.no_repository")}</span>`}</div>
     <div>${t("project.commands")}</div><div>build: <code>${esc(argvText(repo.build_command) || "—")}</code> test: <code>${esc(argvText(repo.test_command) || "—")}</code> lint: <code>${esc(argvText(repo.lint_command) || "—")}</code></div>
     <div>${t("project.spend_budget")}</div><div>${money(p.spend_usd)} / ${p.budget_usd == null ? "∞" : money(p.budget_usd)}</div></div>
+    ${gitPanel(p, g)}
     ${projectSettings(p)}
     ${projectMachines(p, models)}
     ${archived ? "" : `<h2>${t("run.start_title")}</h2>
@@ -709,7 +748,9 @@ async function openTask(id) {
 }
 
 function approvalTable(list) {
-  const rows = list.map((a) => `<tr><td>${esc(a.action)}${a.action === "approve_effort" ? `<div class="muted">${t("approval.effort", { task: a.scope?.task || "", role: a.scope?.role || "", model: a.scope?.model || "", effort: a.scope?.effort || "" })}</div>` : ""}</td><td>${a.risk_level}</td><td><a href="#/runs/${a.workflow_run_id}"><code>${short(a.workflow_run_id)}</code></a></td>
+  const rows = list.map((a) => `<tr><td>${esc(a.action)}${a.action === "approve_effort" ? `<div class="muted">${t("approval.effort", { task: a.scope?.task || "", role: a.scope?.role || "", model: a.scope?.model || "", effort: a.scope?.effort || "" })}</div>` : ""}
+      ${a.action === "resolve_conflict" ? `<div class="muted">${t("approval.conflict", { files: (a.scope?.files || []).map(esc).join(", ") || "—" })}</div>
+        <pre>${esc((a.scope?.commands || []).join("\n"))}</pre>${copyButton((a.scope?.commands || []).join("\n"))}` : ""}</td><td>${a.risk_level}</td><td><a href="#/runs/${a.workflow_run_id}"><code>${short(a.workflow_run_id)}</code></a></td>
     <td>${(a.scope?.artifact_ids || []).map((x) => `<a href="#" data-art="${x}"><code>${short(x)}</code></a>`).join(" ")}</td><td>${pill(a.state)}</td>
     <td>${a.state === "PENDING" ? `<div class="row"><input placeholder="${t("approval.comment")}" data-comment="${a.id}" style="width:180px">
       <button data-approve="${a.id}">${t("approval.approve")}</button><button class="danger" data-reject="${a.id}">${t("approval.reject")}</button></div>` : esc(a.approved_by || "")}</td></tr>`).join("");
