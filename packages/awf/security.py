@@ -90,6 +90,11 @@ def sanitized_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def token_fingerprint(token: str) -> str:
+    """8 hex characters of a token's hash: enough to tell two tokens apart, nothing to guess one from."""
+    return hashlib.sha256(("awf-fingerprint:" + token).encode("utf-8")).hexdigest()[:8]
+
+
 def new_token() -> str:
     return secrets.token_urlsafe(32)
 

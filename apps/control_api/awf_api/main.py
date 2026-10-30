@@ -16,6 +16,7 @@ from awf import __version__
 from awf.logging import configure_logging, get_logger
 from awf.orchestrator.orchestrator import Orchestrator
 from awf.platform import Platform
+from awf.security import token_fingerprint
 from awf_api.deps import AppState
 from awf_api.routes import git, management, session, workers
 
@@ -71,7 +72,10 @@ def create_app(platform: Platform | None = None, orchestrator: Orchestrator | No
     def health() -> dict:
         with platform.db.session() as session:
             session.execute(text("SELECT 1"))
-        return {"status": "ok", "version": __version__, "environment": platform.settings.environment}
+        health = {"status": "ok", "version": __version__, "environment": platform.settings.environment}
+        if platform.settings.api_token:  # lets `awf doctor` see that .env changed after the start
+            health["auth"] = token_fingerprint(platform.settings.api_token)
+        return health
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

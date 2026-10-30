@@ -88,10 +88,14 @@ def login(body: LoginIn, request: Request, response: Response, state: AppState =
         claims = verify_claims(expected, body.ticket, "login")
         if claims and _throttle.use_ticket(claims["nonce"], claims["exp"]):
             subject = claims.get("sub", "admin")
-    elif body.token and hmac.compare_digest(body.token.strip(), expected):
+    token = (body.token or "").strip().strip("'\"").strip()
+    if not body.ticket and token and hmac.compare_digest(token, expected):
         subject = "admin"
     if subject is None:
         _throttle.fail(client)
+        other = state.platform.settings.worker_registration_token
+        if token and other and hmac.compare_digest(token, other):
+            raise HTTPException(422, "this is AWF_WORKER_REGISTRATION_TOKEN (for workers); paste AWF_API_TOKEN")
         raise HTTPException(401, "invalid token or expired login link")
     response.set_cookie(SESSION_COOKIE, new_session(expected, subject), max_age=SESSION_TTL_SECONDS,
                         httponly=True, samesite="strict", secure=request.url.scheme == "https", path="/")

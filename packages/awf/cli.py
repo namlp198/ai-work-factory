@@ -410,8 +410,12 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 
 def cmd_env(args: argparse.Namespace) -> int:
-    from awf.ops import env_init
+    from awf.ops import env_init, env_upgrade
 
+    if args.action == "upgrade":
+        if not env_upgrade(_settings().home):
+            print(".env already has the latest layout")
+        return 0
     return env_init(_settings().home, args.role, args.control_url, args.registration_token, args.api_host, args.force,
                     args.api_port, args.public_url)
 
@@ -566,7 +570,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_start_entry)
 
     p = sub.add_parser("env", help="machine configuration")
-    p.add_argument("action", choices=["init"])
+    p.add_argument("action", choices=["init", "upgrade"],
+                   help="init: create .env (an existing one keeps its values); upgrade: latest layout, values kept")
     p.add_argument("--role", choices=ROLES, default="all")
     p.add_argument("--control-url", help="worker: URL of the control plane, e.g. http://factory-host:8000")
     p.add_argument("--registration-token", help="worker: AWF_WORKER_REGISTRATION_TOKEN of the control plane")

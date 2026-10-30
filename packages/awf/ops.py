@@ -32,14 +32,102 @@ def _set_key(lines: list[str], key: str, value: str) -> list[str]:
     return lines
 
 
+_ENV_LINE = re.compile(r"^\s*([A-Z][A-Z0-9_]*)=(.*)$")
+_ENV_SLOT = re.compile(r"^\s*#?\s*([A-Z][A-Z0-9_]*)=")
+
+
+def env_values(lines: list[str]) -> dict[str, str]:
+    """The settings a .env sets (uncommented KEY=value lines), in order; the last one wins, like dotenv."""
+    values: dict[str, str] = {}
+    for line in lines:
+        m = _ENV_LINE.match(line)
+        if m:
+            values[m.group(1)] = m.group(2)
+    return values
+
+
+def env_missing(home: Path) -> list[str]:
+    """Settings .env.example documents that this .env does not mention at all (not even commented)."""
+    env, example = home / ".env", home / ".env.example"
+    if not env.is_file() or not example.is_file():
+        return []
+    mentioned = {m.group(1) for line in env.read_text(encoding="utf-8").splitlines() if (m := _ENV_SLOT.match(line))}
+    wanted = [m.group(1) for line in example.read_text(encoding="utf-8").splitlines() if (m := _ENV_SLOT.match(line))]
+    return [k for k in dict.fromkeys(wanted) if k not in mentioned]
+
+
+def merge_env(old_lines: list[str], example_lines: list[str]) -> list[str]:
+    """The latest .env.example layout (sections, comments, new settings) with every value of the old .env kept.
+    A setting the old file did not set stays commented, so what the machine does never changes; settings the
+    example does not know are kept at the end."""
+    values = env_values(old_lines)
+    placed: set[str] = set()
+    out: list[str] = []
+    for line in example_lines:
+        m = _ENV_SLOT.match(line)
+        if not m:
+            out.append(line)
+            continue
+        key = m.group(1)
+        if key in values and key not in placed:
+            out.append(f"{key}={values[key]}")
+            placed.add(key)
+        else:
+            out.append(line if line.lstrip().startswith("#") else "# " + line.lstrip())
+    extra = [k for k in values if k not in placed]
+    if extra:
+        out += ["", "# ---------------------------------------------------------------- kept from the previous .env"]
+        out += [f"{k}={values[k]}" for k in extra]
+    return out
+
+
+def env_upgrade(home: Path, quiet: bool = False) -> bool:
+    """Bring .env to the latest .env.example layout, keeping every value; the old file is kept as .env.bak-<time>.
+    True when the file changed."""
+    import time
+
+    env, example = home / ".env", home / ".env.example"
+    if not env.is_file() or not example.is_file():
+        return False
+    old = env.read_text(encoding="utf-8").splitlines()
+    new = merge_env(old, example.read_text(encoding="utf-8").splitlines())
+    if env_values(new) != env_values(old):  # never: a guard against losing a setting
+        raise RuntimeError("upgrading .env would change its settings; left as it is")
+    if new == old:
+        return False
+    backup = home / f".env.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    backup.write_text("\n".join(old) + "\n", encoding="utf-8")
+    env.write_text("\n".join(new) + "\n", encoding="utf-8")
+    if not quiet:
+        print(f"updated {env} to the latest layout of .env.example (every value kept; previous file: {backup.name})")
+    return True
+
+
 def env_init(home: Path, role: str, control_url: str | None = None, registration_token: str | None = None,
              api_host: str | None = None, force: bool = False, api_port: int | None = None,
              public_url: str | None = None) -> int:
     """Write this machine's .env. `public_url` is how workers and browsers reach the control plane from
     other sites (https://factory.example.com via reverse proxy/tunnel, or http://factory.tailnet.ts.net:8000)."""
     target = home / ".env"
+    control_url = (control_url or "").strip().rstrip("/") or None
+    if control_url and not control_url.startswith(("http://", "https://")):
+        print(f"--control-url '{control_url}' must start with https:// (or http://), e.g. https://{control_url}")
+        return 2
     if target.exists() and not force:
-        print(f".env already exists at {target}; keeping it (use --force to regenerate).")
+        # The values given on the command line win over the old ones; everything else (keys, names) is kept.
+        given = {"AWF_CONTROL_URL": control_url, "AWF_WORKER_REGISTRATION_TOKEN": registration_token,
+                 "AWF_PUBLIC_URL": (public_url or "").rstrip("/") or None}
+        given = {k: v for k, v in given.items() if v}
+        env_upgrade(home)  # new settings of .env.example appear (commented), every value stays
+        if not given:
+            print(f".env already exists at {target}; kept its values (use --force to regenerate).")
+            return 0
+        lines = target.read_text(encoding="utf-8").splitlines()
+        for key, value in given.items():
+            lines = _set_key(lines, key, value)
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f".env already exists at {target}; kept it and updated {', '.join(given)} "
+              "(use --force to regenerate it all).")
         return 0
     if role == "worker" and not (control_url and registration_token):
         print("role 'worker' needs --control-url and --registration-token (printed by the control-plane setup).")
@@ -285,11 +373,16 @@ def _check_api_exposure() -> Check:
 def _check_control_plane_reachable() -> Check:
     import httpx
 
+    from awf.security import token_fingerprint
+
     from awf.worker_sdk.client import InsecureTransport, check_transport_security
 
     url = os.environ.get("AWF_CONTROL_URL", "")
     if not url:
         return Check("control plane", "FAIL", "AWF_CONTROL_URL is not set")
+    if not url.startswith(("http://", "https://")):
+        return Check("control plane", "FAIL", f"AWF_CONTROL_URL={url} has no scheme: set it to https://{url} in .env "
+                                              "(or run bootstrap again with --control-url https://...)")
     try:
         check_transport_security(url)
     except InsecureTransport as exc:
@@ -297,7 +390,12 @@ def _check_control_plane_reachable() -> Check:
     try:
         resp = httpx.get(url.rstrip("/") + "/health", timeout=5)
         resp.raise_for_status()
-        return Check("control plane", "OK", f"{url} -> {resp.json().get('status')} v{resp.json().get('version')}")
+        health = resp.json()
+        token = os.environ.get("AWF_API_TOKEN", "")
+        if token and health.get("auth") and health["auth"] != token_fingerprint(token):
+            return Check("control plane", "FAIL", f"{url} runs with another AWF_API_TOKEN than this .env (it was "
+                                                  "changed after the start): restart the control plane")
+        return Check("control plane", "OK", f"{url} -> {health.get('status')} v{health.get('version')}")
     except Exception as exc:
         return Check("control plane", "WARN", f"{url} not reachable now ({type(exc).__name__}); start it first")
 
@@ -332,8 +430,14 @@ def _check_model_credentials() -> Check:
 def doctor(home: Path) -> int:
     role = os.environ.get("AWF_ROLE", "all")
     checks = [_check_python(), _check_lock(home), _check_git(), _check_definitions()]
-    checks.append(Check(".env", "OK" if (home / ".env").is_file() else "WARN",
-                        f"role={role}" if (home / ".env").is_file() else "missing: run `awf env init`"))
+    missing = env_missing(home)
+    if not (home / ".env").is_file():
+        checks.append(Check(".env", "WARN", "missing: run `awf env init`"))
+    elif missing:
+        checks.append(Check(".env", "WARN", f"role={role}; older than .env.example ({len(missing)} settings not listed, "
+                                            f"e.g. {', '.join(missing[:3])}): run `awf env upgrade` (values are kept)"))
+    else:
+        checks.append(Check(".env", "OK", f"role={role}"))
     if role in ("all", "control-plane"):
         checks += [_check_database(), _check_backups(role), _check_api_exposure(), _check_public_url()]
     tailscale = _check_tailscale(role)

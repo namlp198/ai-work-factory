@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time (and after every `git pull`) setup of a Linux/macOS machine (x86_64 or arm64/Jetson).
-# Idempotent: safe to run again; it never overwrites an existing .env.
+# Idempotent: safe to run again; an existing .env keeps its values and gets the latest layout.
 #
 #   scripts/bootstrap.sh                                    # role all (control plane + local worker)
 #   scripts/bootstrap.sh --role control-plane [--public-url https://factory.example.com]
@@ -64,7 +64,8 @@ fi
 .venv/bin/python -m pip install --quiet --disable-pip-version-check -r requirements.lock
 .venv/bin/python -m pip install --quiet --disable-pip-version-check --no-deps -e .
 
-# 3. Machine configuration (.env) - created once, never overwritten.
+# 3. Machine configuration (.env): created once; later runs keep its values, add new settings
+#    (commented) and apply the --control-url / --registration-token given.
 env_args=(env init --role "$role")
 [[ -n "$control_url" ]] && env_args+=(--control-url "$control_url")
 [[ -n "$registration_token" ]] && env_args+=(--registration-token "$registration_token")

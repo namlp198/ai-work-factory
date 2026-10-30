@@ -66,6 +66,16 @@ def test_login_once_then_cookie_session(secured, platform, orchestrator):
     assert c.get("/api/v1/projects", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
 
 
+def test_sign_in_forgives_quotes_and_names_the_wrong_token(secured, platform):
+    platform.settings.worker_registration_token = "registration-token-0123456789"
+    assert secured.post("/api/v1/session", json={"token": f' "{TOKEN}" '}).status_code == 200  # copied with quotes
+    secured.cookies.clear()
+    wrong = secured.post("/api/v1/session", json={"token": "registration-token-0123456789"})
+    assert wrong.status_code == 422 and "AWF_WORKER_REGISTRATION_TOKEN" in wrong.json()["detail"]
+    health = secured.get("/health").json()
+    assert len(health["auth"]) == 8 and TOKEN not in str(health)  # a fingerprint for awf doctor, not the token
+
+
 def test_one_time_login_link(secured):
     c = secured
     ticket = new_login_ticket(TOKEN)

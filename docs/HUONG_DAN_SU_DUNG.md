@@ -219,8 +219,13 @@ Khởi động lại một máy để xác nhận: worker phải tự **online**
 ### Thêm worker sau này / cập nhật
 
 - Thêm worker: lặp lại Bước 1 và Bước 3 trên máy mới với cùng lệnh ở 2.3.
-- Cập nhật: `git pull` → bootstrap (không cần tham số; `.env` được giữ) → khởi động lại `awf`. Máy trung tâm
-  trước, worker sau (mục 21, "Cập nhật mọi máy").
+- Cập nhật: `git pull` → bootstrap (không cần tham số) → khởi động lại `awf`. Máy trung tâm trước, worker sau
+  (mục 21, "Cập nhật mọi máy").
+- `.env` có sẵn **giữ nguyên mọi giá trị**, nhưng được đưa về bố cục mới nhất của `.env.example`: các mục mới hiện
+  ra dưới dạng dòng comment (`# AWF_MIRROR_TOKEN=`), nên `.env` của máy cũ và máy mới trông giống nhau. Bản cũ được
+  lưu thành `.env.bak-<thời điểm>`. Chỉ làm bước này, không cài lại gì: `awf env upgrade`.
+- Truyền `--control-url` / `--registration-token` khi chạy lại bootstrap thì các giá trị đó được ghi vào `.env`
+  có sẵn.
 
 ## 4. Chạy demo trong 1 phút
 
@@ -1597,6 +1602,9 @@ test fail, critic block, approval reject, duplicate event, cancel, retry thủ c
 | `NO_CHANGES` | Developer không tạo thay đổi nào (thường do `fs.replace` không khớp). |
 | `critic blocked: ... credential-like material in <file>` | Diff thêm một khoá có định dạng thật vào `<file>`. Gỡ khoá khỏi repo, dùng biến môi trường, rồi bấm **Chạy lại run**. Bản cũ (trước 29/10/2026) chặn cả việc xoá mật khẩu cũ và mật khẩu mẫu trong test: cập nhật máy trung tâm rồi bấm **Chạy lại run**. |
 | Chạy lại run thì task báo `[MAJOR/NO_CHANGES] task requires source changes but none were committed` | Lần chạy trước của task đã đưa code vào nhánh run, nên lần này không còn gì để sửa. Từ 29/10/2026, platform tính phần code đó là thay đổi của task (ghi chú `CHANGES_FROM_EARLIER_ATTEMPT`). Cập nhật máy trung tâm rồi bấm **Chạy lại run**. |
+| `awf doctor` báo `.env ... older than .env.example` | `.env` tạo từ bản cũ, thiếu các mục mới. Chạy `awf env upgrade` (hoặc bootstrap lại): mọi giá trị giữ nguyên, bản cũ lưu ở `.env.bak-*`. |
+| Đăng nhập dashboard báo **Token không đúng** dù đã dán `AWF_API_TOKEN` | (1) Chỉ sao chép phần sau `AWF_API_TOKEN=`; dấu nháy và khoảng trắng hai đầu giờ được bỏ qua. (2) `.env` đã đổi (chạy bootstrap `--force`, sửa tay) sau khi máy trung tâm khởi động: chạy `awf doctor` trên máy trung tâm; nếu nó báo `runs with another AWF_API_TOKEN`, khởi động lại máy trung tâm. (3) Không cần gõ token: trên máy trung tâm chạy `awf open --print-only`, mở link in ra trên máy của bạn trong vòng 2 phút. |
+| `control plane factory... not reachable now (UnsupportedProtocol)` | `AWF_CONTROL_URL` trong `.env` của worker thiếu `https://`. Chạy lại bootstrap với `--control-url https://...`: từ 30/10/2026, bootstrap cập nhật giá trị này trong `.env` có sẵn, thay vì giữ giá trị cũ. |
 | Mirror báo `rejected` / `fetch first` | Ai đó đã push thẳng lên GitHub. Trên PC: `git pull <github> main`, rồi `git push factory main`. Mirror tự thử lại sau 5 phút, hoặc bấm **Đẩy ngay**. |
 | Mirror báo `401` / `403` / `Authentication failed` | `AWF_MIRROR_TOKEN` trên máy trung tâm thiếu, hết hạn hoặc không có quyền *Contents: write* với repo đó. Sửa `.env` rồi khởi động lại. |
 | Release báo `conflict in: …` | `main` có hotfix chạm cùng chỗ với `develop`. Merge trên PC theo lệnh dashboard in ra, rồi push `main` lên factory. |
@@ -2032,7 +2040,7 @@ Luôn cùng một quy trình:
 
 ```bash
 git pull
-scripts/bootstrap.sh          # Windows: .\scripts\bootstrap.ps1 — cài đúng lock mới, giữ nguyên .env
+scripts/bootstrap.sh          # Windows: .\scripts\bootstrap.ps1 — cài đúng lock mới; .env giữ giá trị, lấy bố cục mới
 .venv/bin/awf start           # máy trung tâm tự chạy migration mới (dữ liệu được giữ)
 ```
 

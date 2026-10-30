@@ -42,7 +42,7 @@ git clone <repo-url> ai-work-factory; cd ai-work-factory
   không cần đăng nhập; PowerShell admin).
 - Câu hỏi thường gặp (khác gì Claude Code local, repo local hay GitHub, project/run/task, API key, cập nhật
   máy): §22 của hướng dẫn.
-- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (292 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
+- Kiểm tra máy: `awf doctor`. Sao lưu: `awf db backup`. Test: `python -m pytest -q -p no:logging` (296 test, thêm 8 test PostgreSQL khi có AWF_TEST_DATABASE_URL).
 - Model thật: Claude, Gemini, ChatGPT, Qwen, Kimi, DeepSeek, MiniMax. Đặt API key của hãng trong `.env` của máy
   worker (bảng tổng hợp và cách lấy key ở §6 của hướng dẫn). Key dùng cho mọi agent, không riêng coding. Developer chạy bằng engine viết code
   (Claude Code, Codex, Antigravity cho Gemini, Qwen Code, Kimi Code, DeepSeek Harness, MiniMax Code): chọn

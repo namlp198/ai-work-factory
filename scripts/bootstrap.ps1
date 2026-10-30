@@ -1,5 +1,5 @@
 # One-time (and after every `git pull`) setup of a Windows machine.
-# Idempotent: safe to run again; it never overwrites an existing .env.
+# Idempotent: safe to run again; an existing .env keeps its values and gets the latest layout.
 #
 #   scripts\bootstrap.ps1                                   # role all (control plane + local worker)
 #   scripts\bootstrap.ps1 -Role control-plane               # API/dashboard/orchestrator for the team
@@ -61,7 +61,8 @@ Invoke-Checked $venvPy @("-m", "pip", "install", "--quiet", "--disable-pip-versi
 Invoke-Checked $venvPy @("-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-deps", "-e", ".")
 $awf = Join-Path $root ".venv\Scripts\awf.exe"
 
-# 3. Machine configuration (.env) - created once, never overwritten.
+# 3. Machine configuration (.env): created once; later runs keep its values, add new settings
+#    (commented) and apply the --control-url / --registration-token given.
 $envArgs = @("env", "init", "--role", $Role)
 if ($ControlUrl) { $envArgs += @("--control-url", $ControlUrl) }
 if ($RegistrationToken) { $envArgs += @("--registration-token", $RegistrationToken) }

@@ -33,7 +33,7 @@ def test_env_init_control_plane_generates_tokens_and_never_overwrites(home, caps
 
     (home / ".env").write_text("AWF_ROLE=custom\n", encoding="utf-8")
     assert ops.env_init(home, "control-plane") == 0
-    assert (home / ".env").read_text(encoding="utf-8") == "AWF_ROLE=custom\n"
+    assert ops.env_values((home / ".env").read_text(encoding="utf-8").splitlines()) == {"AWF_ROLE": "custom"}
     assert ops.env_init(home, "all", force=True) == 0
     assert _env(home / ".env")["AWF_API_HOST"] == "127.0.0.1"
 
@@ -45,6 +45,65 @@ def test_env_init_worker_requires_control_plane_details(home):
     env = _env(home / ".env")
     assert env["AWF_CONTROL_URL"] == "http://factory:8000" and env["AWF_WORKER_REGISTRATION_TOKEN"] == "tok"
     assert env["AWF_API_TOKEN"] == ""  # workers never hold the admin token
+
+
+def test_bootstrap_again_updates_the_control_url_of_an_existing_env(home, capsys):
+    """hp3-super-server: an old .env had AWF_CONTROL_URL without https://, and bootstrap kept it."""
+    (home / ".env").write_text("AWF_ROLE=worker\nAWF_CONTROL_URL=factory.tail6d4070.ts.net\nAWF_WORKER_NAME=hp3\n",
+                               encoding="utf-8")
+    assert ops.env_init(home, "worker", control_url="https://factory.tail6d4070.ts.net/", registration_token="new") == 0
+    env = _env(home / ".env")
+    assert env["AWF_CONTROL_URL"] == "https://factory.tail6d4070.ts.net" and env["AWF_WORKER_REGISTRATION_TOKEN"] == "new"
+    assert env["AWF_WORKER_NAME"] == "hp3"  # the rest is kept
+    assert "updated AWF_CONTROL_URL, AWF_WORKER_REGISTRATION_TOKEN" in capsys.readouterr().out
+    assert ops.env_init(home, "worker", control_url="factory.tail6d4070.ts.net", registration_token="x") == 2
+
+
+def test_doctor_explains_a_control_url_without_scheme_and_a_stale_admin_token(monkeypatch):
+    import httpx
+
+    from awf.security import token_fingerprint
+
+    monkeypatch.setenv("AWF_CONTROL_URL", "factory.tail6d4070.ts.net")
+    check = ops._check_control_plane_reachable()
+    assert check.status == "FAIL" and "https://factory.tail6d4070.ts.net" in check.detail
+
+    monkeypatch.setenv("AWF_CONTROL_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("AWF_API_TOKEN", "the-token-in-env")
+    running = {"status": "ok", "version": "x", "auth": token_fingerprint("the-token-it-started-with")}
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Response(200, json=running, request=httpx.Request("GET", url)))
+    check = ops._check_control_plane_reachable()
+    assert check.status == "FAIL" and "restart the control plane" in check.detail
+    running["auth"] = token_fingerprint("the-token-in-env")
+    assert ops._check_control_plane_reachable().status == "OK"
+
+
+OLD_WORKER_ENV = """# Per-machine configuration
+AWF_ROLE=worker
+AWF_CONTROL_URL=https://factory.tail6d4070.ts.net
+AWF_WORKER_REGISTRATION_TOKEN=reg-secret
+AWF_CLAUDE_CODE_AUTH=login
+ANTHROPIC_API_KEY="sk-ant-quoted value"
+MY_OWN_SETTING=42
+AWF_ROLE=worker
+"""
+
+
+def test_an_old_env_gets_the_latest_layout_with_every_value_kept(home, capsys):
+    """The two first workers had an .env from an older .env.example: sections and new settings were missing."""
+    (home / ".env").write_text(OLD_WORKER_ENV, encoding="utf-8")
+    assert ops.env_missing(home)  # doctor warns about it
+    assert ops.env_upgrade(home)
+    new = (home / ".env").read_text(encoding="utf-8")
+    old_values = ops.env_values(OLD_WORKER_ENV.splitlines())
+    assert ops.env_values(new.splitlines()) == old_values  # nothing the machine does changes
+    assert "# AWF_MIRROR_TOKEN=" in new and "# AWF_WORKER_MAX_JOBS=3" in new  # new settings appear, commented
+    assert "\nAWF_API_HOST=" not in new  # a default the old file did not set stays commented
+    assert new.rstrip().endswith("MY_OWN_SETTING=42")  # unknown settings are kept at the end
+    (backup,) = home.glob(".env.bak-*")
+    assert backup.read_text(encoding="utf-8") == OLD_WORKER_ENV
+    assert ops.env_missing(home) == [] and not ops.env_upgrade(home)  # idempotent
+    assert "every value kept" in capsys.readouterr().out
 
 
 def test_lan_bind_requires_tokens(monkeypatch):

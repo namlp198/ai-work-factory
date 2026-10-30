@@ -102,7 +102,9 @@ function bindLogin() {
       await api("/session", { method: "POST", body: JSON.stringify({ token: new FormData(e.target).get("token") }) });
       render();
     } catch (err) {
-      $("#login-error").textContent = err instanceof AuthRequired ? t("login.invalid") : err.message;
+      const box = $("#login-error");
+      if (err instanceof AuthRequired) box.innerHTML = `${t("login.invalid")}<br><span class="muted">${t("login.invalid_help")}</span>`;
+      else box.textContent = /AWF_WORKER_REGISTRATION_TOKEN/.test(err.message) ? t("login.registration_token") : err.message;
     }
   };
 }
